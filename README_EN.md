@@ -565,9 +565,9 @@ Recommended by scenario:
 - `The open-source version will lag behind the commercial version by 2-4 weeks, or some features may be limited. Please contact us if you require the commercial version.`
 
 ## Contact information
-wechat：fengzhizi715
+wechat：fengzhizi715,virus_gene
 
-Email：fengzhizi715@126.com
+Email：fengzhizi715@126.com,yaolisi@hotmail.com
 
 <div style="display: flex; justify-content: space-between;">
     <img src="images/wechat_group.JPG" alt="图1" width="48%">
