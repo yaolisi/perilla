@@ -32,9 +32,14 @@
 - `TENANT_ENFORCEMENT_ENABLED=true`
 - `TENANT_API_KEY_BINDING_ENABLED=true`
 - `TENANT_API_KEY_TENANTS_JSON` 非空且有效
+- `RBAC_DEFAULT_ROLE=viewer`（避免匿名默认写权限）
+- `API_KEY_SCOPES_JSON` 已配置且至少覆盖关键控制面 scope
 - `CORS_ALLOWED_ORIGINS` 非空（显式白名单）
 - `FILE_READ_ALLOWED_ROOTS` 不得为 `/`
+- `TOOL_NET_HTTP_ENABLED=false`（默认）
 - 若 `TOOL_NET_HTTP_ENABLED=true`，则 `TOOL_NET_HTTP_ALLOWED_HOSTS` 必须非空
+- `TOOL_NET_HTTP_ALLOW_PRIVATE_TARGETS=false`
+- `AGENT_ALLOW_DANGEROUS_SKILLS=false`
 - `SECURITY_GUARDRAILS_STRICT=true`（默认建议）
 
 ### 2.2 启动阻断规则
@@ -63,7 +68,7 @@
 ### 3.2 RBAC 规范
 
 - `viewer` 禁止写控制面（POST/PUT/PATCH/DELETE）
-- `api/system` 关键写接口仅允许管理员
+- `api/system` 全路由按敏感控制面处理，要求管理员身份
 - 审计查询仅允许管理员
 
 ### 3.3 Tenant 规范
@@ -72,6 +77,13 @@
 - API Key 必须绑定允许租户列表
 - 任何跨租户访问应返回 `403` 或 `404`（按策略）
 - Workflow 访问必须经过入口校验 + 数据层 tenant-aware 查询双重控制
+- 受保护控制面（如 `/api/system/*`）必须显式携带租户头，未携带应拒绝
+
+### 3.4 CSRF 规范
+
+- 所有写接口必须经过双提交 Cookie 校验（header token 与 cookie token 相等）
+- 缺失或不一致返回 `403`
+- 前端必须在启动时预热 token，并在写请求自动注入
 
 ---
 
@@ -106,6 +118,11 @@
 - 限流响应不得返回敏感身份原文（仅可返回类型）
 - 健康检查路径可豁免限流
 - 高频轮询接口必须评估轮询间隔与缓存策略
+- 上传接口必须具备：
+  - 单文件大小限制
+  - 总上传大小限制
+  - 并发限制（超限返回 `429`）
+  - 流式写入，避免一次性读入内存
 
 ---
 
@@ -136,13 +153,19 @@
 在 `backend` 目录执行：
 
 ```bash
-./scripts/test_tenant_security_regression.sh
+python scripts/security_regression.py \
+  --base http://127.0.0.1:8000 \
+  --api-key "admin-key" \
+  --tenant-id default \
+  --json-output /tmp/security-regression.json \
+  --junit-output /tmp/security-regression.xml \
+  --suite-name security_regression_local
 ```
 
 必须通过：
 
 - 退出码 `0`
-- 输出 `regression suite passed`
+- 输出 `Summary: x/x checks passed`
 
 ### 7.2 CI 门禁
 

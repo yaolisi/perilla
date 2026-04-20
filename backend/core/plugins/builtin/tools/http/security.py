@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional, Tuple
 from urllib.parse import urlparse
+import ipaddress
+import socket
 
 from config.settings import settings
 from core.tools.context import ToolContext
@@ -51,9 +53,47 @@ def check_http_permission_and_url(url: str, ctx: ToolContext) -> Tuple[bool, Opt
         return False, "Invalid URL (missing hostname)"
 
     allowed_hosts = _parse_csv(getattr(settings, "tool_net_http_allowed_hosts", "") or "")
-    if allowed_hosts:
-        if not _host_allowed(host, allowed_hosts):
-            return False, f"Host not allowed by allowlist: {host}"
+    if not allowed_hosts:
+        return False, "HTTP outbound allowlist is empty; configure settings.tool_net_http_allowed_hosts"
+    if not _host_allowed(host, allowed_hosts):
+        return False, f"Host not allowed by allowlist: {host}"
+
+    def _is_private_target(hostname: str) -> bool:
+        try:
+            ip = ipaddress.ip_address(hostname)
+            return bool(
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_unspecified
+                or ip.is_reserved
+            )
+        except ValueError:
+            pass
+
+        try:
+            infos = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+            for info in infos:
+                ip = ipaddress.ip_address(info[4][0])
+                if (
+                    ip.is_private
+                    or ip.is_loopback
+                    or ip.is_link_local
+                    or ip.is_multicast
+                    or ip.is_unspecified
+                    or ip.is_reserved
+                ):
+                    return True
+        except socket.gaierror:
+            return False
+        except Exception:
+            return True
+        return False
+
+    if not bool(getattr(settings, "tool_net_http_allow_private_targets", False)):
+        if _is_private_target(host):
+            return False, f"Target host is private or local address: {host}"
 
     return True, None
 

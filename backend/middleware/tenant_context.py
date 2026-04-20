@@ -24,13 +24,15 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         )
 
     async def dispatch(self, request: Request, call_next):
-        tenant_id = (request.headers.get(self._header) or getattr(settings, "tenant_default_id", "default")).strip()
+        header_tenant_id = (request.headers.get(self._header) or "").strip()
+        tenant_id = (header_tenant_id or getattr(settings, "tenant_default_id", "default")).strip()
         if not tenant_id:
             tenant_id = getattr(settings, "tenant_default_id", "default")
         request.state.tenant_id = tenant_id
 
         if getattr(settings, "tenant_enforcement_enabled", False) and self._is_protected_path(request.url.path):
-            if tenant_id == getattr(settings, "tenant_default_id", "default"):
+            # 受保护控制面必须显式携带租户头；允许使用 default 租户值。
+            if not header_tenant_id:
                 return JSONResponse(
                     status_code=400,
                     content={

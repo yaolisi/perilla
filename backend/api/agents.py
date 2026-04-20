@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -22,9 +22,20 @@ from log import logger
 from core.models.registry import get_model_registry
 from core.skills.registry import SkillRegistry
 from core.tools.sandbox import resolve_in_workspace, WorkspacePathError
+from core.security.deps import require_authenticated_platform_admin
+from core.security.skill_policy import get_blocked_skills
+from config.settings import settings
 
-router = APIRouter(prefix="/api/agents", tags=["agents"])
-session_router = APIRouter(prefix="/api", tags=["agent-sessions"])
+router = APIRouter(
+    prefix="/api/agents",
+    tags=["agents"],
+    dependencies=[Depends(require_authenticated_platform_admin)],
+)
+session_router = APIRouter(
+    prefix="/api",
+    tags=["agent-sessions"],
+    dependencies=[Depends(require_authenticated_platform_admin)],
+)
 
 # Replan prompt template guardrails
 MAX_REPLAN_PROMPT_TEMPLATE_LEN = 8000
@@ -44,6 +55,13 @@ ALLOWED_REPLAN_TEMPLATE_PLACEHOLDERS = {
     "fix_iteration",
     "max_fix_iterations",
 }
+
+MAX_AGENT_UPLOAD_FILES = 10
+MAX_AGENT_UPLOAD_FILE_BYTES = 20 * 1024 * 1024  # 20MB
+MAX_AGENT_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024  # 100MB
+UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1MB
+UPLOAD_CONCURRENCY = max(1, int(getattr(settings, "agent_upload_max_concurrency", 4) or 4))
+_upload_semaphore = asyncio.Semaphore(UPLOAD_CONCURRENCY)
 
 def _get_user_id(request: Request) -> str:
     uid = (request.headers.get("X-User-Id") or "").strip()
@@ -168,6 +186,18 @@ def _validate_replan_prompt_template(replan_prompt: str) -> Optional[str]:
         return f"replan_prompt template format is invalid: {e}"
     return None
 
+
+def _enforce_skill_safety(skill_ids: List[str]) -> None:
+    blocked = get_blocked_skills(skill_ids)
+    if blocked:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "dangerous skills are disabled by server policy: "
+                + ", ".join(sorted(blocked))
+            ),
+        )
+
 @router.get("")
 async def list_agents():
     registry = get_agent_registry()
@@ -201,6 +231,7 @@ async def create_agent(req: CreateAgentRequest):
                 status_code=400,
                 detail=f"Skill '{skill_id}' not found. Please select a valid skill."
             )
+    _enforce_skill_safety(enabled_skills)
 
     # Normalize and validate rag_ids (knowledge bases)
     rag_ids = _normalize_id_list(req.rag_ids)
@@ -288,6 +319,7 @@ async def update_agent(agent_id: str, req: CreateAgentRequest):
     for skill_id in enabled_skills:
         if not SkillRegistry.get(skill_id):
             raise HTTPException(status_code=400, detail=f"Skill '{skill_id}' not found.")
+    _enforce_skill_safety(enabled_skills)
     
     # 深度合并 model_params：保留原有字段，只更新请求中提供的字段
     if req.model_params is not None and req.model_params:
@@ -396,6 +428,7 @@ async def _save_uploaded_files(session_id: str, files: List[UploadFile]) -> Path
     workspaces_root = _get_agent_workspaces_root()
     workspace_dir = workspaces_root / session_id
     workspace_dir.mkdir(parents=True, exist_ok=True)
+    total_written = 0
     for f in files or []:
         if not f.filename or f.filename.strip() == "":
             continue
@@ -403,8 +436,26 @@ async def _save_uploaded_files(session_id: str, files: List[UploadFile]) -> Path
         raw_name = Path(f.filename).name
         safe_name = _normalize_filename(raw_name)
         dest = workspace_dir / safe_name
-        content = await f.read()
-        dest.write_bytes(content)
+        written = 0
+        with dest.open("wb") as out:
+            while True:
+                chunk = await f.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                written += len(chunk)
+                total_written += len(chunk)
+                if written > MAX_AGENT_UPLOAD_FILE_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"file '{safe_name}' exceeds max size {MAX_AGENT_UPLOAD_FILE_BYTES} bytes",
+                    )
+                if total_written > MAX_AGENT_UPLOAD_TOTAL_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"total upload size exceeds max {MAX_AGENT_UPLOAD_TOTAL_BYTES} bytes",
+                    )
+                out.write(chunk)
+        await f.close()
     return workspace_dir.resolve()
 
 
@@ -499,8 +550,23 @@ async def run_agent_with_files(
     workspace_dir_str = str(workspace_dir.resolve())
     saved_names: List[str] = []
     logger.info(f"[Agent API] run/with-files received files count={len(files)} session_id={session_id}")
+    if len(files or []) > MAX_AGENT_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"too many uploaded files; max allowed is {MAX_AGENT_UPLOAD_FILES}",
+        )
     if files:
-        workspace_path = await _save_uploaded_files(session_id, files)
+        try:
+            await asyncio.wait_for(_upload_semaphore.acquire(), timeout=0.001)
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=429,
+                detail="too many concurrent upload requests, please retry later",
+            )
+        try:
+            workspace_path = await _save_uploaded_files(session_id, files)
+        finally:
+            _upload_semaphore.release()
         workspace_dir_str = str(workspace_path)
         saved_names = [_normalize_filename(Path(f.filename).name) for f in files if f.filename and f.filename.strip()]
         logger.info(f"[Agent API] Saved {len(files)} file(s) to workspace {workspace_dir_str} names={saved_names}")

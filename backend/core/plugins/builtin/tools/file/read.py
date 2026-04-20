@@ -33,14 +33,8 @@ class FileReadTool(Tool):
             
         logger.info(f"[file.read] Smart search for file: {filename}")
         
-        # 常见的用户目录
-        search_paths = [
-            str(Path.home()),  # 用户主目录
-            str(Path.home() / "Desktop"),
-            str(Path.home() / "Documents"),
-            str(Path.home() / "Downloads"),
-            "/tmp",
-        ]
+        # 仅在 workspace 与 allowlist 根目录中查找，避免越权读取用户主目录等敏感位置
+        search_paths: List[str] = []
         
         # 也包括允许的根目录
         for root in allowed_roots:
@@ -63,6 +57,13 @@ class FileReadTool(Tool):
                 # 限制递归深度为2层（避免过度扫描）
                 try:
                     for item in root_path.rglob('*'):
+                        try:
+                            relative_path = item.relative_to(root_path)
+                            if len(relative_path.parts) > 2:  # 最多2层深度
+                                continue
+                        except ValueError:
+                            continue
+
                         if files_checked >= max_files_to_check:
                             logger.warning(f"[file.read] Stopped smart search after checking {max_files_to_check} files")
                             return None
@@ -78,14 +79,6 @@ class FileReadTool(Tool):
                             unicodedata.normalize("NFD", item.name) == unicodedata.normalize("NFD", filename)):
                             logger.info(f"[file.read] Found file via smart search: {item}")
                             return item
-                            
-                        # 限制递归深度
-                        try:
-                            relative_path = item.relative_to(root_path)
-                            if len(relative_path.parts) > 2:  # 最多2层深度
-                                continue
-                        except ValueError:
-                            continue
                             
                 except (OSError, PermissionError) as e:
                     logger.debug(f"[file.read] Cannot access {search_root}: {e}")
@@ -211,7 +204,14 @@ class FileReadTool(Tool):
                 # 如果还是找不到，且路径看起来像文件名（不含路径分隔符），尝试智能搜索
                 if (not target_abs or not target_abs.is_file()) and "/" not in path_normalized and "\\" not in path_normalized:
                     logger.info(f"[file.read] Attempting smart search for: {path_normalized}")
-                    target_abs = await self._search_file_smart(path_normalized, _get_allowed_absolute_roots())
+                    smart_roots: List[str] = []
+                    workspace_abs = Path(ctx.workspace or ".").expanduser().resolve()
+                    smart_roots.append(str(workspace_abs))
+                    for root in _get_allowed_absolute_roots():
+                        rp = Path(root).expanduser().resolve()
+                        if str(rp) not in smart_roots:
+                            smart_roots.append(str(rp))
+                    target_abs = await self._search_file_smart(path_normalized, smart_roots)
                     if target_abs:
                         logger.info(f"[file.read] Smart search result: {target_abs}, exists={target_abs.exists()}, is_file={target_abs.is_file()}")
                     else:

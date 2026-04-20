@@ -80,7 +80,9 @@ class AgentRuntime:
         """
         from core.tools.permissions import build_permissions_for_skills
         
-        enabled_skills = agent.enabled_skills or []
+        from core.security.skill_policy import filter_blocked_skills
+
+        enabled_skills = filter_blocked_skills(agent.enabled_skills or [])
         return build_permissions_for_skills(enabled_skills)
 
     async def run(

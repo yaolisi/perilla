@@ -1,6 +1,6 @@
 # OpenVitamin Enhanced 新手友好详细教程（从 0 到可上线）
 
-> 本文已基于最新安全增强改造更新：包含 **前端 XSS 防护**、**后端 CSRF 防护**、**分层安全回归脚本**、**双工作流 CI（tenant/security）**、**Step Summary + 慢批次阈值告警**。
+> 本文已基于最新安全增强改造更新：包含 **前端 XSS 防护**、**后端 CSRF 防护**、**敏感路由统一认证 + RBAC**、**危险技能默认禁用**、**HTTP 出口收敛（allowlist + 私网拦截）**、**上传限额/并发治理**、**可产出 JSON/JUnit 的安全回归脚本**。
 
 本教程专门为新手编写，目标是让你即使第一次接触项目，也能按步骤完成：
 
@@ -10,10 +10,12 @@
 4. 安全配置落地  
 5. 回归测试与上线前检查
 
-如果你是第一次看文档，建议从头到尾照着做一遍。
+如果你是第一次看文档，建议从头到尾照着做一遍。  
+若你希望先看「从哪里读起、403/404/429 去哪查」，可先打开同目录 **[README.md](README.md)**。
 
 快速入口：
 
+- `README.md`：新手导航（阅读顺序、按错误码跳转）  
 - `tutorial-quickstart.md`：10 分钟极简上手  
 - `tutorial-index.md`：教程导航总入口  
 - `tutorial-ops-checklist.md`：发版前 3~5 分钟清单  
@@ -136,7 +138,7 @@ RBAC_OPERATOR_API_KEYS=dev-key
 SECURITY_GUARDRAILS_STRICT=true
 ```
 
-### 5.2 生产环境建议（最小安全基线）
+### 5.2 生产环境建议（最小安全基线，建议直接复制）
 
 ```dotenv
 DEBUG=false
@@ -146,11 +148,13 @@ RBAC_ENFORCEMENT=true
 RBAC_ADMIN_API_KEYS=admin-key-1
 RBAC_OPERATOR_API_KEYS=op-key-1,op-key-2
 RBAC_VIEWER_API_KEYS=view-key-1
+RBAC_DEFAULT_ROLE=viewer
 
 TENANT_ENFORCEMENT_ENABLED=true
 TENANT_HEADER_NAME=X-Tenant-Id
 TENANT_API_KEY_BINDING_ENABLED=true
 TENANT_API_KEY_TENANTS_JSON={"admin-key-1":["*"],"op-key-1":["tenant-a"],"op-key-2":["tenant-b"]}
+API_KEY_SCOPES_JSON={"admin-key-1":["admin","model:write","workflow:write","audit:read"]}
 
 API_RATE_LIMIT_ENABLED=true
 API_RATE_LIMIT_REQUESTS=120
@@ -162,12 +166,25 @@ AUDIT_LOG_PATH_PREFIXES=/api/v1/workflows,/api/system
 CORS_ALLOWED_ORIGINS=https://console.example.com
 FILE_READ_ALLOWED_ROOTS=/data,/models
 
-TOOL_NET_HTTP_ENABLED=true
+TOOL_NET_HTTP_ENABLED=false
 TOOL_NET_HTTP_ALLOWED_HOSTS=api.openai.com,*.internal.example.com
+TOOL_NET_HTTP_ALLOW_PRIVATE_TARGETS=false
 TOOL_NET_WEB_ENABLED=false
+
+AGENT_ALLOW_DANGEROUS_SKILLS=false
+AGENT_UPLOAD_MAX_CONCURRENCY=4
 
 SECURITY_GUARDRAILS_STRICT=true
 ```
+
+### 5.3 新手最易踩坑（必须看）
+
+1. `DEBUG=false` 时，`CSRF_COOKIE_SECURE` 默认会变为 `true`。  
+   如果你用 `http://127.0.0.1` 直接调写接口，需要手工回传 `Cookie: csrf_token=...` 与 `X-CSRF-Token`。
+2. `/api/system/*` 现在要求：
+   - admin API Key
+   - 显式 `X-Tenant-Id`
+3. 写接口（POST/PUT/PATCH/DELETE）必须通过 CSRF 校验，否则 403。
 
 ---
 
@@ -311,6 +328,7 @@ npm run dev
 
 - 这些写接口在增强版已经要求管理员权限
 - 如果你是 operator/viewer，请求会被拒绝（403）
+- 受保护路径必须显式带 `X-Tenant-Id`，不带会返回 400
 
 ---
 
@@ -398,9 +416,10 @@ npm run dev
   - 结果：稳定 403
 
 ---
+
 ## 14. 生产安全护栏（必读）
 
-### 13.1 自动收敛
+### 14.1 自动收敛
 
 当 `DEBUG=false` 时，系统会自动收敛关键开关：
 
@@ -409,7 +428,7 @@ npm run dev
 - `TENANT_ENFORCEMENT_ENABLED=true`
 - `TENANT_API_KEY_BINDING_ENABLED=true`
 
-### 13.2 启动阻断（Fail-Fast）
+### 14.2 启动阻断（Fail-Fast）
 
 命中以下风险会拒绝启动：
 
@@ -417,7 +436,7 @@ npm run dev
 - `CORS_ALLOWED_ORIGINS=""`  
 - `TOOL_NET_HTTP_ENABLED=true` 且 `TOOL_NET_HTTP_ALLOWED_HOSTS=""`
 
-### 13.3 严格模式开关
+### 14.3 严格模式开关
 
 - `SECURITY_GUARDRAILS_STRICT=true`：违规直接阻断（默认推荐）
 - `SECURITY_GUARDRAILS_STRICT=false`：仅告警继续（仅抢修临时使用）
@@ -451,7 +470,26 @@ backend/scripts/test_tenant_security_regression.sh
 JUNIT_XML_PATH=test-reports/tenant-security-regression.xml backend/scripts/test_tenant_security_regression.sh
 ```
 
-### 15.2 security 安全回归（acceptance 聚合脚本）
+### 15.2 security 安全回归（推荐新脚本）
+
+在项目根目录执行：
+
+```bash
+python backend/scripts/security_regression.py \
+  --base http://127.0.0.1:8000 \
+  --api-key "你的-admin-key" \
+  --tenant-id default
+```
+
+常用参数：
+
+- `--json-output /tmp/security-regression.json`：导出结构化结果
+- `--junit-output /tmp/security-regression.xml`：导出 JUnit（CI 用）
+- `--suite-name security_regression_staging`：区分环境
+- `--quiet`：只输出 summary
+- `--fail-fast`：首个失败立即退出
+
+### 15.3 security 安全回归（acceptance 聚合脚本，兼容保留）
 
 在项目根目录执行：
 
@@ -470,7 +508,7 @@ scripts/acceptance/run_security_regression.sh
 
 - `test-reports/security-regression-summary.md`
 
-### 15.3 慢批次阈值告警（本地）
+### 15.4 慢批次阈值告警（本地）
 
 可选设置阈值（秒）：
 
@@ -482,6 +520,7 @@ TENANT_SECURITY_SLOW_THRESHOLD_SECONDS=20 backend/scripts/test_tenant_security_r
 当超过阈值，摘要会出现 `⚠️` 和 Slow Batches 区块。
 
 ---
+
 ## 16. CI 流水线说明（你当前已接好）
 
 工作流：
@@ -511,7 +550,7 @@ TENANT_SECURITY_SLOW_THRESHOLD_SECONDS=20 backend/scripts/test_tenant_security_r
 
 ## 17. 常见错误与解决方案（新手高频）
 
-### 16.1 启动失败：Unsafe production security configuration
+### 17.1 启动失败：Unsafe production security configuration
 
 处理：
 
@@ -519,7 +558,7 @@ TENANT_SECURITY_SLOW_THRESHOLD_SECONDS=20 backend/scripts/test_tenant_security_r
 2. `CORS_ALLOWED_ORIGINS` 不要为空
 3. 若开启 HTTP 工具，配置 `TOOL_NET_HTTP_ALLOWED_HOSTS`
 
-### 16.2 403（权限问题）
+### 17.2 403（权限问题）
 
 处理：
 
@@ -527,7 +566,7 @@ TENANT_SECURITY_SLOW_THRESHOLD_SECONDS=20 backend/scripts/test_tenant_security_r
 2. 检查 RBAC 角色映射
 3. 检查是否调用了 admin-only 接口
 
-### 16.3 404（跨租户）
+### 17.3 404（跨租户）
 
 处理：
 
@@ -535,7 +574,7 @@ TENANT_SECURITY_SLOW_THRESHOLD_SECONDS=20 backend/scripts/test_tenant_security_r
 2. 检查 API Key 的 tenant 绑定
 3. 检查 workflow namespace
 
-### 16.4 429（限流）
+### 17.4 429（限流）
 
 处理：
 
@@ -543,7 +582,7 @@ TENANT_SECURITY_SLOW_THRESHOLD_SECONDS=20 backend/scripts/test_tenant_security_r
 2. 降低轮询频率
 3. 合并批量请求
 
-### 16.5 全量 pytest 因三方依赖失败
+### 17.5 全量 pytest 因三方依赖失败
 
 可能出现 `numpy/sklearn/transformers` 二进制兼容问题。  
 优先执行项目稳定回归脚本，不要被无关依赖阻断主线验证。
@@ -563,6 +602,25 @@ TENANT_SECURITY_SLOW_THRESHOLD_SECONDS=20 backend/scripts/test_tenant_security_r
 1. 检查是否依赖了原生 HTML 渲染（现在 `html: false`）
 2. 检查内容是否被 DOMPurify 合法过滤（脚本/危险属性会被去掉）
 3. 对需要保留的展示能力，走白名单扩展，不要临时禁用净化
+
+### 17.8 `/api/system/*` 返回 400：tenant id required for protected path
+
+处理顺序：
+
+1. 确认请求头里显式带了 `X-Tenant-Id`
+2. 确认 key 与 tenant 绑定关系允许该租户
+3. 确认前端 Security Context 中 tenant 已保存
+
+### 17.9 Agent 上传报错 413 / 429
+
+- `413`：文件超单文件/总量限制（默认单文件 20MB、总量 100MB）
+- `429`：并发上传超过 `AGENT_UPLOAD_MAX_CONCURRENCY`
+
+处理：
+
+1. 分片或压缩上传文件
+2. 降低前端并发上传数量
+3. 按需调整服务端阈值（谨慎）
 
 ---
 
@@ -785,6 +843,14 @@ curl -s "${BASE_URL}/api/v1/audit/logs?limit=20&offset=0" \
 
 ```bash
 cd openvitamin_enhanced_docker
+python backend/scripts/security_regression.py \
+  --base http://127.0.0.1:8000 \
+  --api-key "${ADMIN_KEY}" \
+  --tenant-id "${TENANT_ID}" \
+  --json-output /tmp/security-regression.json \
+  --junit-output /tmp/security-regression.xml \
+  --suite-name security_regression_local
+
 backend/scripts/test_tenant_security_regression.sh
 scripts/acceptance/run_security_regression.sh
 ```

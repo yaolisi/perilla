@@ -18,9 +18,13 @@ from core.system.settings_store import get_system_settings_store
 from core.system.feature_flags import get_feature_flags, set_feature_flags
 from core.system.queue_summary import build_unified_queue_summary
 from core.system.storage_strategy import storage_readiness
-from core.security.deps import require_platform_admin
+from core.security.deps import require_authenticated_platform_admin, require_platform_admin
 
-router = APIRouter(prefix="/api/system", tags=["system"])
+router = APIRouter(
+    prefix="/api/system",
+    tags=["system"],
+    dependencies=[Depends(require_authenticated_platform_admin)],
+)
 
 ALLOWED_SYSTEM_CONFIG_KEYS = {
     "offlineMode",

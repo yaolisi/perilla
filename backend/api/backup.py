@@ -4,7 +4,7 @@
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from config.settings import settings
@@ -19,8 +19,13 @@ from core.backup import (
 )
 from core.backup.models import BackupMetadata
 from log import logger
+from core.security.deps import require_authenticated_platform_admin
 
-router = APIRouter(prefix="/api/backup", tags=["backup"])
+router = APIRouter(
+    prefix="/api/backup",
+    tags=["backup"],
+    dependencies=[Depends(require_authenticated_platform_admin)],
+)
 
 # 全局备份管理器实例
 _backup_manager: Optional[BackupManager] = None

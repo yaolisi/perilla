@@ -12,6 +12,11 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE'])
 
 const STORAGE_USER_ID_KEY = 'ai_platform_user_id'
 const STORAGE_SESSION_ID_KEY = 'ai_platform_session_id'
+const STORAGE_API_KEY_KEY = 'ai_platform_api_key'
+const STORAGE_TENANT_ID_KEY = 'ai_platform_tenant_id'
+const API_KEY_HEADER_NAME = 'X-Api-Key'
+const TENANT_HEADER_NAME = 'X-Tenant-Id'
+const DEFAULT_TENANT_ID = 'default'
 let forceNewSessionOnce = false
 let csrfPrimePromise: Promise<void> | null = null
 
@@ -64,6 +69,41 @@ export function setSessionId(sessionId: string | null): void {
 
 export function requestNewSessionOnNextChat(): void {
   forceNewSessionOnce = true
+}
+
+export function getApiKey(): string | null {
+  return localStorage.getItem(STORAGE_API_KEY_KEY)
+}
+
+export function setApiKey(apiKey: string | null): void {
+  if (!apiKey || !apiKey.trim()) {
+    localStorage.removeItem(STORAGE_API_KEY_KEY)
+    return
+  }
+  localStorage.setItem(STORAGE_API_KEY_KEY, apiKey.trim())
+}
+
+export function getTenantId(): string {
+  return localStorage.getItem(STORAGE_TENANT_ID_KEY) || DEFAULT_TENANT_ID
+}
+
+export function setTenantId(tenantId: string | null): void {
+  if (!tenantId || !tenantId.trim()) {
+    localStorage.removeItem(STORAGE_TENANT_ID_KEY)
+    return
+  }
+  localStorage.setItem(STORAGE_TENANT_ID_KEY, tenantId.trim())
+}
+
+/**
+ * 启动时调用：确保本地有默认租户，并预热 CSRF cookie。
+ * 仅做 best-effort，不阻塞 UI 启动。
+ */
+export async function initializeApiSecurityContext(): Promise<void> {
+  if (!localStorage.getItem(STORAGE_TENANT_ID_KEY)) {
+    setTenantId(DEFAULT_TENANT_ID)
+  }
+  await ensureCsrfToken()
 }
 
 // Model Manifest Types
@@ -138,6 +178,9 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
 
   // 统一注入 user/session header
   headers.set('X-User-Id', getUserId())
+  const apiKey = getApiKey()
+  if (apiKey) headers.set(API_KEY_HEADER_NAME, apiKey)
+  headers.set(TENANT_HEADER_NAME, getTenantId())
   const sid = getSessionId()
   if (sid) headers.set('X-Session-Id', sid)
 

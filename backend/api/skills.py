@@ -3,14 +3,20 @@ Skill v1 FastAPI 接口：创建、列表、获取、执行。
 """
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.skills import create_skill, get_skill, list_skills, SkillExecutor, update_skill, delete_skill
 from core.skills.models import SkillType
 from core.skills.registry import SkillRegistry
+from core.security.deps import require_authenticated_platform_admin
+from core.security.skill_policy import get_blocked_skills
 
-router = APIRouter(prefix="/api/skills", tags=["skills"])
+router = APIRouter(
+    prefix="/api/skills",
+    tags=["skills"],
+    dependencies=[Depends(require_authenticated_platform_admin)],
+)
 
 
 class CreateSkillBody(BaseModel):
@@ -115,6 +121,13 @@ async def api_execute_skill(skill_id: str, body: ExecuteSkillBody):
     skill = get_skill(skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
+
+    blocked = get_blocked_skills([skill_id])
+    if blocked:
+        raise HTTPException(
+            status_code=403,
+            detail=f"dangerous skill execution blocked by server policy: {blocked[0]}",
+        )
     
     # 构建执行请求
     request = SkillExecutionRequest(

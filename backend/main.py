@@ -21,7 +21,7 @@ except ImportError:
     pass
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -48,6 +48,7 @@ from api.model_backups import router as model_backups_router
 from api.events import router as events_router
 from api.workflows import router as workflows_router
 from api.audit import router as audit_router
+from core.security.deps import require_authenticated_platform_admin
 
 
 @asynccontextmanager
@@ -426,10 +427,12 @@ if getattr(settings, "rbac_enabled", False) and getattr(settings, "rbac_enforcem
     app.add_middleware(RBACEnforcementMiddleware)
 
 # CORS 中间件配置
+_cors_origins = [x.strip() for x in (getattr(settings, "cors_allowed_origins", "") or "").split(",") if x.strip()]
+_cors_allow_credentials = bool(_cors_origins) and "*" not in _cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[x.strip() for x in (getattr(settings, "cors_allowed_origins", "") or "").split(",") if x.strip()] or ["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins or ["http://localhost", "http://127.0.0.1"],
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Session-Id", "X-Request-Id", "X-Trace-Id", "X-Response-Time-Ms", "X-CSRF-Token"],
@@ -511,8 +514,21 @@ class CreateModelRequest(BaseModel):
     api_key: Optional[str] = None
     description: Optional[str] = None
 
+
+SENSITIVE_METADATA_KEYS = {"api_key", "token", "secret", "password"}
+
+
+def _sanitize_metadata(metadata: Optional[dict]) -> dict:
+    out = {}
+    for k, v in (metadata or {}).items():
+        if str(k).lower() in SENSITIVE_METADATA_KEYS:
+            out[k] = "***"
+        else:
+            out[k] = v
+    return out
+
 @app.post("/api/models")
-async def register_model(req: CreateModelRequest):
+async def register_model(req: CreateModelRequest, _role=Depends(require_authenticated_platform_admin)):
     """手动注册模型（如云端 OpenAI, DeepSeek 等）"""
     from core.models.registry import get_model_registry
     from core.models.descriptor import ModelDescriptor
@@ -574,7 +590,7 @@ async def list_models(model_type: str = None):
 
 
 @app.post("/api/models/scan")
-async def scan_models():
+async def scan_models(_role=Depends(require_authenticated_platform_admin)):
     """手动扫描模型，同步本地模型状态（移除磁盘上已不存在的本地模型）"""
     from core.models.scanner.ollama import OllamaScanner
     from core.models.scanner.lmstudio import LMStudioScanner
@@ -635,7 +651,7 @@ async def scan_models():
 
 
 @app.post("/api/models/{model_id}/load")
-async def load_model(model_id: str):
+async def load_model(model_id: str, _role=Depends(require_authenticated_platform_admin)):
     """手动加载模型"""
     from core.models.registry import get_model_registry
     from core.runtimes.factory import get_runtime_factory
@@ -675,7 +691,7 @@ async def load_model(model_id: str):
 
 
 @app.post("/api/models/{model_id}/unload")
-async def unload_model(model_id: str):
+async def unload_model(model_id: str, _role=Depends(require_authenticated_platform_admin)):
     """手动卸载模型"""
     from core.models.registry import get_model_registry
     from core.runtimes.factory import get_runtime_factory
@@ -755,7 +771,7 @@ async def model_safety_check(model_id: str):
 
 
 @app.patch("/api/models/{model_id}")
-async def update_model(model_id: str, data: dict):
+async def update_model(model_id: str, data: dict, _role=Depends(require_authenticated_platform_admin)):
     """更新模型元数据/配置"""
     from core.models.registry import get_model_registry
     
@@ -779,7 +795,9 @@ async def update_model(model_id: str, data: dict):
         desc.metadata.update(data["metadata"])
         
     reg.upsert_model(desc)
-    return {"success": True, "data": desc.model_dump()}
+    payload = desc.model_dump()
+    payload["metadata"] = _sanitize_metadata(payload.get("metadata"))
+    return {"success": True, "data": payload}
 
 
 @app.get("/api/models/{model_id}/chat-params")
@@ -792,7 +810,7 @@ async def get_model_chat_params(model_id: str):
 
 
 @app.post("/api/models/{model_id}/chat-params")
-async def save_model_chat_params(model_id: str, data: dict):
+async def save_model_chat_params(model_id: str, data: dict, _role=Depends(require_authenticated_platform_admin)):
     """保存模型的聊天参数"""
     from core.models.registry import get_model_registry
     logger.info(f"Updating chat parameters for model {model_id}: {data}")
@@ -877,6 +895,8 @@ async def get_model_manifest(model_id: str):
             try:
                 with open(manifest_path, 'r', encoding='utf-8') as f:
                     manifest = json.load(f)
+                if isinstance(manifest, dict):
+                    manifest["metadata"] = _sanitize_metadata(manifest.get("metadata"))
                 # 将相对 path 解析为绝对路径
                 rel_path = manifest.get("path", "")
                 if rel_path and not os.path.isabs(rel_path):
@@ -897,12 +917,12 @@ async def get_model_manifest(model_id: str):
         "capabilities": getattr(desc, "capabilities", None) or desc.metadata.get("capabilities", []),
         "quantization": desc.metadata.get("quantization", ""),
         "description": desc.description or "",
-        "metadata": desc.metadata
+        "metadata": _sanitize_metadata(desc.metadata)
     }
 
 
 @app.put("/api/models/{model_id}/manifest")
-async def update_model_manifest(model_id: str, data: dict):
+async def update_model_manifest(model_id: str, data: dict, _role=Depends(require_authenticated_platform_admin)):
     """更新模型清单配置"""
     from core.models.registry import get_model_registry
     import os

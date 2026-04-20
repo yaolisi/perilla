@@ -249,20 +249,25 @@ Pick **one** path: bare-metal development (daily coding) or **Docker** (delivery
 - Node.js 18+
 - Conda
 
-#### 1. Create and activate the Conda environment
+#### 1. Create the Conda environment
+
+The repo’s `run-backend.sh` starts the backend with `conda run -n ai-inference-platform`. The environment **must** be named `ai-inference-platform` unless you change the script accordingly.
 
 ```bash
 conda create -n ai-inference-platform python=3.11 -y
-conda activate ai-inference-platform
 ```
 
 #### 2. Install backend dependencies
 
+Prefer installing into that env with `conda run` (same mechanism as `run-backend.sh`; works even when `conda activate` is not configured):
+
 ```bash
 cd backend
-pip install -r requirements.txt
+conda run -n ai-inference-platform pip install -r requirements.txt
 cd ..
 ```
+
+If you already ran `conda activate ai-inference-platform`, plain `pip install -r requirements.txt` is fine. If `conda activate` fails, run `conda init zsh` (or `bash`) and reopen the terminal, or keep using `conda run` as above.
 
 #### 3. Install frontend dependencies
 

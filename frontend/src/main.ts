@@ -7,6 +7,7 @@ import App from './App.vue'
 import router from './router'
 import { i18n } from './i18n'
 import VueVirtualScroller from 'vue-virtual-scroller'
+import { initializeApiSecurityContext } from './services/api'
 
 // Register cleanup handlers for page unload
 window.addEventListener('beforeunload', () => {
@@ -25,3 +26,6 @@ app.use(i18n)
 app.use(router)
 app.use(VueVirtualScroller)
 app.mount('#app')
+
+// Best-effort security bootstrap: prime csrf cookie and ensure default tenant.
+void initializeApiSecurityContext()

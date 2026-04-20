@@ -3,6 +3,8 @@
 本页用于帮助团队按场景快速找到对应文档。  
 建议将本页作为内部知识库入口链接。
 
+新手若不知道先看哪一页，可先读同目录 **[README.md](README.md)**（阅读顺序、403/404/429 跳转）。
+
 > **仓库根目录**：当以 **Standalone Docker 完整工程**（目录名通常为 `openvitamin_enhanced_docker`）分发时，下文所有命令与相对路径均以该目录为基准（包含 `backend/`、`frontend/`、`scripts/` 等）。
 
 ---
@@ -121,27 +123,27 @@
 
 > 执行前默认你已在项目根目录 `openvitamin_enhanced_docker`（或同等仓库根目录）。
 
-### 产品 / 运营 / 项目（验证系统可用）
+### 产品 / 运营 / 项目（Windows，验证系统可用）
 
 ```bash
 curl -s http://127.0.0.1:8000/api/health | jq .
 curl -s http://127.0.0.1:8000/api/health/ready | jq .
 ```
 
-### 研发（本地安全回归）
+### 研发（Windows，本地安全回归）
 
 ```bash
 backend/scripts/test_tenant_security_regression.sh
 scripts/acceptance/run_security_regression.sh
 ```
 
-### 测试 / QA（快速复核）
+### 测试 / QA（Windows，快速复核）
 
 ```bash
 SECURITY_SLOW_THRESHOLD_SECONDS=20 scripts/acceptance/run_security_regression.sh
 ```
 
-### 运维 / SRE / 值班（发布前最小检查）
+### 运维 / SRE / 值班（Windows，发布前最小检查）
 
 ```bash
 scripts/acceptance/run_security_regression.sh
@@ -190,6 +192,14 @@ curl.exe -I -s http://127.0.0.1:8000/api/health | Select-String "X-Trace-Id|X-Re
 在 `openvitamin_enhanced_docker`（或同等仓库根目录）下执行：
 
 ```bash
+python backend/scripts/security_regression.py \
+  --base http://127.0.0.1:8000 \
+  --api-key "your-admin-key" \
+  --tenant-id default \
+  --json-output /tmp/security-regression.json \
+  --junit-output /tmp/security-regression.xml \
+  --suite-name security_regression_local
+
 backend/scripts/test_tenant_security_regression.sh
 scripts/acceptance/run_security_regression.sh
 ```
@@ -197,6 +207,13 @@ scripts/acceptance/run_security_regression.sh
 生成 JUnit 报告：
 
 ```bash
+python backend/scripts/security_regression.py \
+  --base http://127.0.0.1:8000 \
+  --api-key "your-admin-key" \
+  --tenant-id default \
+  --junit-output test-reports/security-regression.xml \
+  --suite-name security_regression_ci
+
 JUNIT_XML_PATH=test-reports/tenant-security-regression.xml backend/scripts/test_tenant_security_regression.sh
 ```
 

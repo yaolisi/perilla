@@ -15,6 +15,8 @@ import {
   Database,
   FileJson,
   Zap,
+  Eye,
+  EyeOff,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
@@ -30,6 +32,10 @@ import {
   getSystemConfig, 
   updateSystemConfig,
   reloadEngine as reloadEngineApi,
+  getApiKey,
+  setApiKey,
+  getTenantId,
+  setTenantId,
   type SystemConfig 
 } from '@/services/api'
 
@@ -51,8 +57,12 @@ const isSaving = ref(false)
 const saveSuccess = ref(false)
 const saveError = ref('')
 const isEditing = ref(false)
+const isSecurityContextEditing = ref(false)
 const isInitialLoad = ref(true)
 const engineStatus = ref(t('settings.monitor.status_idle').toUpperCase())
+const apiKeyInput = ref('')
+const tenantIdInput = ref('default')
+const showApiKey = ref(false)
 const riskHints = computed(() => {
   const hints: string[] = []
   if (chaosFailRateWarn.value < 0.01) hints.push('Fail Rate Warn is very strict (<0.01); may trigger frequent alerts.')
@@ -97,7 +107,13 @@ const fetchStatus = async (syncSettings = false) => {
   }
 }
 
+const loadSecurityContext = () => {
+  apiKeyInput.value = getApiKey() || ''
+  tenantIdInput.value = getTenantId() || 'default'
+}
+
 onMounted(() => {
+  loadSecurityContext()
   startPolling()
 })
 
@@ -150,6 +166,25 @@ const reloadEngine = async () => {
   } finally {
     engineStatus.value = t('settings.monitor.status_idle').toUpperCase()
   }
+}
+
+const saveSecurityContext = () => {
+  setApiKey(apiKeyInput.value)
+  setTenantId(tenantIdInput.value || 'default')
+  isSecurityContextEditing.value = false
+  saveSuccess.value = true
+  setTimeout(() => {
+    saveSuccess.value = false
+  }, 2000)
+}
+
+const clearSecurityContext = () => {
+  const ok = window.confirm('Clear API Key and Tenant from this browser?')
+  if (!ok) return
+  setApiKey(null)
+  setTenantId(null)
+  loadSecurityContext()
+  isSecurityContextEditing.value = false
 }
 </script>
 
@@ -395,6 +430,59 @@ const reloadEngine = async () => {
                   <li v-for="(h, idx) in riskHints" :key="idx">{{ h }}</li>
                 </ul>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="space-y-4">
+          <h2 class="text-xl font-bold">Security Context</h2>
+          <div class="p-8 rounded-2xl bg-card border border-border shadow-sm space-y-6">
+            <div class="space-y-2">
+              <label for="security-api-key" class="text-sm font-medium text-foreground">Admin API Key</label>
+              <div class="flex items-center gap-2">
+                <Input
+                  id="security-api-key"
+                  :type="showApiKey ? 'text' : 'password'"
+                  autocomplete="off"
+                  :model-value="apiKeyInput"
+                  class="h-12 bg-background border-border text-foreground rounded-xl px-4"
+                  placeholder="X-Api-Key value used for protected APIs"
+                  @update:modelValue="(v: any) => { apiKeyInput = String(v || ''); isSecurityContextEditing = true }"
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class="h-12 px-3"
+                  :title="showApiKey ? 'Hide API Key' : 'Show API Key'"
+                  @click="showApiKey = !showApiKey"
+                >
+                  <component :is="showApiKey ? EyeOff : Eye" class="w-4 h-4" />
+                </Button>
+              </div>
+              <p class="text-xs text-muted-foreground">Stored in browser localStorage as <code>ai_platform_api_key</code>.</p>
+            </div>
+            <div class="space-y-2">
+              <label for="security-tenant-id" class="text-sm font-medium text-foreground">Tenant ID</label>
+              <Input
+                id="security-tenant-id"
+                type="text"
+                :model-value="tenantIdInput"
+                class="h-12 bg-background border-border text-foreground rounded-xl px-4"
+                placeholder="default"
+                @update:modelValue="(v: any) => { tenantIdInput = String(v || 'default'); isSecurityContextEditing = true }"
+              />
+              <p class="text-xs text-muted-foreground">Used as <code>X-Tenant-Id</code> request header.</p>
+            </div>
+            <div class="flex items-center gap-3">
+              <Button variant="outline" size="sm" :disabled="!isSecurityContextEditing" @click="saveSecurityContext">
+                Save Security Context
+              </Button>
+              <Button variant="ghost" size="sm" @click="loadSecurityContext">
+                Reload
+              </Button>
+              <Button variant="destructive" size="sm" @click="clearSecurityContext">
+                Clear Security Context
+              </Button>
             </div>
           </div>
         </section>

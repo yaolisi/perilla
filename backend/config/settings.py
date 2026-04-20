@@ -65,16 +65,22 @@ class Settings(BaseSettings):
     # 文件读取工具：允许的绝对路径根目录（逗号分隔）。在此列表下的绝对路径可被 file.read 读取。
     # 例如："/" 表示允许本机任意目录；"/Users/tony,/data" 表示仅允许这两棵目录。
     # 为空时默认仅允许当前用户主目录。
-    file_read_allowed_roots: str = "/"
+    file_read_allowed_roots: str = "~"
 
     # -------------------------
     # Tool permissions (Local-first & Privacy-first)
     # -------------------------
     # HTTP tools: default disabled; enable explicitly for private deployments.
-    tool_net_http_enabled: bool = True
+    tool_net_http_enabled: bool = False
     # Optional allowlist (comma-separated). Supports exact host match and suffix match via "*.example.com".
     # Empty means "no host restrictions" when tool_net_http_enabled is True.
     tool_net_http_allowed_hosts: str = ""
+    # 是否允许访问私网/环回/链路本地目标（默认禁止，防 SSRF）
+    tool_net_http_allow_private_targets: bool = False
+    # Agent 创建/更新时是否允许高危内置技能（python/shell/写文件等）
+    agent_allow_dangerous_skills: bool = False
+    # Agent 文件上传并发上限（run/with-files）
+    agent_upload_max_concurrency: int = 4
 
     # Web search (DuckDuckGo). Default below; optional override via env TOOL_NET_WEB_ENABLED (no .env required).
     tool_net_web_enabled: bool = True

@@ -251,20 +251,25 @@ flowchart TD
 - Node.js 18+
 - Conda
 
-#### 1. 创建并激活 Conda 环境
+#### 1. 创建 Conda 环境
+
+根目录 `run-backend.sh` 使用 `conda run -n ai-inference-platform` 启动后端，**环境名须为 `ai-inference-platform`**。若你使用其他名称，需自行改脚本，否则启动时仍指向该环境名。
 
 ```bash
 conda create -n ai-inference-platform python=3.11 -y
-conda activate ai-inference-platform
 ```
 
 #### 2. 安装后端依赖
 
+推荐在**未**执行 `conda activate` 的情况下，用与启动脚本相同的方式安装依赖（避免 “未配置 conda activate” 类问题）：
+
 ```bash
 cd backend
-pip install -r requirements.txt
+conda run -n ai-inference-platform pip install -r requirements.txt
 cd ..
 ```
+
+若你已在当前 shell 中 `conda activate ai-inference-platform`，也可直接 `pip install -r requirements.txt`。若 `conda activate` 报错，请先执行 `conda init zsh`（或 `bash`）并重新打开终端，或一直使用上面的 `conda run` 方式。
 
 #### 3. 安装前端依赖
 

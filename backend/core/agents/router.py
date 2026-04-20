@@ -7,6 +7,18 @@ from core.agents.unified_agent import UnifiedModelAgent
 from core.agents.base import ModelAgent
 from core.models.registry import get_model_registry
 
+SENSITIVE_METADATA_KEYS = {"api_key", "token", "secret", "password"}
+
+
+def _sanitize_metadata(metadata: Optional[dict]) -> dict:
+    out = {}
+    for k, v in (metadata or {}).items():
+        if str(k).lower() in SENSITIVE_METADATA_KEYS:
+            out[k] = "***"
+        else:
+            out[k] = v
+    return out
+
 class ModelRouter:
     """
     模型路由器 (重构后)
@@ -49,7 +61,7 @@ class ModelRouter:
                 "format": d.format,
                 "source": d.source,
                 "base_url": d.base_url,
-                "metadata": d.metadata,
+                "metadata": _sanitize_metadata(d.metadata),
                 "context_length": d.context_length
             })
             
