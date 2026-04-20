@@ -1,0 +1,59 @@
+name: openvitamin-docker
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: openvitamin-backend
+    restart: unless-stopped
+    environment:
+      DEBUG: "${DEBUG:-true}"
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost:5173}"
+      CSRF_ENABLED: "${CSRF_ENABLED:-true}"
+      CSRF_COOKIE_SECURE: "${CSRF_COOKIE_SECURE:-false}"
+      RBAC_ENABLED: "${RBAC_ENABLED:-false}"
+      RBAC_ENFORCEMENT: "${RBAC_ENFORCEMENT:-false}"
+      TENANT_ENFORCEMENT_ENABLED: "${TENANT_ENFORCEMENT_ENABLED:-false}"
+      TENANT_API_KEY_BINDING_ENABLED: "${TENANT_API_KEY_BINDING_ENABLED:-false}"
+      LOCAL_MODEL_DIRECTORY: "/app/backend/data/models/"
+      FILE_READ_ALLOWED_ROOTS: "/app/backend/data,/tmp"
+    volumes:
+      - backend_data:/app/backend/data
+      - backend_logs:/app/backend/logs
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - openvitamin-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        VITE_API_URL: "${VITE_API_URL:-http://localhost:5173}"
+    container_name: openvitamin-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    networks:
+      - openvitamin-net
+
+networks:
+  openvitamin-net:
+    driver: bridge
+
+volumes:
+  backend_data:
+  backend_logs:

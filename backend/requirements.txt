@@ -1,0 +1,2 @@
+# 默认入口仍指向当前主开发平台：macOS / Apple Silicon
+-r requirements/macos.txt

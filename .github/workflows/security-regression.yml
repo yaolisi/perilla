@@ -1,0 +1,136 @@
+name: security-regression
+
+on:
+  workflow_dispatch:
+    inputs:
+      slow_threshold_seconds:
+        description: "Override slow threshold in seconds (optional)"
+        required: false
+        type: string
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "tutorial*.md"
+      - "*.md"
+    paths:
+      - "backend/core/security/**"
+      - "backend/middleware/api_key_scope.py"
+      - "backend/middleware/audit_log.py"
+      - "backend/middleware/csrf_protection.py"
+      - "backend/middleware/rate_limit.py"
+      - "backend/middleware/rbac_context.py"
+      - "backend/middleware/rbac_enforcement.py"
+      - "backend/middleware/request_trace.py"
+      - "backend/config/settings.py"
+      - "backend/tests/test_enhanced_error_paths.py"
+      - "backend/tests/test_enhanced_middlewares.py"
+      - "backend/tests/test_enhanced_rbac_audit.py"
+      - "backend/tests/test_frontend_xss_baseline.py"
+      - "backend/tests/test_production_readiness_baseline.py"
+      - "backend/tests/test_runtime_fault_injection.py"
+      - "frontend/**"
+      - "scripts/acceptance/**"
+      - ".github/workflows/security-regression.yml"
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - "docs/**"
+      - "tutorial*.md"
+      - "*.md"
+    paths:
+      - "backend/core/security/**"
+      - "backend/middleware/api_key_scope.py"
+      - "backend/middleware/audit_log.py"
+      - "backend/middleware/csrf_protection.py"
+      - "backend/middleware/rate_limit.py"
+      - "backend/middleware/rbac_context.py"
+      - "backend/middleware/rbac_enforcement.py"
+      - "backend/middleware/request_trace.py"
+      - "backend/config/settings.py"
+      - "backend/tests/test_enhanced_error_paths.py"
+      - "backend/tests/test_enhanced_middlewares.py"
+      - "backend/tests/test_enhanced_rbac_audit.py"
+      - "backend/tests/test_frontend_xss_baseline.py"
+      - "backend/tests/test_production_readiness_baseline.py"
+      - "backend/tests/test_runtime_fault_injection.py"
+      - "frontend/**"
+      - "scripts/acceptance/**"
+      - ".github/workflows/security-regression.yml"
+
+concurrency:
+  group: security-regression-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Resolve slow threshold
+        env:
+          WORKFLOW_INPUT_SLOW_THRESHOLD: ${{ github.event.inputs.slow_threshold_seconds }}
+        run: |
+          threshold="${WORKFLOW_INPUT_SLOW_THRESHOLD:-}"
+          if [[ -n "$threshold" ]]; then
+            if ! [[ "$threshold" =~ ^[1-9][0-9]*$ ]]; then
+              {
+                echo "## Invalid workflow input"
+                echo "- input: \`slow_threshold_seconds=${threshold}\`"
+                echo "- reason: must be a positive integer"
+                echo "- examples: \`10\`, \`20\`, \`30\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "Invalid slow_threshold_seconds: '$threshold'. It must be a positive integer." >&2
+              exit 1
+            fi
+            echo "SECURITY_SLOW_THRESHOLD_SECONDS=$threshold" >> "$GITHUB_ENV"
+          elif [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            echo "SECURITY_SLOW_THRESHOLD_SECONDS=20" >> "$GITHUB_ENV"
+          else
+            echo "SECURITY_SLOW_THRESHOLD_SECONDS=30" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run security regression suite
+        env:
+          SECURITY_SUMMARY_PATH: test-reports/security-regression-summary.md
+        run: |
+          mkdir -p test-reports
+          chmod +x scripts/acceptance/run_batch1_rbac.sh
+          chmod +x scripts/acceptance/run_batch2_audit.sh
+          chmod +x scripts/acceptance/run_batch3_trace.sh
+          chmod +x scripts/acceptance/run_batch5_web_security.sh
+          chmod +x scripts/acceptance/run_security_regression.sh
+          ./scripts/acceptance/run_security_regression.sh
+
+      - name: Publish security summary to job summary
+        if: always()
+        run: |
+          if [[ -f test-reports/security-regression-summary.md ]]; then
+            cat test-reports/security-regression-summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Security Regression Summary" >> "$GITHUB_STEP_SUMMARY"
+            echo "No summary file found at test-reports/security-regression-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload security regression summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-regression-summary-${{ github.run_number }}
+          path: test-reports/security-regression-summary.md
+          if-no-files-found: warn
