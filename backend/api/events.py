@@ -9,10 +9,12 @@ from log import logger
 
 from execution_kernel.persistence.db import Database
 from execution_kernel.events.event_store import EventStore
+from execution_kernel.events.event_store import ExecutionEventDB
 from execution_kernel.events.event_types import ExecutionEventType
 from execution_kernel.events.event_model import ExecutionEvent
 from execution_kernel.replay.replay_engine import ReplayEngine
 from execution_kernel.analytics.metrics import MetricsCalculator
+from sqlalchemy import select, distinct
 
 router = APIRouter(prefix="/api/events", tags=["Events & Replay"])
 
@@ -134,6 +136,41 @@ async def get_instance_events(
             )
     except Exception as e:
         logger.error(f"Failed to get events for instance {instance_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/agent-session/{session_id}")
+async def get_agent_session_events(
+    session_id: str,
+    limit_instances: int = Query(20, ge=1, le=100, description="最多返回的实例数"),
+):
+    """
+    按 Agent Session 聚合查询执行事件。
+
+    通过 GraphStarted 事件 payload.initial_context.session_id 反查相关 instance。
+    """
+    try:
+        db = _get_db()
+        async with db.async_session() as session:
+            rows = await session.execute(
+                select(distinct(ExecutionEventDB.instance_id))
+                .where(ExecutionEventDB.payload_json.like(f"%\"session_id\": \"{session_id}\"%"))
+                .order_by(ExecutionEventDB.instance_id.desc())
+                .limit(limit_instances)
+            )
+            instance_ids = [r[0] for r in rows.fetchall() if r and r[0]]
+            store = EventStore(session)
+            out: Dict[str, Any] = {}
+            for instance_id in instance_ids:
+                events = await store.get_events(instance_id=instance_id, start_sequence=1, end_sequence=None)
+                out[instance_id] = [_event_to_response(e).model_dump() for e in events]
+            return {
+                "session_id": session_id,
+                "instance_count": len(instance_ids),
+                "instances": out,
+            }
+    except Exception as e:
+        logger.error(f"Failed to get events by session {session_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
