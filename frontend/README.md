@@ -1,5 +1,17 @@
-# Vue 3 + TypeScript + Vite
+# Frontend Development Guide
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+## Commands
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+- `npm run dev`: start development server (`vite.config.dev.ts`)
+- `npm run build`: production build (`vite.config.prod.ts`)
+- `npm run preview`: preview production build
+- `npm run test:unit`: run Vitest unit tests
+- `npm run test:unit:watch`: run Vitest in watch mode
+- `npm run test:e2e`: run Cypress e2e tests
+- `npm run test:e2e:open`: open Cypress interactive runner
+
+## Documentation
+
+- [Component docs](../docs/frontend/COMPONENTS.md)
+- [Frontend API docs](../docs/frontend/API.md)
+- [Developer usage guide](../docs/frontend/USAGE.md)
