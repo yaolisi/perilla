@@ -37,6 +37,12 @@ from core.agent_runtime.v2.models import (
 )
 from core.execution.adapters.plan_compiler import PlanCompiler
 from core.agent_runtime.v2.planner import Planner
+from core.agent_runtime.v2.planner_utils import (
+    keyword_matches,
+    match_configured_intent_rules,
+    extract_shell_command,
+    extract_path_from_text,
+)
 from core.types import Message
 
 try:
@@ -77,8 +83,8 @@ def _make_session() -> AgentSession:
 
 
 def test_keyword_match_boundary_does_not_confuse_tree_with_test():
-    assert Planner._keyword_matches("please show tree .", "test") is False
-    assert Planner._keyword_matches("please run test now", "test") is True
+    assert keyword_matches("please show tree .", "test") is False
+    assert keyword_matches("please run test now", "test") is True
 
 
 def test_intent_rules_boundary_matches_tree_rule():
@@ -89,7 +95,7 @@ def test_intent_rules_boundary_matches_tree_rule():
             {"keywords": ["tree", "目录树"], "skills": ["builtin_project.tree"]},
         ]
     }
-    matched = Planner._match_configured_intent_rules(
+    matched = match_configured_intent_rules(
         user_input="帮我看下 tree .",
         user_lower="帮我看下 tree .",
         available_skills=available_skills,
@@ -99,10 +105,10 @@ def test_intent_rules_boundary_matches_tree_rule():
 
 
 def test_extract_shell_command_and_path_stable():
-    cmd = Planner._extract_shell_command("运行测试: cd backend && pytest -q")
+    cmd = extract_shell_command("运行测试: cd backend && pytest -q")
     assert cmd == "cd backend && pytest -q"
 
-    path = Planner._extract_path_from_text("请展示目录树 path: ./backend/tests")
+    path = extract_path_from_text("请展示目录树 path: ./backend/tests")
     assert path == "./backend/tests"
 
 def test_build_skill_inputs_workspace_prefers_user_explicit_path():
