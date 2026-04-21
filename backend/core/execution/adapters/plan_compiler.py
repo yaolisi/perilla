@@ -226,6 +226,35 @@ class PlanCompiler:
         
         return edges
 
+    def _extract_dependencies(self, step: Step, previous_step_ids: List[str]) -> List[str]:
+        """
+        从步骤输入中提取依赖
+
+        检查：
+        1. __from_previous_step 标记
+        2. ${nodes.step_id.output.xxx} 模板引用
+        """
+        deps = []
+        inputs_str = str(step.inputs)
+
+        if "__from_previous_step" in inputs_str and previous_step_ids:
+            deps.append(previous_step_ids[-1])
+
+        import re
+        pattern = r'\$\{nodes\.([^.]+)\.output'
+        matches = re.findall(pattern, inputs_str)
+        for step_id in matches:
+            if step_id in previous_step_ids and step_id not in deps:
+                deps.append(step_id)
+
+        return deps
+
+    def _get_max_retries(self, step: Step) -> int:
+        """获取步骤的最大重试次数"""
+        if step.on_failure_replan:
+            return 1
+        return 0
+
 
 class AgentGraphCompiler(PlanCompiler):
     """
@@ -238,41 +267,6 @@ class AgentGraphCompiler(PlanCompiler):
         graph.config["agent_graph_parallel"] = bool((plan.context or {}).get("agent_graph_parallel", False))
         return graph
     
-    def _extract_dependencies(self, step: Step, previous_step_ids: List[str]) -> List[str]:
-        """
-        从步骤输入中提取依赖
-        
-        检查：
-        1. __from_previous_step 标记
-        2. ${nodes.step_id.output.xxx} 模板引用
-        """
-        deps = []
-        inputs_str = str(step.inputs)
-        
-        # 检查 __from_previous_step
-        if "__from_previous_step" in inputs_str:
-            # 依赖最近的步骤
-            if previous_step_ids:
-                deps.append(previous_step_ids[-1])
-        
-        # 检查模板引用 ${nodes.step_id.output.xxx}
-        import re
-        pattern = r'\$\{nodes\.([^.]+)\.output'
-        matches = re.findall(pattern, inputs_str)
-        for step_id in matches:
-            if step_id in previous_step_ids and step_id not in deps:
-                deps.append(step_id)
-        
-        return deps
-    
-    def _get_max_retries(self, step: Step) -> int:
-        """获取步骤的最大重试次数"""
-        # 有 on_failure_replan 配置的步骤允许重试
-        if step.on_failure_replan:
-            return 1
-        return 0
-
-
 def compile_plan(plan: Plan) -> GraphDefinition:
     """便捷函数：编译 Plan"""
     compiler = PlanCompiler()
