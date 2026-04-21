@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI):
             ImageGenerationWarmupORM,
         )
         from core.data.models.audit import AuditLogORM
+        from core.data.models.workflow import WorkflowExecutionQueueORM
         from sqlalchemy import text
         engine = get_engine()
         Base.metadata.create_all(engine)
@@ -188,6 +189,36 @@ async def lifespan(app: FastAPI):
             logger.info("[Startup] No stale image generation jobs")
     except Exception as e:
         logger.warning(f"[Startup] Failed to recover stale image generation jobs: {e}")
+
+    # 启动兜底：回收过期租约的 workflow queue 项，避免异常退出后卡在 leased
+    try:
+        from core.data.base import db_session
+        from core.data.models.workflow import WorkflowExecutionQueueORM
+
+        now = datetime.now(timezone.utc)
+        with db_session(retry_count=3, retry_delay=0.1) as db:
+            stmt = (
+                WorkflowExecutionQueueORM.__table__.update()
+                .where(
+                    WorkflowExecutionQueueORM.status == "leased",
+                    WorkflowExecutionQueueORM.lease_expire_at.isnot(None),
+                    WorkflowExecutionQueueORM.lease_expire_at < now,
+                )
+                .values(
+                    status="queued",
+                    lease_owner=None,
+                    lease_expire_at=None,
+                    updated_at=now,
+                )
+            )
+            result = db.execute(stmt)
+            recovered_leases = int(getattr(result, "rowcount", 0) or 0)
+        if recovered_leases > 0:
+            logger.warning(f"[Startup] Recovered {recovered_leases} expired workflow queue lease(s)")
+        else:
+            logger.info("[Startup] No expired workflow queue leases")
+    except Exception as e:
+        logger.warning(f"[Startup] Failed to recover workflow queue leases: {e}")
 
     # model.json 定时全量快照（阶段 2）：若启用则后台循环在配置的 UTC 时间执行
     if getattr(settings, "model_json_backup_daily_enabled", False):

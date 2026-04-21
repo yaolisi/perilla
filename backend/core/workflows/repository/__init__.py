@@ -7,11 +7,15 @@ Workflow Repository Layer
 from .workflow_repository import WorkflowRepository
 from .workflow_version_repository import WorkflowVersionRepository
 from .workflow_execution_repository import WorkflowExecutionRepository
+from .workflow_execution_queue_repository import WorkflowExecutionQueueRepository
+from .workflow_approval_task_repository import WorkflowApprovalTaskRepository
 from .workflow_governance_audit_repository import WorkflowGovernanceAuditRepository
 
 __all__ = [
     "WorkflowRepository",
     "WorkflowVersionRepository",
     "WorkflowExecutionRepository",
+    "WorkflowExecutionQueueRepository",
+    "WorkflowApprovalTaskRepository",
     "WorkflowGovernanceAuditRepository",
 ]

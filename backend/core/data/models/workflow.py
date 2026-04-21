@@ -108,3 +108,38 @@ class WorkflowGovernanceAuditORM(Base):
     old_config = Column(JSON, nullable=False, default=dict)
     new_config = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime, nullable=False, default=func.now(), index=True)
+
+
+class WorkflowExecutionQueueORM(Base):
+    __tablename__ = "workflow_execution_queue"
+
+    id = Column(String(36), primary_key=True)
+    execution_id = Column(String(36), nullable=False, unique=True, index=True)
+    workflow_id = Column(String(36), nullable=False, index=True)
+    version_id = Column(String(36), nullable=False, index=True)
+    priority = Column(Integer, nullable=False, default=0, index=True)
+    queue_order = Column(Integer, nullable=False, default=0, index=True)
+    status = Column(String(32), nullable=False, default="queued", index=True)  # queued|leased|cancelled|done
+    lease_owner = Column(String(128), nullable=True, index=True)
+    lease_expire_at = Column(DateTime, nullable=True, index=True)
+    queued_at = Column(DateTime, nullable=False, default=func.now(), index=True)
+    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+class WorkflowApprovalTaskORM(Base):
+    __tablename__ = "workflow_approval_tasks"
+
+    id = Column(String(36), primary_key=True)
+    execution_id = Column(String(36), nullable=False, index=True)
+    workflow_id = Column(String(36), nullable=False, index=True)
+    node_id = Column(String(128), nullable=False, index=True)
+    title = Column(String(256), nullable=True)
+    reason = Column(Text, nullable=True)
+    payload = Column(JSON, nullable=False, default=dict)
+    status = Column(String(32), nullable=False, default="pending", index=True)  # pending|approved|rejected|expired
+    requested_by = Column(String(128), nullable=True)
+    decided_by = Column(String(128), nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=func.now(), index=True)
+    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())

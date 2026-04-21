@@ -287,6 +287,25 @@ class WorkflowExecutionRepository:
         self._run_write_with_retry("update_output", _write)
         return self.get_by_id(execution_id)
 
+    def update_global_context(self, execution_id: str, global_context: Dict[str, Any]) -> Optional[WorkflowExecution]:
+        existing = self.get_by_id(execution_id)
+        if not existing:
+            return None
+
+        def _write():
+            row = (
+                self.db.query(WorkflowExecutionORM)
+                .filter(WorkflowExecutionORM.execution_id == execution_id)
+                .first()
+            )
+            if not row:
+                return
+            row.global_context = global_context or {}
+            self.db.commit()
+
+        self._run_write_with_retry("update_global_context", _write)
+        return self.get_by_id(execution_id)
+
     def update_queue_metrics(
         self,
         execution_id: str,

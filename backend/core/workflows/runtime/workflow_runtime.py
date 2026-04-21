@@ -22,6 +22,7 @@ from core.workflows.models import (
     WorkflowVersionState
 )
 from core.workflows.repository import WorkflowExecutionRepository, WorkflowVersionRepository
+from core.workflows.repository import WorkflowApprovalTaskRepository
 from core.workflows.governance import ExecutionManager, ExecutionRequest
 from core.workflows.runtime.graph_runtime_adapter import GraphRuntimeAdapter
 from core.inference.client.inference_client import InferenceClient
@@ -88,6 +89,7 @@ class WorkflowRuntime:
         self.db = db
         self.execution_repository = WorkflowExecutionRepository(db)
         self.version_repository = WorkflowVersionRepository(db)
+        self.approval_repository = WorkflowApprovalTaskRepository(db)
         self.execution_manager = execution_manager
         
         # 初始化 execution_kernel 组件
@@ -508,6 +510,14 @@ class WorkflowRuntime:
                 _ensure_execution_not_cancelled(context)
                 return agent_output
 
+            if workflow_node_type == "approval":
+                global_ctx = getattr(context, "global_data", {}) or {}
+                node_id = str(getattr(node_def, "id", "") or "")
+                decisions = global_ctx.get("approval_decisions") or {}
+                if str(decisions.get(node_id) or "").lower() == "approved":
+                    return {"type": "approval_result", "status": "approved", "node_id": node_id}
+                raise RuntimeError(f"WORKFLOW_APPROVAL_NOT_GRANTED: node_id={node_id}")
+
             tool_name = cfg.get("tool_name") or cfg.get("tool_id")
             if not tool_name:
                 return {"error": "Tool node missing tool_name/tool_id"}
@@ -663,6 +673,18 @@ class WorkflowRuntime:
             compatibility_errors = GraphRuntimeAdapter.validate_compatibility(version)
             if compatibility_errors:
                 raise ValueError(f"Compatibility check failed: {'; '.join(compatibility_errors)}")
+
+            # 2.5 审批门控：若存在 approval 节点且未审批，则创建审批任务并暂停执行
+            if self._require_approval_before_start(execution, version):
+                paused = self.execution_repository.update_state(
+                    execution.execution_id,
+                    WorkflowExecutionState.PAUSED,
+                    error_message="Awaiting approval",
+                    error_details={"code": "WORKFLOW_APPROVAL_PENDING"},
+                )
+                if on_state_change and paused:
+                    on_state_change(paused)
+                return paused or execution
             
             # 3. 请求执行治理
             request = ExecutionRequest(
@@ -1062,6 +1084,46 @@ class WorkflowRuntime:
         """估计 Token 消耗"""
         # 简化估计：每个节点约 1000 tokens
         return len(version.dag.nodes) * 1000
+
+    def _require_approval_before_start(self, execution: WorkflowExecution, version: WorkflowVersion) -> bool:
+        global_ctx = dict(execution.global_context or {})
+        decisions = global_ctx.get("approval_decisions") or {}
+        if not isinstance(decisions, dict):
+            decisions = {}
+        requested_by = str(execution.triggered_by or "system")
+
+        pending_created = False
+        for node in version.dag.nodes:
+            cfg = node.config or {}
+            node_type = str(cfg.get("workflow_node_type") or node.type or "").strip().lower()
+            if node_type != "approval":
+                continue
+            if str(decisions.get(node.id) or "").lower() == "approved":
+                continue
+
+            existing = self.approval_repository.get_pending_by_execution_node(execution.execution_id, node.id)
+            if not existing:
+                self.approval_repository.create_task(
+                    execution_id=execution.execution_id,
+                    workflow_id=execution.workflow_id,
+                    node_id=node.id,
+                    title=str(cfg.get("title") or f"Approve node {node.id}")[:256],
+                    reason=str(cfg.get("reason") or "Workflow requires approval before execution"),
+                    payload={"node_config": cfg},
+                    requested_by=requested_by,
+                    expires_in_seconds=cfg.get("expires_in_seconds"),
+                )
+                pending_created = True
+
+        has_pending = len(self.approval_repository.list_pending_by_execution(execution.execution_id)) > 0
+        if pending_created or has_pending:
+            # 只要存在未 approved 的审批节点，就暂停
+            for node in version.dag.nodes:
+                cfg = node.config or {}
+                node_type = str(cfg.get("workflow_node_type") or node.type or "").strip().lower()
+                if node_type == "approval" and str(decisions.get(node.id) or "").lower() != "approved":
+                    return True
+        return False
     
     def _count_tokens(self, result: Dict[str, Any]) -> int:
         """计算实际 Token 消耗"""

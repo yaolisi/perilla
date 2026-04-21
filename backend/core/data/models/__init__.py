@@ -15,9 +15,12 @@ from core.data.models.workflow import (
     WorkflowVersionORM,
     WorkflowExecutionORM,
     WorkflowGovernanceAuditORM,
+    WorkflowExecutionQueueORM,
+    WorkflowApprovalTaskORM,
 )
 from core.data.models.image_generation import ImageGenerationJobORM, ImageGenerationWarmupORM
 from core.data.models.audit import AuditLogORM
+from core.data.models.idempotency import IdempotencyRecordORM
 
 __all__ = [
     "SystemSetting",
@@ -36,7 +39,10 @@ __all__ = [
     "WorkflowVersionORM",
     "WorkflowExecutionORM",
     "WorkflowGovernanceAuditORM",
+    "WorkflowExecutionQueueORM",
+    "WorkflowApprovalTaskORM",
     "ImageGenerationJobORM",
     "ImageGenerationWarmupORM",
     "AuditLogORM",
+    "IdempotencyRecordORM",
 ]

@@ -4,9 +4,10 @@ Workflow API Endpoints
 Workflow Control Plane 的 REST API 接口。
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 import asyncio
 import json
+import hashlib
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks, Request, Response
 from fastapi.responses import StreamingResponse
@@ -34,7 +35,8 @@ from core.workflows.models import (
 from core.workflows.services import (
     WorkflowService,
     WorkflowVersionService,
-    WorkflowExecutionService
+    WorkflowExecutionService,
+    WorkflowApprovalService,
 )
 from core.workflows.repository import WorkflowGovernanceAuditRepository
 from core.workflows.governance import get_execution_manager, QuotaConfig
@@ -48,6 +50,7 @@ from core.workflows.runtime.graph_runtime_adapter import GraphRuntimeAdapter
 from config.settings import settings
 from middleware.user_context import get_current_user
 from core.data.base import get_db, SessionLocal
+from core.idempotency.service import IdempotencyService
 from log import logger
 from execution_kernel.persistence.db import Database
 from execution_kernel.events.event_store import EventStore
@@ -133,6 +136,28 @@ class WorkflowExecutionStatusResponse(BaseModel):
     node_timeline: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class WorkflowApprovalTaskResponse(BaseModel):
+    id: str
+    execution_id: str
+    workflow_id: str
+    node_id: str
+    title: Optional[str] = None
+    reason: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    status: str
+    requested_by: Optional[str] = None
+    decided_by: Optional[str] = None
+    decided_at: Optional[str] = None
+    created_at: Optional[str] = None
+    execution_state_after_decision: Optional[str] = None
+
+
+class WorkflowApprovalListResponse(BaseModel):
+    execution_id: str
+    execution_state: Optional[str] = None
+    items: List[WorkflowApprovalTaskResponse] = Field(default_factory=list)
+
+
 class WorkflowGovernanceConfigRequest(BaseModel):
     max_queue_size: Optional[int] = Field(default=None, ge=1, le=10000)
     backpressure_strategy: Optional[str] = Field(default=None, description="wait or reject")
@@ -155,6 +180,29 @@ def _extract_idempotency_key(http_request: Request) -> Optional[str]:
         return None
     key = key.strip()
     return key[:256] if key else None
+
+
+def _stable_request_hash(payload: Dict[str, Any]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _approval_task_to_response(row, execution_state_after_decision: Optional[str] = None) -> WorkflowApprovalTaskResponse:
+    return WorkflowApprovalTaskResponse(
+        id=row.id,
+        execution_id=row.execution_id,
+        workflow_id=row.workflow_id,
+        node_id=row.node_id,
+        title=row.title,
+        reason=row.reason,
+        payload=row.payload or {},
+        status=row.status,
+        requested_by=row.requested_by,
+        decided_by=row.decided_by,
+        decided_at=row.decided_at.isoformat() if row.decided_at else None,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+        execution_state_after_decision=execution_state_after_decision,
+    )
 
 
 # ==================== Workflow Endpoints ====================
@@ -660,30 +708,50 @@ async def create_execution(
     
     # 幂等键：相同 key 的重复提交直接返回已有 execution（避免双击/重试创建多次）
     idem_key = _extract_idempotency_key(http_request) if http_request else None
+    idem_service = IdempotencyService(db)
+    idem_record = None
 
     # 创建执行
     execution_service = WorkflowExecutionService(db)
     if idem_key:
-        recent = execution_service.list_executions(
-            workflow_id=workflow_id,
-            limit=50,
-            offset=0,
+        req_hash = _stable_request_hash(
+            {
+                "workflow_id": workflow_id,
+                "version_id": request.version_id,
+                "input_data": request.input_data,
+                "global_context": request.global_context,
+                "trigger_type": request.trigger_type,
+            }
         )
-        for ex in recent:
-            gctx = ex.global_context or {}
-            if (
-                str(gctx.get("__idempotency_key") or "").strip() == idem_key
-                and str(ex.triggered_by or "").strip() == str(current_user or "").strip()
-            ):
-                logger.info(
-                    f"[WorkflowAPI] Idempotent create hit: workflow_id={workflow_id} "
-                    f"execution_id={ex.execution_id}"
-                )
-                ex = await _hydrate_execution_live_from_kernel(ex)
-                node_timeline_override = None
-                if ex.graph_instance_id:
-                    node_timeline_override = await _node_timeline_from_event_store(ex.graph_instance_id)
-                return _execution_to_response(ex, node_timeline_override=node_timeline_override)
+        claim = idem_service.claim(
+            scope="workflow_execution_create",
+            owner_id=str(current_user or "default"),
+            key=idem_key,
+            request_hash=req_hash,
+        )
+        if claim.conflict:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Idempotency-Key already used with different request payload",
+            )
+        idem_record = claim.record
+        if not claim.is_new:
+            if claim.record.response_ref:
+                ex = execution_service.get_execution(claim.record.response_ref)
+                if ex:
+                    logger.info(
+                        f"[WorkflowAPI] Idempotent create hit: workflow_id={workflow_id} "
+                        f"execution_id={ex.execution_id}"
+                    )
+                    ex = await _hydrate_execution_live_from_kernel(ex)
+                    node_timeline_override = None
+                    if ex.graph_instance_id:
+                        node_timeline_override = await _node_timeline_from_event_store(ex.graph_instance_id)
+                    return _execution_to_response(ex, node_timeline_override=node_timeline_override)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Idempotent request is still processing; retry later",
+            )
     
     try:
         global_ctx = dict(request.global_context or {})
@@ -697,7 +765,11 @@ async def create_execution(
             trigger_type=request.trigger_type,
         )
         execution = execution_service.create_execution(create_req, current_user)
+        if idem_record:
+            idem_service.mark_succeeded(record_id=idem_record.id, response_ref=execution.execution_id)
     except ValueError as e:
+        if idem_record:
+            idem_service.mark_failed(record_id=idem_record.id, error_message=str(e))
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     
     effective_wait = wait
@@ -1181,6 +1253,119 @@ async def reconcile_execution(
     if execution.graph_instance_id:
         node_timeline_override = await _node_timeline_from_event_store(execution.graph_instance_id)
     return _execution_to_response(execution, node_timeline_override=node_timeline_override)
+
+
+@router.get(
+    "/{workflow_id}/executions/{execution_id}/approvals",
+    response_model=Union[WorkflowApprovalListResponse, List[WorkflowApprovalTaskResponse]],
+)
+async def list_execution_approvals(
+    http_request: Request,
+    workflow_id: str,
+    execution_id: str,
+    legacy: bool = Query(default=False, description="Return legacy array response format"),
+    response: Response = None,
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
+    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    workflow_service = WorkflowService(db)
+    workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
+    if not workflow:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    _ensure_workflow_tenant(workflow, tenant_id)
+    if not workflow.has_permission(current_user, "read"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    execution = WorkflowExecutionService(db).get_execution(execution_id)
+    if not execution or execution.workflow_id != workflow_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution not found")
+    service = WorkflowApprovalService(db)
+    items = [_approval_task_to_response(x) for x in service.list_for_execution(execution_id)]
+    if legacy:
+        if response is not None:
+            response.headers["X-API-Deprecated"] = str(
+                getattr(settings, "workflow_approvals_legacy_deprecated_header", "approvals-legacy-format")
+            )
+            response.headers["Sunset"] = str(
+                getattr(settings, "workflow_approvals_legacy_sunset", "Wed, 31 Dec 2026 23:59:59 GMT")
+            )
+        return items
+    return WorkflowApprovalListResponse(
+        execution_id=execution_id,
+        execution_state=execution.state.value if execution else None,
+        items=items,
+    )
+
+
+@router.post(
+    "/{workflow_id}/executions/{execution_id}/approvals/{task_id}/approve",
+    response_model=WorkflowApprovalTaskResponse,
+)
+async def approve_execution_approval(
+    http_request: Request,
+    workflow_id: str,
+    execution_id: str,
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
+    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    workflow_service = WorkflowService(db)
+    workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
+    if not workflow:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    _ensure_workflow_tenant(workflow, tenant_id)
+    if not workflow.has_permission(current_user, "execute"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    execution = WorkflowExecutionService(db).get_execution(execution_id)
+    if not execution or execution.workflow_id != workflow_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution not found")
+    service = WorkflowApprovalService(db)
+    decision = service.approve(execution_id=execution_id, task_id=task_id, decided_by=current_user)
+    if not decision.task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval task not found")
+    if decision.expired:
+        raise HTTPException(status_code=409, detail="Approval task expired")
+    execution_after = WorkflowExecutionService(db).get_execution(execution_id)
+    execution_state = execution_after.state.value if execution_after else None
+    return _approval_task_to_response(decision.task, execution_state_after_decision=execution_state)
+
+
+@router.post(
+    "/{workflow_id}/executions/{execution_id}/approvals/{task_id}/reject",
+    response_model=WorkflowApprovalTaskResponse,
+)
+async def reject_execution_approval(
+    http_request: Request,
+    workflow_id: str,
+    execution_id: str,
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
+    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    workflow_service = WorkflowService(db)
+    workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
+    if not workflow:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    _ensure_workflow_tenant(workflow, tenant_id)
+    if not workflow.has_permission(current_user, "execute"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    execution = WorkflowExecutionService(db).get_execution(execution_id)
+    if not execution or execution.workflow_id != workflow_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution not found")
+    service = WorkflowApprovalService(db)
+    decision = service.reject(execution_id=execution_id, task_id=task_id, decided_by=current_user)
+    if not decision.task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval task not found")
+    if decision.expired:
+        raise HTTPException(status_code=409, detail="Approval task expired")
+    execution_after = WorkflowExecutionService(db).get_execution(execution_id)
+    execution_state = execution_after.state.value if execution_after else None
+    return _approval_task_to_response(decision.task, execution_state_after_decision=execution_state)
 
 
 # ==================== Quota Endpoints ====================

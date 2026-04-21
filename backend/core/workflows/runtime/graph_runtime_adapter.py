@@ -37,6 +37,7 @@ class GraphRuntimeAdapter:
         "end": NodeType.TOOL,     # 语义等同 output
         # kernel 暂无独立 AGENT 类型，复用 TOOL 调度并在 config.workflow_node_type 区分
         "agent": NodeType.TOOL,
+        "approval": NodeType.TOOL,
         "condition": NodeType.CONDITION,
         "script": NodeType.SCRIPT,
         "replan": NodeType.REPLAN,
@@ -76,7 +77,7 @@ class GraphRuntimeAdapter:
         cfg = node.config or {}
         cfg_type = str(cfg.get("workflow_node_type") or "").strip().lower()
         normalized_cfg_type = cls._normalize_workflow_node_type(cfg_type)
-        if normalized_cfg_type in {"input", "output", "agent", "condition", "loop", "replan", "script", "llm"}:
+        if normalized_cfg_type in {"input", "output", "agent", "approval", "condition", "loop", "replan", "script", "llm"}:
             return normalized_cfg_type
 
         normalized_type = cls._normalize_workflow_node_type(node.type)

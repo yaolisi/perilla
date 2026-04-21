@@ -165,6 +165,9 @@ class Settings(BaseSettings):
     workflow_pending_warn_seconds: float = 8.0
     # Workflow 执行 pending 告警重复间隔（秒）
     workflow_pending_warn_interval_seconds: float = 5.0
+    # Workflow approvals legacy response deprecation headers
+    workflow_approvals_legacy_deprecated_header: str = "approvals-legacy-format"
+    workflow_approvals_legacy_sunset: str = "Wed, 31 Dec 2026 23:59:59 GMT"
 
     # 长期记忆（MVP）
     enable_long_term_memory: bool = False
