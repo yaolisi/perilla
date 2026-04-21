@@ -24,7 +24,7 @@ const props = withDefaults(
     selectedAgentDisplayName?: string
   }>(),
   {
-    selectedNodeId: () => null,
+    selectedNodeId: undefined,
     nodes: () => [],
     selectedModelId: () => '',
     selectedModelDisplayName: () => '',
@@ -97,6 +97,9 @@ const agents = ref<AgentDefinition[]>([])
 const loadingAgents = ref(false)
 const tools = ref<ToolInfo[]>([])
 const loadingTools = ref(false)
+const modelSearch = ref('')
+const agentSearch = ref('')
+const toolSearch = ref('')
 
 const displayModelId = ref('')
 const displayAgentId = ref('')
@@ -161,9 +164,10 @@ watch(
   () => { syncAgentFixedInputRaw() },
   { immediate: true }
 )
-function onAgentOutputSchemaInput(raw: string) {
-  agentOutputSchemaRaw.value = raw
-  const s = raw?.trim()
+function onAgentOutputSchemaInput(raw: string | number) {
+  const text = String(raw ?? '')
+  agentOutputSchemaRaw.value = text
+  const s = text.trim()
   if (!s) {
     updateConfig('output_schema', undefined)
     return
@@ -175,9 +179,10 @@ function onAgentOutputSchemaInput(raw: string) {
     // 保持不更新 config，agentConfigErrors 会显示非法 JSON
   }
 }
-function onAgentFixedInputInput(raw: string) {
-  agentFixedInputRaw.value = raw
-  const s = raw?.trim()
+function onAgentFixedInputInput(raw: string | number) {
+  const text = String(raw ?? '')
+  agentFixedInputRaw.value = text
+  const s = text.trim()
   if (!s) {
     updateConfig('fixed_input', undefined)
     return
@@ -218,9 +223,10 @@ watch(
   () => { syncInputFixedInputRaw() },
   { immediate: true }
 )
-function onInputFixedInputInput(raw: string) {
-  inputFixedInputRaw.value = raw
-  const s = raw?.trim()
+function onInputFixedInputInput(raw: string | number) {
+  const text = String(raw ?? '')
+  inputFixedInputRaw.value = text
+  const s = text.trim()
   if (!s) {
     updateConfig('fixed_input', undefined)
     inputFixedInputParseError.value = ''
@@ -336,6 +342,34 @@ function modelDisplayName(m: ModelInfo) {
 function agentDisplayName(a: AgentDefinition) {
   return a.name || a.agent_id
 }
+
+const filteredLlmModels = computed(() => {
+  const keyword = modelSearch.value.trim().toLowerCase()
+  if (!keyword) return llmModels.value
+  return llmModels.value.filter((m) => {
+    const text = `${modelDisplayName(m)} ${m.id} ${m.backend || ''}`.toLowerCase()
+    return text.includes(keyword)
+  })
+})
+
+const filteredAgents = computed(() => {
+  const keyword = agentSearch.value.trim().toLowerCase()
+  if (!keyword) return agents.value
+  return agents.value.filter((a) => {
+    const text = `${agentDisplayName(a)} ${a.agent_id}`.toLowerCase()
+    return text.includes(keyword)
+  })
+})
+
+const filteredTools = computed(() => {
+  const keyword = toolSearch.value.trim().toLowerCase()
+  if (!keyword) return tools.value
+  return tools.value.filter((tool) => {
+    const display = tool.ui?.display_name || tool.name
+    const text = `${display} ${tool.name}`.toLowerCase()
+    return text.includes(keyword)
+  })
+})
 
 const selectedTool = computed(() => {
   const name = String((config().tool_name as string) ?? (config().tool_id as string) ?? '')
@@ -512,7 +546,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
     <div v-else class="flex-1 overflow-y-auto p-4 space-y-5 flex flex-col">
       <template v-if="edge && !resolvedNode">
         <div class="space-y-2">
-          <label class="text-sm font-medium leading-none">{{ t('workflow_editor.edge_trigger') }}</label>
+          <p class="text-sm font-medium leading-none">{{ t('workflow_editor.edge_trigger') }}</p>
           <div class="flex flex-wrap gap-2">
             <button
               v-for="option in edgeTriggerOptions"
@@ -530,7 +564,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
           </p>
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-medium leading-none">{{ t('workflow_editor.edge_condition') }}</label>
+          <p class="text-sm font-medium leading-none">{{ t('workflow_editor.edge_condition') }}</p>
           <Input
             :model-value="(currentEdgeData.condition as string) ?? ''"
             :placeholder="t('workflow_editor.edge_condition_placeholder')"
@@ -554,7 +588,12 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
         <div class="space-y-2">
-          <label class="text-sm font-medium leading-none">{{ t('workflow_editor.llm_model_name') }}</label>
+          <p class="text-sm font-medium leading-none">{{ t('workflow_editor.llm_model_name') }}</p>
+          <Input
+            v-model="modelSearch"
+            class="h-9"
+            :placeholder="'搜索模型（名称 / ID / backend）'"
+          />
           <select
             v-model="displayModelId"
             class="flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
@@ -573,7 +612,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
           >
             <option value="">{{ t('workflow_editor.llm_model_placeholder') }}</option>
             <option
-              v-for="m in llmModels"
+              v-for="m in filteredLlmModels"
               :key="m.id"
               :value="m.id"
             >
@@ -584,12 +623,12 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <Loader2 class="w-3 h-3 animate-spin" />
             {{ t('workflow_editor.llm_models_loading') }}
           </p>
-          <p v-else-if="llmModels.length === 0" class="text-xs text-muted-foreground">
+          <p v-else-if="filteredLlmModels.length === 0" class="text-xs text-muted-foreground">
             {{ t('workflow_editor.llm_models_empty') }}
           </p>
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-medium leading-none">{{ t('workflow_editor.llm_temperature') }}: {{ (config().temperature as number) ?? 0.7 }}</label>
+          <p class="text-sm font-medium leading-none">{{ t('workflow_editor.llm_temperature') }}: {{ (config().temperature as number) ?? 0.7 }}</p>
           <Slider
             :model-value="[(config().temperature as number) ?? 0.7]"
             :min="0"
@@ -600,7 +639,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
           <p class="text-xs text-muted-foreground">0.0 ({{ t('workflow_editor.precise') }}) — 2.0 ({{ t('workflow_editor.creative') }})</p>
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-medium leading-none">{{ t('workflow_editor.llm_top_p') }}</label>
+          <p class="text-sm font-medium leading-none">{{ t('workflow_editor.llm_top_p') }}</p>
           <Input
             type="number"
             step="0.1"
@@ -609,7 +648,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
           />
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-medium leading-none">{{ t('workflow_editor.llm_max_tokens') }}</label>
+          <p class="text-sm font-medium leading-none">{{ t('workflow_editor.llm_max_tokens') }}</p>
           <Input
             type="number"
             :model-value="(config().max_tokens as number) ?? 2048"
@@ -625,11 +664,11 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
         <div class="space-y-2">
-          <label class="text-sm font-medium leading-none">{{ t('workflow_editor.input_variables') }}</label>
+          <p class="text-sm font-medium leading-none">{{ t('workflow_editor.input_variables') }}</p>
           <p class="text-xs text-muted-foreground">{{ t('workflow_editor.input_variables_hint') }}</p>
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-medium leading-none">{{ t('workflow_editor.output_mapping') }}</label>
+          <p class="text-sm font-medium leading-none">{{ t('workflow_editor.output_mapping') }}</p>
           <p class="text-xs text-muted-foreground">{{ t('workflow_editor.output_mapping_example') }}</p>
         </div>
         <Button variant="outline" size="sm" class="w-full">
@@ -655,7 +694,12 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             </summary>
             <div class="px-3 pb-3 pt-0 space-y-2">
           <div class="space-y-2">
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.agent_select') }} <span class="text-destructive">*</span></label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.agent_select') }} <span class="text-destructive">*</span></p>
+            <Input
+              v-model="agentSearch"
+              class="h-9"
+              :placeholder="'搜索 Agent（名称 / ID）'"
+            />
             <select
               v-model="displayAgentId"
               class="flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
@@ -669,7 +713,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             >
               <option value="">{{ t('workflow_editor.agent_placeholder') }}</option>
               <option
-                v-for="a in agents"
+                v-for="a in filteredAgents"
                 :key="a.agent_id"
                 :value="a.agent_id"
               >
@@ -680,7 +724,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
               <Loader2 class="w-3 h-3 animate-spin" />
               {{ t('workflow_editor.agent_loading') }}
             </p>
-            <p v-else-if="agents.length === 0" class="text-xs text-muted-foreground">
+            <p v-else-if="filteredAgents.length === 0" class="text-xs text-muted-foreground">
               {{ t('workflow_editor.agent_empty') }}
             </p>
           </div>
@@ -693,7 +737,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             </summary>
             <div class="px-3 pb-3 pt-0 space-y-3">
             <div class="space-y-2">
-              <label class="text-xs font-medium">{{ t('workflow_editor.agent_timeout_seconds') }}</label>
+              <p class="text-xs font-medium">{{ t('workflow_editor.agent_timeout_seconds') }}</p>
               <Input
                 :model-value="String((config().timeout as number) ?? (config().agent_timeout_seconds as number) ?? '')"
                 type="number"
@@ -714,7 +758,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
               />
             </div>
             <div class="space-y-2">
-              <label class="text-xs font-medium">{{ t('workflow_editor.agent_max_steps') }}</label>
+              <p class="text-xs font-medium">{{ t('workflow_editor.agent_max_steps') }}</p>
               <Input
                 :model-value="String((config().max_steps as number) ?? '')"
                 type="number"
@@ -730,7 +774,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
               />
             </div>
             <div class="space-y-2">
-              <label class="text-xs font-medium">{{ t('workflow_editor.agent_model_override') }}</label>
+              <p class="text-xs font-medium">{{ t('workflow_editor.agent_model_override') }}</p>
               <Input
                 :model-value="(config().model_override as string) ?? ''"
                 :placeholder="t('workflow_editor.agent_model_override_placeholder')"
@@ -739,7 +783,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
               />
             </div>
             <div class="space-y-2">
-              <label class="text-xs font-medium">{{ t('workflow_editor.agent_pass_context_keys') }}</label>
+              <p class="text-xs font-medium">{{ t('workflow_editor.agent_pass_context_keys') }}</p>
               <Input
                 :model-value="Array.isArray(config().pass_context_keys) ? (config().pass_context_keys as string[]).join(', ') : (config().pass_context_keys as string) ?? ''"
                 :placeholder="t('workflow_editor.agent_pass_context_keys_placeholder')"
@@ -751,7 +795,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
               />
             </div>
             <div class="space-y-2">
-              <label class="text-xs font-medium">{{ t('workflow_editor.agent_fixed_input') }}</label>
+              <p class="text-xs font-medium">{{ t('workflow_editor.agent_fixed_input') }}</p>
               <Textarea
                 :model-value="agentFixedInputRaw"
               :placeholder="t('workflow_editor.agent_fixed_input_placeholder')"
@@ -770,7 +814,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             </summary>
             <div class="px-3 pb-3 pt-0 space-y-2">
             <div class="space-y-2">
-              <label class="text-xs font-medium">{{ t('workflow_editor.agent_output_schema') }}</label>
+              <p class="text-xs font-medium">{{ t('workflow_editor.agent_output_schema') }}</p>
               <Textarea
                 :model-value="agentOutputSchemaRaw"
                 :placeholder="t('workflow_editor.schema_placeholder')"
@@ -793,14 +837,14 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.prompt_template') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.prompt_template') }}</p>
             <Textarea
               :model-value="(config().template as string) ?? ''"
               :placeholder="t('workflow_editor.prompt_template_placeholder')"
               rows="8"
               @update:model-value="updateConfig('template', $event)"
             />
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.prompt_role') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.prompt_role') }}</p>
             <Input
               :model-value="(config().role as string) ?? 'user'"
               :placeholder="t('workflow_editor.prompt_role_placeholder')"
@@ -818,7 +862,12 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
-          <label class="text-sm font-medium leading-none">{{ t('workflow_editor.skill_tool') }}</label>
+          <p class="text-sm font-medium leading-none">{{ t('workflow_editor.skill_tool') }}</p>
+          <Input
+            v-model="toolSearch"
+            class="h-9"
+            :placeholder="'搜索工具（展示名 / name）'"
+          />
           <select
             class="flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
             :disabled="loadingTools"
@@ -835,7 +884,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             }"
           >
             <option value="">{{ t('workflow_editor.skill_tool_placeholder') }}</option>
-            <option v-for="tool in tools" :key="tool.name" :value="tool.name">
+            <option v-for="tool in filteredTools" :key="tool.name" :value="tool.name">
               {{ tool.ui?.display_name || tool.name }}
             </option>
           </select>
@@ -849,16 +898,16 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
           <div class="px-3 pb-3 pt-0">
         <template v-if="toolSchemaProperties.length > 0">
           <div class="space-y-3">
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.skill_tool_inputs') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.skill_tool_inputs') }}</p>
             <div
               v-for="[fieldName, schema] in toolSchemaProperties"
               :key="fieldName"
               class="space-y-2"
             >
-              <label class="text-xs font-medium text-muted-foreground">
+              <p class="text-xs font-medium text-muted-foreground">
                 {{ fieldName }}
                 <span v-if="Array.isArray(toolInputSchema.required) && toolInputSchema.required.includes(fieldName)" class="text-destructive">*</span>
-              </label>
+              </p>
               <select
                 v-if="Array.isArray(schema.enum)"
                 class="flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
@@ -902,7 +951,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
           </div>
         </template>
         <div v-else class="space-y-2">
-          <label class="text-sm font-medium leading-none">{{ t('workflow_editor.skill_tool_inputs_json') }}</label>
+          <p class="text-sm font-medium leading-none">{{ t('workflow_editor.skill_tool_inputs_json') }}</p>
           <Textarea
             :model-value="JSON.stringify((config().inputs as Record<string, unknown>) ?? {}, null, 2)"
             rows="8"
@@ -928,7 +977,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.shell_command') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.shell_command') }}</p>
             <Textarea
               :model-value="(config().command as string) ?? ''"
               :placeholder="t('workflow_editor.shell_command_placeholder')"
@@ -947,7 +996,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.condition_expression') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.condition_expression') }}</p>
             <Input
               :model-value="(config().condition_expression as string) ?? ''"
               :placeholder="t('workflow_editor.condition_expression_placeholder')"
@@ -981,7 +1030,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.loop_type') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.loop_type') }}</p>
             <select
               class="flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
               :value="(config().loop_type as string) ?? 'condition'"
@@ -990,13 +1039,13 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
               <option value="condition">{{ t('workflow_editor.loop_type_condition') }}</option>
               <option value="fixed">{{ t('workflow_editor.loop_type_fixed') }}</option>
             </select>
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.condition_expression') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.condition_expression') }}</p>
             <Input
               :model-value="(config().condition_expression as string) ?? ''"
               :placeholder="t('workflow_editor.loop_condition_placeholder')"
               @update:model-value="updateConfig('condition_expression', $event)"
             />
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.loop_max_iterations') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.loop_max_iterations') }}</p>
             <Input
               type="number"
               :model-value="(config().max_iterations as number) ?? 5"
@@ -1010,7 +1059,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.loop_timeout_seconds') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.loop_timeout_seconds') }}</p>
             <Input
               type="number"
               :model-value="(config().timeout_seconds as number) ?? 300"
@@ -1040,7 +1089,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.input_key_optional') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.input_key_optional') }}</p>
             <Input
               :model-value="(config().input_key as string) ?? ''"
               :placeholder="t('workflow_editor.input_key_placeholder')"
@@ -1050,7 +1099,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <p class="text-xs text-muted-foreground">
               留空表示整个 <code>input_data</code> 作为工作流输入；否则从 <code>input_data[input_key]</code> 读取。
             </p>
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.input_fixed_input') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.input_fixed_input') }}</p>
             <Textarea
               :model-value="inputFixedInputRaw"
               :placeholder="t('workflow_editor.input_fixed_input_placeholder')"
@@ -1071,7 +1120,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.input_schema') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.input_schema') }}</p>
             <Textarea
               :model-value="typeof config().input_schema === 'object' && config().input_schema != null ? JSON.stringify(config().input_schema as Record<string, unknown>, null, 2) : ''"
               :placeholder="t('workflow_editor.schema_placeholder')"
@@ -1102,7 +1151,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
           </summary>
           <div class="px-3 pb-3 pt-0 space-y-2">
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.output_key') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.output_key') }}</p>
             <Input
               :model-value="(config().output_key as string) ?? 'result'"
               :placeholder="t('workflow_editor.output_key_placeholder')"
@@ -1112,7 +1161,7 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
             <p class="text-xs text-muted-foreground">
               将该节点输出写入到 <code>execution.output_data[output_key]</code>。
             </p>
-            <label class="text-sm font-medium leading-none">{{ t('workflow_editor.output_expression') }}</label>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.output_expression') }}</p>
             <Input
               :model-value="(config().expression as string) ?? ''"
               placeholder="${nodes.llm_1.output} 或 ${input.text}"

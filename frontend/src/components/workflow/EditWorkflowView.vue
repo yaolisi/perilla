@@ -533,14 +533,14 @@ onUnmounted(() => {
       <div class="ml-auto flex items-center gap-2">
         <Button variant="outline" size="sm" class="gap-2" :disabled="undoStack.length === 0" @click="undo">
           <Undo2 class="w-4 h-4" />
-          Undo
+          撤销
         </Button>
         <Button variant="outline" size="sm" class="gap-2" :disabled="redoStack.length === 0" @click="redo">
           <Redo2 class="w-4 h-4" />
-          Redo
+          重做
         </Button>
         <Button variant="outline" size="sm" class="gap-2" @click="runPreflightCheck">
-          检查
+          运行前检查
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger as-child>
@@ -551,14 +551,14 @@ onUnmounted(() => {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem @click="runWorkflowSaveAndRun">保存并运行</DropdownMenuItem>
-            <DropdownMenuItem @click="runWorkflowPublishedOnly">运行已发布版本</DropdownMenuItem>
+            <DropdownMenuItem @click="runWorkflowSaveAndRun">先保存当前草稿并运行</DropdownMenuItem>
+            <DropdownMenuItem @click="runWorkflowPublishedOnly">直接运行已发布版本</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
         <Button variant="outline" size="sm" class="gap-2" :disabled="saveInProgress" @click="saveWorkflow">
           <Loader2 v-if="saveInProgress" class="w-4 h-4 animate-spin" />
           <Save v-else class="w-4 h-4" />
-          {{ saveInProgress ? 'Saving...' : t('workflow_editor.save') }}<span v-if="isDirty && !saveInProgress" class="ml-1 text-amber-500">*</span>
+          {{ saveInProgress ? '保存中...' : '保存为新版本' }}<span v-if="isDirty && !saveInProgress" class="ml-1 text-amber-500">*</span>
         </Button>
         <Button
           size="sm"
@@ -592,15 +592,15 @@ onUnmounted(() => {
     <div v-if="draftRestorePending" class="mx-6 mb-2 rounded-lg border border-blue-500/50 bg-blue-500/10 px-4 py-2 flex items-center justify-between text-sm">
       <span class="text-blue-800 dark:text-blue-200">检测到未保存草稿</span>
       <div class="flex gap-2">
-        <Button variant="outline" size="sm" @click="acceptDraftRestore">恢复</Button>
-        <Button variant="ghost" size="sm" @click="dismissDraftRestore">忽略</Button>
+        <Button variant="outline" size="sm" @click="acceptDraftRestore">恢复草稿</Button>
+        <Button variant="ghost" size="sm" @click="dismissDraftRestore">丢弃草稿</Button>
       </div>
     </div>
 
     <!-- Three columns -->
     <div class="flex flex-1 min-h-0">
       <!-- Left: Node Library -->
-      <aside class="w-56 shrink-0 flex flex-col border-r border-border/50">
+      <aside class="w-56 shrink-0 flex flex-col border-r border-border/50" aria-label="节点库面板">
         <NodeLibrary />
       </aside>
 
@@ -618,7 +618,7 @@ onUnmounted(() => {
       </main>
 
       <!-- Right: Node Config -->
-      <aside class="w-80 shrink-0 flex flex-col border-l border-border/50">
+      <aside class="w-80 shrink-0 flex flex-col border-l border-border/50" aria-label="节点配置面板">
         <NodeConfigPanel
           :node="selectedNode"
           :selected-node-id="selectedNodeId"

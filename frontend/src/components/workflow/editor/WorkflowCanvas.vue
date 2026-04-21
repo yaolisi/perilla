@@ -15,6 +15,7 @@ const props = withDefaults(
   { nodes: () => [], edges: () => [] }
 )
 const FLOW_ID = 'workflow-editor-canvas'
+const SNAP_GRID: [number, number] = [16, 16]
 
 const emit = defineEmits<{
   'update:nodes': [Node<WorkflowNodeData>[]]
@@ -135,6 +136,7 @@ onUnmounted(() => registerWorkflowCanvasSelect(null))
 
 function onNodesChange(changes: NodeChange[]) {
   const inDropCooldown = Date.now() < dropCooldownUntil
+  let shouldSnapPositions = false
   if (!inDropCooldown) {
     justEmittedNodes = true
     emit('update:nodes', nodesRef.value)
@@ -145,6 +147,7 @@ function onNodesChange(changes: NodeChange[]) {
     if (change.type === 'position') {
       const dragging = (change as any).dragging
       if (dragging) draggingNodeId = (change as any).id ?? null
+      if (dragging === false) shouldSnapPositions = true
       continue
     }
     if (change.type === 'select') {
@@ -174,6 +177,18 @@ function onNodesChange(changes: NodeChange[]) {
     }
     emit('select-edge', null)
   }
+  if (shouldSnapPositions) {
+    // Drag end alignment: keep nodes visually aligned for dense workflow layouts.
+    nodesRef.value = nodesRef.value.map((node) => {
+      const snapped = { ...node } as Node<WorkflowNodeData>
+      snapped.position = {
+        x: Math.round(node.position.x / SNAP_GRID[0]) * SNAP_GRID[0],
+        y: Math.round(node.position.y / SNAP_GRID[1]) * SNAP_GRID[1],
+      }
+      return snapped
+    })
+    emit('update:nodes', nodesRef.value)
+  }
 }
 
 function onPaneClick(evt: MouseEvent) {
@@ -187,7 +202,7 @@ function onPaneClick(evt: MouseEvent) {
   emit('select-edge', null)
 }
 
-function onEdgesChange(changes: EdgeChange[]) {
+function onEdgesChange(_changes: EdgeChange[]) {
   justEmittedEdges = true
   emit('update:edges', edgesRef.value)
 }
@@ -200,13 +215,13 @@ function onDrop(e: DragEvent) {
     const { type, label } = JSON.parse(raw) as { type: string; label: string }
     const pos = screenToFlowCoordinateRef.value({ x: e.clientX, y: e.clientY })
     const id = `node_${type}_${Date.now()}`
-    const newNode: Node<WorkflowNodeData> = {
+    const newNode = {
       id,
       type: 'workflow',
       position: pos,
       selected: true,
       data: { ...defaultDataForType(type as WorkflowNodeData['type']), label },
-    }
+    } as Node<WorkflowNodeData>
     recentlyAddedNodeId = id
     lastSelectedNodeId = id
     dropCooldownUntil = Date.now() + DROP_COOLDOWN_MS
@@ -267,6 +282,8 @@ function onConnect(connection: { source: string; target: string; sourceHandle?: 
       v-model:edges="edgesRef"
       :node-types="nodeTypes"
       :nodes-draggable="true"
+      :snap-to-grid="true"
+      :snap-grid="SNAP_GRID"
       :connectable="true"
       class="rounded-lg bg-muted/20"
       @drop="onDrop"
