@@ -26,6 +26,7 @@ This repository root is a **self-contained, full-featured deliverable**: it incl
 - [Deployment & Security Review Hints](#deployment--security-review-hints)
 - [Local Security Regression (Recommended)](#local-security-regression-recommended)
 - [CI Security Workflows](#ci-security-workflows)
+- [Frontend Engineering and UX Upgrades (2026Q2)](#frontend-engineering-and-ux-upgrades-2026q2)
 - [Documentation Index](#documentation-index)
 
 ## Project Overview
@@ -440,6 +441,31 @@ This release closes key gaps for a controllable, recoverable orchestration syste
 - **Approval API compatibility path**
   - approval list supports a new structured response
   - `legacy=true` keeps the old format with `X-API-Deprecated` and `Sunset` headers
+
+## Frontend Engineering and UX Upgrades (2026Q2)
+
+This release also ships key frontend improvements across UX, performance, and maintainability:
+
+- **Interaction and accessibility**
+  - searchable model/agent/tool selectors in workflow editor config panel
+  - clearer task-oriented toolbar labels for new users
+  - improved accessibility semantics (`aria-label` regions and config section semantics)
+- **Large-data performance**
+  - knowledge base document list enables pagination when item count exceeds 50
+  - workflow canvas enables visible-element rendering optimization when node count exceeds 50
+- **Actionable error diagnosis**
+  - frontend error hint mapping for common failure classes (OOM, corrupted weights, timeout, network, permission)
+- **Testing foundation**
+  - Vitest component tests (workflow config panel interaction coverage)
+  - Cypress e2e scaffolding for core workflow editor flow
+- **Build configuration split**
+  - `vite.config.dev.ts`, `vite.config.prod.ts`, and shared config extraction
+  - npm scripts aligned for dev/build/preview and unit/e2e testing
+- **Frontend docs and release notes**
+  - `docs/frontend/COMPONENTS.md`
+  - `docs/frontend/API.md`
+  - `docs/frontend/USAGE.md`
+  - `CHANGELOG.md`
 
 ## Deployment & Security Review Hints
 

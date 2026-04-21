@@ -20,6 +20,7 @@
 - `tutorial.md`
   - 完整使用教程（环境、启动、核心功能、安全配置、测试、排障）
   - 含自治编排新增章节：幂等请求、持久化执行队列、HITL 审批闸门
+  - 含前端增强章节：工作流编辑器搜索/对齐优化、知识库大列表分页、可诊断错误提示
 
 适用：
 
@@ -270,3 +271,19 @@ PYTHONPATH=backend python3 backend/scripts/test_execution_kernel_regression.py
 - 请求追踪头净化与限流返回去敏
 - 生产安全护栏（自动收敛 + 高危配置阻断 + strict 开关）
 - tenant/security 双回归脚本 + CI 自动门禁 + Step Summary
+- 前端 Workflow 编辑器搜索与大图渲染优化（节点 > 50）
+- 知识库文档列表自动分页（文档 > 50）
+- 前端统一错误提示映射（OOM/权重损坏/超时/网络/权限）
+
+---
+
+## 9. 前端测试与构建（新增）
+
+- 单测：`cd frontend && npm run test:unit`
+- E2E：`cd frontend && npm run test:e2e`（首次需 `npx cypress install`）
+- 开发构建配置：`vite.config.dev.ts`
+- 生产构建配置：`vite.config.prod.ts`
+- 前端专项文档：
+  - `docs/frontend/COMPONENTS.md`
+  - `docs/frontend/API.md`
+  - `docs/frontend/USAGE.md`
