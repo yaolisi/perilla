@@ -64,7 +64,8 @@ class PlanCompiler:
         nodes = self._compile_nodes(plan.steps)
         
         # 2. 推导边（从隐式顺序 + 显式依赖）
-        edges = self._compile_edges(plan.steps)
+        enable_parallel = bool((plan.context or {}).get("agent_graph_parallel", False))
+        edges = self._compile_edges(plan.steps, force_serial=not enable_parallel)
         
         # 3. 编译子图（Phase A: Composite 步骤）
         subgraphs = self._compile_subgraphs(plan.steps, plan.plan_id)
@@ -165,7 +166,7 @@ class PlanCompiler:
         
         return nodes
     
-    def _compile_edges(self, steps: List[Step]) -> List[EdgeDefinition]:
+    def _compile_edges(self, steps: List[Step], force_serial: bool = True) -> List[EdgeDefinition]:
         """
         编译边（依赖关系）
         
@@ -211,7 +212,7 @@ class PlanCompiler:
             
             # 3. 确定性顺序兜底：若当前步骤没有任何入边，则串到前一步
             # 这样可保持与原 Plan 顺序语义一致，避免无依赖节点被并发调度导致行为漂移。
-            if i > 0 and incoming_count.get(step.step_id, 0) == 0:
+            if force_serial and i > 0 and incoming_count.get(step.step_id, 0) == 0:
                 prev_step = steps[i - 1]
                 edge_key = (prev_step.step_id, step.step_id)
                 if edge_key not in edge_set:
@@ -224,6 +225,18 @@ class PlanCompiler:
                     incoming_count[step.step_id] = 1
         
         return edges
+
+
+class AgentGraphCompiler(PlanCompiler):
+    """
+    Graph compiler with explicit parallel toggle for agent orchestration.
+    """
+
+    def compile(self, plan: Plan, parent_graph_id: str = None) -> GraphDefinition:
+        graph = super().compile(plan, parent_graph_id=parent_graph_id)
+        graph.config = dict(graph.config or {})
+        graph.config["agent_graph_parallel"] = bool((plan.context or {}).get("agent_graph_parallel", False))
+        return graph
     
     def _extract_dependencies(self, step: Step, previous_step_ids: List[str]) -> List[str]:
         """

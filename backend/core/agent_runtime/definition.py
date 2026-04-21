@@ -42,6 +42,10 @@ class AgentDefinition(BaseModel):
     execution_mode: Optional[str] = "legacy"
     # V2.5: Agent 级 Execution Kernel 开关（None 表示跟随全局）
     use_execution_kernel: Optional[bool] = None
+    # V3: Agent 执行策略（serial / parallel_kernel）
+    execution_strategy: Optional[str] = None
+    # V3: Agent 图执行并发上限（仅 parallel_kernel 生效）
+    max_parallel_nodes: Optional[int] = None
     
     # V2.2: RePlan 配置
     max_replan_count: int = 3  # 最大重规划次数
@@ -91,6 +95,11 @@ class AgentRegistry:
         # V2.5: 兼容无 use_execution_kernel 的旧数据（跟随全局）
         if "use_execution_kernel" not in data:
             data["use_execution_kernel"] = None
+        # V3: 兼容无 execution_strategy/max_parallel_nodes 的旧数据
+        if "execution_strategy" not in data:
+            data["execution_strategy"] = None
+        if "max_parallel_nodes" not in data:
+            data["max_parallel_nodes"] = None
         # V2.2: 兼容无 RePlan 字段的旧数据
         if "max_replan_count" not in data:
             data["max_replan_count"] = 3

@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from typing import Optional
+from pathlib import Path
 
 from log import logger, log_structured
 from .observability import AgentV2Metrics
@@ -18,6 +19,7 @@ from core.agent_runtime.executor import AgentExecutor
 from .models import AgentState, ExecutionMode, Plan, ExecutionTrace
 from .executor_v2 import PlanBasedExecutor
 from .planner import get_planner
+from core.types import Message
 
 
 # Feature flag: Use Execution Kernel (new DAG engine) instead of PlanBasedExecutor
@@ -48,6 +50,7 @@ class AgentRuntime:
         
         # Lazy-initialized Execution Kernel adapter
         self._kernel_adapter = None
+        self._memory_runtime = None
     
     def _get_kernel_adapter(self):
         """Get or create the Execution Kernel adapter (lazy initialization)"""
@@ -70,6 +73,70 @@ class AgentRuntime:
             return bool(agent_override)
         # Fall back to global flag
         return USE_EXECUTION_KERNEL
+
+    def _resolve_execution_strategy(self, agent: AgentDefinition) -> str:
+        strategy = (getattr(agent, "execution_strategy", None) or "").strip().lower()
+        if not strategy and isinstance(getattr(agent, "model_params", None), dict):
+            strategy = str(agent.model_params.get("execution_strategy") or "").strip().lower()
+        if strategy in {"serial", "parallel_kernel"}:
+            return strategy
+        return "parallel_kernel" if self._should_use_kernel(agent) else "serial"
+
+    def _get_memory_runtime(self):
+        if self._memory_runtime is not None:
+            return self._memory_runtime
+        try:
+            from config.settings import settings
+            from core.memory.memory_store import MemoryStore, MemoryStoreConfig
+            from core.memory.memory_injector import MemoryInjector, MemoryInjectorConfig
+            from core.memory.memory_extractor import MemoryExtractor, MemoryExtractorConfig
+
+            db_path = (
+                Path(__file__).resolve().parents[3] / "data" / "platform.db"
+                if not settings.db_path else Path(settings.db_path)
+            )
+            store = MemoryStore(
+                MemoryStoreConfig(
+                    db_path=db_path,
+                    embedding_dim=settings.memory_embedding_dim,
+                    vector_enabled=bool(settings.memory_vector_enabled),
+                    default_confidence=settings.memory_default_confidence,
+                    merge_enabled=bool(settings.memory_merge_enabled),
+                    merge_similarity_threshold=settings.memory_merge_similarity_threshold,
+                    conflict_enabled=bool(settings.memory_conflict_enabled),
+                    conflict_similarity_threshold=settings.memory_conflict_similarity_threshold,
+                    key_schema_enforced=bool(settings.memory_key_schema_enforced),
+                    key_schema_allow_unlisted=bool(settings.memory_key_schema_allow_unlisted),
+                )
+            )
+            mode = "recent"
+            if settings.memory_inject_mode == "vector":
+                mode = "vector"
+            elif settings.memory_inject_mode == "keyword":
+                mode = "keyword"
+            injector = MemoryInjector(
+                store,
+                MemoryInjectorConfig(
+                    mode=mode,
+                    top_k=settings.memory_inject_top_k,
+                    half_life_days=settings.memory_decay_half_life_days,
+                    default_confidence=settings.memory_default_confidence,
+                ),
+            )
+            extractor = MemoryExtractor(
+                store,
+                MemoryExtractorConfig(
+                    enabled=bool(settings.memory_extractor_enabled),
+                    temperature=settings.memory_extractor_temperature,
+                    top_p=settings.memory_extractor_top_p,
+                    max_tokens=settings.memory_extractor_max_tokens,
+                ),
+            )
+            self._memory_runtime = (injector, extractor)
+        except Exception as e:
+            logger.warning(f"[AgentRuntime] Memory runtime init failed: {e}")
+            self._memory_runtime = (None, None)
+        return self._memory_runtime
 
     def _build_permissions(self, agent: AgentDefinition) -> dict:
         """
@@ -177,6 +244,16 @@ class AgentRuntime:
         user_id = getattr(session, "user_id", None) or "default"
         
         # 2. 生成执行计划（若 plan 中有步骤写入 session.state.project_info，会注入到 context）
+        planner_messages = list(session.messages)
+        try:
+            injector, _ = self._get_memory_runtime()
+            if injector:
+                raw_messages = [{"role": m.role, "content": m.content} for m in planner_messages]
+                injected = injector.inject(raw_messages, user_id=user_id)
+                planner_messages = [Message(role=m.get("role", "user"), content=m.get("content", "")) for m in injected]
+        except Exception as e:
+            logger.warning(f"[AgentRuntime] memory inject skipped: {e}")
+
         plan_context = {
             "workspace": workspace,
             "permissions": permissions,
@@ -190,7 +267,7 @@ class AgentRuntime:
         plan = await self.planner.create_plan(
             agent=agent,
             user_input=user_input,
-            messages=session.messages,
+            messages=planner_messages,
             context=plan_context,
         )
         metrics.plan_creation_ms = round((time.perf_counter() - plan_creation_start) * 1000, 2)
@@ -204,7 +281,8 @@ class AgentRuntime:
         )
         
         # 4. 执行计划 - 选择执行引擎
-        use_kernel = self._should_use_kernel(agent)
+        strategy = self._resolve_execution_strategy(agent)
+        use_kernel = strategy == "parallel_kernel"
         kernel_fallback = False
         
         try:
@@ -317,6 +395,8 @@ class AgentRuntime:
                         # V2.5: 首条 trace 写入执行引擎，便于按会话确认是否使用 Execution Kernel
                         if i == 0:
                             input_data_with_hierarchy["_execution_engine"] = metrics.execution_engine
+                            if metrics.kernel_instance_id:
+                                input_data_with_hierarchy["_kernel_instance_id"] = metrics.kernel_instance_id
                         
                         # V2.5: 从 input_data 取出 skill_id 写入 tool_id，便于前端 Trace 页按技能名展示（避免两行都显示为 complete）
                         tool_id_from_input = (log.input_data or {}).get("skill_id") if isinstance(log.input_data, dict) else None
@@ -348,6 +428,30 @@ class AgentRuntime:
                 logger.info(f"[AgentRuntime] Trace {trace.plan_id} saved successfully")
             except Exception as e:
                 logger.warning(f"[AgentRuntime] Failed to save trace: {e}")
+
+            try:
+                _, extractor = self._get_memory_runtime()
+                if extractor and session.messages:
+                    assistant_text = ""
+                    for msg in reversed(session.messages):
+                        if msg.role == "assistant" and isinstance(msg.content, str):
+                            assistant_text = msg.content.strip()
+                            if assistant_text:
+                                break
+                    if assistant_text:
+                        await extractor.extract_and_store(
+                            user_id=user_id,
+                            model_id=agent.model_id,
+                            user_text=user_input,
+                            assistant_text=assistant_text,
+                            meta={
+                                "agent_id": agent.agent_id,
+                                "session_id": session.session_id,
+                                "execution_engine": metrics.execution_engine,
+                            },
+                        )
+            except Exception as e:
+                logger.warning(f"[AgentRuntime] memory extraction skipped: {e}")
             
         except Exception as e:
             metrics.total_run_ms = round((time.perf_counter() - run_start) * 1000, 2)
@@ -529,7 +633,7 @@ class AgentRuntime:
                             # Materialize the annotated image
                             materialized = _materialize_data_url_image(data_url=annotated_image)
                             if materialized:
-                                fname, url_path, abs_url = materialized
+                                fname, _, abs_url = materialized
                                 vision_annotated_image_url = abs_url
                                 logger.info(f"[AgentV2Runtime] Materialized annotated image: {fname} -> {abs_url}")
                     

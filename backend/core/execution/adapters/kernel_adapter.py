@@ -41,6 +41,7 @@ from execution_kernel.optimization import (
 from execution_kernel.optimization.scheduler.policy_base import SchedulerPolicy
 
 from core.agent_runtime.v2.models import Plan, AgentState, ExecutionTrace, StepLog, StepStatus
+from core.agent_runtime.v2.agent_graph_adapter import AgentGraphAdapter
 from core.execution.adapters.plan_compiler import compile_plan
 from core.execution.adapters.node_executors import init_executors, get_executor_registry
 
@@ -85,6 +86,7 @@ class ExecutionKernelAdapter:
         self._policy_cache: Dict[str, SchedulerPolicy] = {}
         self._snapshot_cache: Dict[str, Optional[OptimizationSnapshot]] = {}
         self._agent_optimization_configs: Dict[str, OptimizationConfig] = {}
+        self._agent_graph_adapter = AgentGraphAdapter()
     
     async def initialize(self, legacy_executor=None):
         """初始化适配器；可传入 legacy_executor 供 LLMExecutor 使用。"""
@@ -357,8 +359,9 @@ class ExecutionKernelAdapter:
             self._legacy_executor = legacy_executor
             init_executors(legacy_executor=legacy_executor)
 
-        # 1. 编译 Plan -> GraphDefinition
-        graph_def = compile_plan(plan)
+        # 1. 编译 Plan -> GraphDefinition（Agent Graph adapter）
+        graph_cfg = self._agent_graph_adapter.resolve_execution_config(agent)
+        graph_def = self._agent_graph_adapter.build_graph(plan, graph_cfg)
         # Agent 级 Optimization Config Scope（运行级，不改图结构）
         effective_opt_config = self._resolve_agent_optimization_config(agent)
         run_policy, run_snapshot = await self._build_policy_snapshot_for_config(effective_opt_config)
@@ -408,6 +411,10 @@ class ExecutionKernelAdapter:
                 scheduler_policy=run_policy,
                 optimization_snapshot=run_snapshot,
             )
+            # Agent 级并发上限（parallel strategy 时才覆盖）
+            if graph_cfg.parallel_enabled and isinstance(graph_cfg.max_parallel_nodes, int):
+                scheduler._max_concurrency = graph_cfg.max_parallel_nodes
+                scheduler._semaphore = asyncio.Semaphore(scheduler._max_concurrency)
             
             # Phase B: 创建完整的 runtime_context（包含 RePlan 所需信息）
             runtime_context = {
@@ -442,6 +449,8 @@ class ExecutionKernelAdapter:
                 except Exception as recovery_error:
                     logger.warning(f"ExecutionKernelAdapter crash recovery skipped due to error: {recovery_error}")
         
+        persisted_context["agent_execution_strategy"] = "parallel_kernel" if graph_cfg.parallel_enabled else "serial"
+        persisted_context["max_parallel_nodes"] = graph_cfg.max_parallel_nodes
         await scheduler.start_instance(graph_def, instance_id, persisted_context)
         
         # 5. 等待完成
