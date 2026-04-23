@@ -14,9 +14,9 @@ sys.path.insert(0, str(backend_dir))
 
 # 尽早加载 .env：先加载 backend/.env，再加载项目根 .env，确保 TOOL_NET_WEB_ENABLED 等生效
 try:
-    from dotenv import load_dotenv
-    load_dotenv(backend_dir / ".env")
-    load_dotenv(backend_dir.parent / ".env")
+    from config.settings import bootstrap_env_files
+
+    bootstrap_env_files(backend_dir)
 except ImportError:
     pass
 

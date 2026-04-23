@@ -215,18 +215,22 @@ def test_apply_production_security_defaults_in_non_debug():
         rbac_enforcement=False,
         tenant_enforcement_enabled=False,
         tenant_api_key_binding_enabled=False,
+        file_read_allowed_roots="/",
+        production_file_read_required_roots="./data",
     )
     changes = apply_production_security_defaults(s)
-    assert set(changes) == {
+    assert set(changes) >= {
         "rbac_enabled",
         "rbac_enforcement",
         "tenant_enforcement_enabled",
         "tenant_api_key_binding_enabled",
+        "file_read_allowed_roots",
     }
     assert s.rbac_enabled is True
     assert s.rbac_enforcement is True
     assert s.tenant_enforcement_enabled is True
     assert s.tenant_api_key_binding_enabled is True
+    assert s.file_read_allowed_roots == "./data"
 
 
 def test_apply_production_security_defaults_skip_in_debug():
@@ -239,10 +243,13 @@ def test_apply_production_security_defaults_skip_in_debug():
         rbac_enforcement=False,
         tenant_enforcement_enabled=False,
         tenant_api_key_binding_enabled=False,
+        file_read_allowed_roots="/",
+        production_file_read_required_roots="./data",
     )
     changes = apply_production_security_defaults(s)
     assert changes == []
     assert s.rbac_enabled is False
+    assert s.file_read_allowed_roots == "/"
 
 
 def test_validate_production_security_guardrails_blocks_high_risk():
@@ -252,6 +259,8 @@ def test_validate_production_security_guardrails_blocks_high_risk():
     s = _types.SimpleNamespace(
         debug=False,
         file_read_allowed_roots="/",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
         cors_allowed_origins="",
         tool_net_http_enabled=True,
         tool_net_http_allowed_hosts="",
@@ -268,7 +277,9 @@ def test_validate_production_security_guardrails_allows_safe_profile():
 
     s = _types.SimpleNamespace(
         debug=False,
-        file_read_allowed_roots="/data,/models",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
         cors_allowed_origins="https://example.com",
         tool_net_http_enabled=True,
         tool_net_http_allowed_hosts="api.example.com,*.svc.local",

@@ -27,7 +27,7 @@ requests>=2.32.0
 # --- 异步与工具 ---
 anyio==4.12.1
 aiofiles==25.1.0
-python-dotenv==1.2.1
+python-dotenv[encrypted]==1.2.1
 
 # --- 系统与监控 ---
 psutil==7.2.1

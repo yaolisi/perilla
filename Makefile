@@ -1,4 +1,4 @@
-.PHONY: help bootstrap bootstrap-prod env-init install install-gpu install-prod install-prod-soft up up-gpu up-prod down down-gpu down-prod status logs healthcheck doctor test-no-fallback reset
+.PHONY: help bootstrap bootstrap-prod env-init install install-gpu install-prod install-prod-soft up up-gpu up-prod down down-gpu down-prod status logs healthcheck doctor security-guardrails test-no-fallback reset
 
 help:
 	@echo "OpenVitamin Docker helper targets:"
@@ -21,6 +21,8 @@ help:
 	@echo "  make logs          - Tail logs"
 	@echo "  make healthcheck   - Run health checks"
 	@echo "  make doctor        - Run environment diagnostics"
+	@echo "  make security-guardrails"
+	@echo "                   - Enforce production security config gate"
 	@echo "  DOCTOR_STRICT_WARNINGS=1 make doctor"
 	@echo "                   - Treat warnings as failures"
 	@echo "  make test-no-fallback"
@@ -83,6 +85,9 @@ healthcheck:
 
 doctor:
 	@bash scripts/doctor.sh
+
+security-guardrails:
+	@bash scripts/check-security-guardrails.sh
 
 test-no-fallback:
 	@bash scripts/test-no-fallback.sh $(TEST_ARGS)

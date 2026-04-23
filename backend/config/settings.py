@@ -1,7 +1,67 @@
 """
 配置设置
 """
+from io import StringIO
+import os
+from pathlib import Path
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def bootstrap_env_files(backend_dir: Path) -> None:
+    """
+    加载环境变量：
+    1) 明文 .env（兼容开发）
+    2) 加密 .env.encrypted（生产推荐，需通过密钥环境变量解密）
+    """
+    try:
+        from dotenv import dotenv_values, load_dotenv
+    except Exception:
+        return
+
+    candidates = [
+        backend_dir / ".env",
+        backend_dir.parent / ".env",
+    ]
+    for file_path in candidates:
+        if file_path.is_file():
+            load_dotenv(file_path, override=False)
+
+    encryption_key = os.environ.get("OPENVITAMIN_ENV_ENCRYPTION_KEY", "").strip()
+    encrypted_candidates = [
+        backend_dir / ".env.encrypted",
+        backend_dir.parent / ".env.encrypted",
+    ]
+    for encrypted_file in encrypted_candidates:
+        if not encrypted_file.is_file():
+            continue
+        if not encryption_key:
+            raise RuntimeError(
+                f"Found encrypted env file but OPENVITAMIN_ENV_ENCRYPTION_KEY is empty: {encrypted_file}"
+            )
+        try:
+            from cryptography.fernet import Fernet
+        except Exception as exc:
+            raise RuntimeError(
+                "Encrypted env support requires python-dotenv[encrypted] / cryptography dependency"
+            ) from exc
+        cipher = Fernet(encryption_key.encode("utf-8"))
+        decrypted = cipher.decrypt(encrypted_file.read_bytes()).decode("utf-8")
+        parsed = dotenv_values(stream=StringIO(decrypted))
+        for key, value in parsed.items():
+            if key and value is not None:
+                os.environ.setdefault(key, value)
+
+
+def _normalize_roots(raw_roots: str) -> list[Path]:
+    out: list[Path] = []
+    for root in (raw_roots or "").split(","):
+        trimmed = root.strip()
+        if not trimmed:
+            continue
+        out.append(Path(trimmed).expanduser().resolve())
+    return out
 
 
 def apply_production_security_defaults(s: "Settings") -> list[str]:
@@ -21,6 +81,10 @@ def apply_production_security_defaults(s: "Settings") -> list[str]:
     _set_true("rbac_enforcement")
     _set_true("tenant_enforcement_enabled")
     _set_true("tenant_api_key_binding_enabled")
+    required_roots = (getattr(s, "production_file_read_required_roots", "") or "").strip()
+    if required_roots and (getattr(s, "file_read_allowed_roots", "") or "").strip() != required_roots:
+        setattr(s, "file_read_allowed_roots", required_roots)
+        changes.append("file_read_allowed_roots")
     return changes
 
 
@@ -32,8 +96,26 @@ def validate_production_security_guardrails(s: "Settings") -> list[str]:
     if getattr(s, "debug", True):
         return issues
 
-    if (getattr(s, "file_read_allowed_roots", "") or "").strip() == "/":
+    raw_roots = (getattr(s, "file_read_allowed_roots", "") or "").strip()
+    if raw_roots == "/":
         issues.append("file_read_allowed_roots must not be '/' in production")
+    allowed_roots = _normalize_roots(raw_roots)
+    if not allowed_roots:
+        issues.append("file_read_allowed_roots must be explicitly configured in production")
+    required_roots = _normalize_roots(getattr(s, "production_file_read_required_roots", "") or "")
+    for required_root in required_roots:
+        if required_root not in allowed_roots:
+            issues.append(
+                f"file_read_allowed_roots must include required production root: {required_root}"
+            )
+    production_allowlist = _normalize_roots(getattr(s, "production_file_read_allowed_roots", "") or "")
+    if production_allowlist:
+        allow_set = {str(p) for p in production_allowlist}
+        for root in allowed_roots:
+            if str(root) not in allow_set:
+                issues.append(
+                    f"file_read_allowed_roots contains disallowed production root: {root}"
+                )
     if (getattr(s, "cors_allowed_origins", "") or "").strip() == "":
         issues.append("cors_allowed_origins must be explicitly configured in production")
     if getattr(s, "tool_net_http_enabled", False) and (getattr(s, "tool_net_http_allowed_hosts", "") or "").strip() == "":
@@ -66,6 +148,10 @@ class Settings(BaseSettings):
     # 例如："/" 表示允许本机任意目录；"/Users/tony,/data" 表示仅允许这两棵目录。
     # 为空时默认仅允许当前用户主目录。
     file_read_allowed_roots: str = "~"
+    # 生产环境下 file.read 强制根目录（建议仅业务数据目录）
+    production_file_read_required_roots: str = "./data"
+    # 生产环境允许的 file.read 根目录白名单
+    production_file_read_allowed_roots: str = "./data,/app/data,/app/backend/data"
 
     # -------------------------
     # Tool permissions (Local-first & Privacy-first)
@@ -86,6 +172,12 @@ class Settings(BaseSettings):
     tool_net_web_enabled: bool = True
     # Optional: WEB_SEARCH_SERPER_API_KEY for Google search (Serper). If set, uses Serper instead of DuckDuckGo.
     web_search_serper_api_key: str = ""
+    # 可选：通过 Vault Agent/Secret Manager 注入的环境变量名
+    web_search_serper_api_key_vault_env: str = "VAULT_WEB_SEARCH_SERPER_API_KEY"
+    # 可选：从文件加载密钥（例如 /vault/secrets/serper_api_key）
+    web_search_serper_api_key_file: str = ""
+    # 可选：密文 token（Fernet），运行时用 OPENVITAMIN_ENV_ENCRYPTION_KEY 解密
+    web_search_serper_api_key_encrypted: str = ""
 
     # system.env tool is sensitive (may leak secrets): default disabled.
     tool_system_env_enabled: bool = False
@@ -276,6 +368,40 @@ class Settings(BaseSettings):
     security_guardrails_strict: bool = True
     
     model_config = SettingsConfigDict(env_file=".env")
+
+    def model_post_init(self, __context: object) -> None:
+        if self.web_search_serper_api_key:
+            return
+
+        vault_env_name = (self.web_search_serper_api_key_vault_env or "").strip()
+        if vault_env_name:
+            vault_value = (os.environ.get(vault_env_name) or "").strip()
+            if vault_value:
+                self.web_search_serper_api_key = vault_value
+                return
+
+        secret_file = (self.web_search_serper_api_key_file or "").strip()
+        if secret_file:
+            secret_path = Path(secret_file).expanduser()
+            if secret_path.is_file():
+                self.web_search_serper_api_key = secret_path.read_text(encoding="utf-8").strip()
+                if self.web_search_serper_api_key:
+                    return
+
+        encrypted_token = (self.web_search_serper_api_key_encrypted or "").strip()
+        encryption_key = (os.environ.get("OPENVITAMIN_ENV_ENCRYPTION_KEY") or "").strip()
+        if encrypted_token and encryption_key:
+            try:
+                from cryptography.fernet import Fernet
+
+                self.web_search_serper_api_key = (
+                    Fernet(encryption_key.encode("utf-8"))
+                    .decrypt(encrypted_token.encode("utf-8"))
+                    .decode("utf-8")
+                    .strip()
+                )
+            except Exception as exc:
+                raise RuntimeError("Failed to decrypt WEB_SEARCH_SERPER_API_KEY_ENCRYPTED") from exc
 
 
 # 全局配置实例
