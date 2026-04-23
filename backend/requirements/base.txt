@@ -59,7 +59,7 @@ numpy>=2.4.1
 
 # --- Torch VLM / ASR（可选；Windows 可手动安装）---
 torch>=2.0.0; platform_system != "Windows"
-Pillow>=10.0.0
+Pillow>=12.2.0
 einops>=0.8.0
 timm>=1.0.0
 accelerate>=1.0.0
