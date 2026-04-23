@@ -4,9 +4,13 @@ V2.8 Inference Gateway Layer - Inference Gateway
 Central inference routing hub.
 Coordinates ModelRouter and ProviderRuntimeAdapter.
 """
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
+import hashlib
+import json
 
 from log import logger
+from config.settings import settings
+from core.cache import get_redis_cache_client
 
 from core.inference.router.model_router import ModelRouter, RoutingResult
 from core.inference.providers.provider_runtime_adapter import ProviderRuntimeAdapter
@@ -39,6 +43,40 @@ class InferenceGateway:
     def __init__(self) -> None:
         self.router = ModelRouter()
         self.adapter = ProviderRuntimeAdapter()
+        self.cache = get_redis_cache_client()
+
+    @staticmethod
+    def _hash_payload(payload: dict[str, Any]) -> str:
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _cache_prefix() -> str:
+        return str(getattr(settings, "inference_cache_prefix", "openvitamin:inference") or "openvitamin:inference").strip()
+
+    def _build_generate_cache_key(self, routing: RoutingResult, request: InferenceRequest) -> str:
+        payload: dict[str, Any] = {
+            "model_alias": request.model_alias,
+            "resolved_model": routing.model_id,
+            "provider": routing.provider,
+            "messages": [m.model_dump() for m in (request.messages or [])],
+            "prompt": request.prompt,
+            "system_prompt": request.system_prompt,
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+            "stop": request.stop or [],
+        }
+        return f"{self._cache_prefix()}:generate:{self._hash_payload(payload)}"
+
+    def _build_embedding_cache_key(self, routing: RoutingResult, request: EmbeddingRequest) -> str:
+        embedding_input = request.input if isinstance(request.input, str) else list(request.input)
+        payload: dict[str, Any] = {
+            "model_alias": request.model_alias,
+            "resolved_model": routing.model_id,
+            "provider": routing.provider,
+            "input": embedding_input,
+        }
+        return f"{self._cache_prefix()}:embedding:{self._hash_payload(payload)}"
 
     @staticmethod
     def _validate_messages(request: InferenceRequest) -> None:
@@ -118,20 +156,35 @@ class InferenceGateway:
             meta.get("agent_id"),
         )
         
+        cache_key = self._build_generate_cache_key(routing, request)
+        cache_ttl = max(1, int(getattr(settings, "inference_cache_ttl_seconds", 300)))
+        cached = await self.cache.get_json(cache_key)
+        if cached:
+            try:
+                response = InferenceResponse(**cached)
+                response.metadata = {**(response.metadata or {}), "cache_hit": True}
+                return response
+            except Exception:
+                pass
+
         # 2. Execute via adapter
         if routing.resolved_via == "direct":
             # Passthrough: use model_alias as model_id directly
-            return await self.adapter.generate(
+            response = await self.adapter.generate(
                 "auto",
                 request.model_alias,
                 request
             )
-        
-        return await self.adapter.generate(
-            routing.provider,
-            routing.model_id,
-            request
-        )
+        else:
+            response = await self.adapter.generate(
+                routing.provider,
+                routing.model_id,
+                request
+            )
+
+        response.metadata = {**(response.metadata or {}), "cache_hit": False}
+        await self.cache.set_json(cache_key, response.model_dump(), cache_ttl)
+        return response
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         routing = self.router.resolve(request.model_alias)
@@ -146,9 +199,24 @@ class InferenceGateway:
             meta.get("trace_id"),
             meta.get("agent_id"),
         )
+        cache_key = self._build_embedding_cache_key(routing, request)
+        cache_ttl = max(1, int(getattr(settings, "embedding_cache_ttl_seconds", 86400)))
+        cached = await self.cache.get_json(cache_key)
+        if cached:
+            try:
+                response = EmbeddingResponse(**cached)
+                response.metadata = {**(response.metadata or {}), "cache_hit": True}
+                return response
+            except Exception:
+                pass
+
         if routing.resolved_via == "direct":
-            return await self.adapter.embed("auto", request.model_alias, request)
-        return await self.adapter.embed(routing.provider, routing.model_id, request)
+            response = await self.adapter.embed("auto", request.model_alias, request)
+        else:
+            response = await self.adapter.embed(routing.provider, routing.model_id, request)
+        response.metadata = {**(response.metadata or {}), "cache_hit": False}
+        await self.cache.set_json(cache_key, response.model_dump(), cache_ttl)
+        return response
 
     async def transcribe(self, request: ASRRequest) -> ASRResponse:
         routing = self.router.resolve(request.model_alias)

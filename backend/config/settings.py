@@ -209,11 +209,19 @@ class Settings(BaseSettings):
     # 运行时资源回收（通用）
     runtime_auto_release_enabled: bool = True
     # 缓存本地重模型的上限（超出后回收最久未使用模型）
-    runtime_max_cached_local_runtimes: int = 1
+    runtime_max_cached_local_runtimes: int = 3
     # 按模型类型拆分的缓存上限；未配置时回退到 runtime_max_cached_local_runtimes
-    runtime_max_cached_local_llm_runtimes: int = 1
-    runtime_max_cached_local_vlm_runtimes: int = 1
-    runtime_max_cached_local_image_generation_runtimes: int = 1
+    runtime_max_cached_local_llm_runtimes: int = 3
+    runtime_max_cached_local_vlm_runtimes: int = 3
+    runtime_max_cached_local_image_generation_runtimes: int = 3
+    # Redis 推理缓存
+    inference_cache_enabled: bool = True
+    inference_cache_redis_url: str = "redis://127.0.0.1:6379/0"
+    inference_cache_prefix: str = "openvitamin:inference"
+    # 相同模型+相同请求缓存 5 分钟
+    inference_cache_ttl_seconds: int = 300
+    # Embedding 缓存 24 小时
+    embedding_cache_ttl_seconds: int = 86400
     # 空闲回收阈值（秒）
     runtime_release_idle_ttl_seconds: int = 300
     # 自动回收最小触发间隔（秒），用于抑制并发尖峰抖动
