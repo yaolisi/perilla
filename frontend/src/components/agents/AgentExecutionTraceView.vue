@@ -27,7 +27,7 @@ import {
   type AgentTraceEvent,
 } from '@/services/api'
 import mermaid from 'mermaid'
-import { sanitizeHtml } from '@/utils/security'
+import { sanitizeHtml, sanitizeMermaidSvg } from '@/utils/security'
 
 const i18n = useI18n()
 const { t, locale } = i18n
@@ -226,7 +226,7 @@ const generateDagDiagram = async () => {
     // Render the diagram
     const { svg } = await mermaid.render(`dag-${Date.now()}`, mermaidDef)
     console.log('[DAG] Successfully rendered SVG')
-    dagMermaidSvg.value = sanitizeHtml(svg)
+    dagMermaidSvg.value = sanitizeMermaidSvg(svg)
     
     // After rendering, ensure smooth transitions
     setTimeout(() => {

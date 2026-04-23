@@ -366,6 +366,19 @@ class Settings(BaseSettings):
     csrf_cookie_max_age_seconds: int = 86400
     # 生产安全护栏是否严格阻断启动（False=仅告警）
     security_guardrails_strict: bool = True
+
+    # ---------- 输入校验与脱敏 ----------
+    # 对外 API body 顶层字段白名单校验（基于对应 Pydantic 请求模型）
+    api_request_whitelist_enabled: bool = True
+    # 全局敏感字段脱敏（请求/响应 JSON）
+    data_redaction_enabled: bool = True
+    # 逗号分隔关键字；字段名包含任一关键字即脱敏
+    data_redaction_sensitive_fields: str = (
+        "api_key,password,secret,token,authorization,access_token,refresh_token,"
+        "client_secret,private_key"
+    )
+    data_redaction_mask_keep_prefix: int = 4
+    data_redaction_mask_keep_suffix: int = 4
     
     model_config = SettingsConfigDict(env_file=".env")
 

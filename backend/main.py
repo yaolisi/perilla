@@ -50,6 +50,7 @@ from api.workflows import router as workflows_router
 from api.audit import router as audit_router
 from api.errors import register_error_handlers
 from core.security.deps import require_authenticated_platform_admin
+from middleware.request_whitelist import enforce_request_body_whitelist
 
 MODEL_NOT_FOUND_ERROR = "Model not found"
 AdminRole = Annotated[Any, Depends(require_authenticated_platform_admin)]
@@ -392,7 +393,8 @@ app = FastAPI(
     title=settings.app_name,
     version=settings.version,
     description="本地 AI 推理网关",
-    lifespan=lifespan
+    lifespan=lifespan,
+    dependencies=[Depends(enforce_request_body_whitelist)],
 )
 register_error_handlers(app)
 
@@ -408,6 +410,7 @@ from middleware.tenant_context import TenantContextMiddleware
 from middleware.tenant_key_binding import TenantApiKeyBindingMiddleware
 from middleware.api_key_scope import ApiKeyScopeMiddleware
 from middleware.csrf_protection import CSRFMiddleware
+from middleware.sensitive_data_redaction import SensitiveDataRedactionMiddleware
 
 _api_key_hdr = getattr(settings, "api_rate_limit_api_key_header", "X-Api-Key")
 
@@ -434,6 +437,7 @@ if getattr(settings, "rbac_enabled", False):
     app.add_middleware(RBACContextMiddleware, api_key_header=_api_key_hdr)
 
 app.add_middleware(UserContextMiddleware)
+app.add_middleware(SensitiveDataRedactionMiddleware)
 
 if getattr(settings, "rbac_enabled", False) and getattr(settings, "rbac_enforcement", False):
     app.add_middleware(RBACEnforcementMiddleware)
