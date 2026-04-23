@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 8
+    target-branch: "main"
+    commit-message:
+      prefix: "deps"
+    allow:
+      - dependency-type: "all"
+    groups:
+      backend-runtime:
+        patterns:
+          - "fastapi"
+          - "starlette"
+          - "pydantic*"
+          - "sqlalchemy"
+          - "alembic"
+          - "httpx"
+          - "httpcore"
+      ai-stack:
+        patterns:
+          - "transformers"
+          - "torch"
+          - "diffusers"
+          - "onnx*"
+          - "tokenizers"
+          - "ultralytics"
+    ignore:
+      # 核心依赖禁止自动升级大版本，降低兼容风险
+      - dependency-name: "fastapi"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "sqlalchemy"
+        update-types: ["version-update:semver-major"]
