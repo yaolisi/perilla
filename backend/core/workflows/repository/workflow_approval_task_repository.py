@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from sqlalchemy.orm import Session
 
@@ -13,33 +13,52 @@ class WorkflowApprovalTaskRepository:
     def __init__(self, db: Session):
         self.db = db
 
+    @staticmethod
+    def _set_row_fields(row: WorkflowApprovalTaskORM, **fields: object) -> None:
+        for key, value in fields.items():
+            setattr(row, key, value)
+
     def get_by_id(self, task_id: str) -> Optional[WorkflowApprovalTaskORM]:
-        return self.db.query(WorkflowApprovalTaskORM).filter(WorkflowApprovalTaskORM.id == task_id).first()
+        return cast(
+            Optional[WorkflowApprovalTaskORM],
+            self.db.query(WorkflowApprovalTaskORM)
+            .filter(WorkflowApprovalTaskORM.id == task_id)
+            .first(),
+        )
 
     def list_by_execution(self, execution_id: str) -> List[WorkflowApprovalTaskORM]:
-        return (
+        return cast(
+            List[WorkflowApprovalTaskORM],
+            (
             self.db.query(WorkflowApprovalTaskORM)
             .filter(WorkflowApprovalTaskORM.execution_id == execution_id)
             .order_by(WorkflowApprovalTaskORM.created_at.desc())
             .all()
+            ),
         )
 
     def list_pending_by_execution(self, execution_id: str) -> List[WorkflowApprovalTaskORM]:
-        return (
+        return cast(
+            List[WorkflowApprovalTaskORM],
+            (
             self.db.query(WorkflowApprovalTaskORM)
             .filter(WorkflowApprovalTaskORM.execution_id == execution_id)
             .filter(WorkflowApprovalTaskORM.status == "pending")
             .order_by(WorkflowApprovalTaskORM.created_at.desc())
             .all()
+            ),
         )
 
     def get_pending_by_execution_node(self, execution_id: str, node_id: str) -> Optional[WorkflowApprovalTaskORM]:
-        return (
+        return cast(
+            Optional[WorkflowApprovalTaskORM],
+            (
             self.db.query(WorkflowApprovalTaskORM)
             .filter(WorkflowApprovalTaskORM.execution_id == execution_id)
             .filter(WorkflowApprovalTaskORM.node_id == node_id)
             .filter(WorkflowApprovalTaskORM.status == "pending")
             .first()
+            ),
         )
 
     def create_task(
@@ -85,8 +104,7 @@ class WorkflowApprovalTaskRepository:
             .all()
         )
         for row in rows:
-            row.status = "expired"
-            row.updated_at = now
+            self._set_row_fields(row, status="expired", updated_at=now)
         if rows:
             self.db.commit()
         return len(rows)
@@ -97,10 +115,14 @@ class WorkflowApprovalTaskRepository:
             return None
         if row.status != "pending":
             return row
-        row.status = "approved" if decision == "approved" else "rejected"
-        row.decided_by = decided_by
-        row.decided_at = datetime.now(timezone.utc)
-        row.updated_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        self._set_row_fields(
+            row,
+            status="approved" if decision == "approved" else "rejected",
+            decided_by=decided_by,
+            decided_at=now,
+            updated_at=now,
+        )
         self.db.commit()
         self.db.refresh(row)
         return row

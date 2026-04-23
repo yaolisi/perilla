@@ -22,7 +22,12 @@ USER_ID_ATTR = "user_id"
 
 class UserAccessDeniedError(Exception):
     """用户无权限访问资源"""
-    def __init__(self, resource_type: str, resource_id: str = None, user_id: str = None):
+    def __init__(
+        self,
+        resource_type: str,
+        resource_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> None:
         self.resource_type = resource_type
         self.resource_id = resource_id
         self.user_id = user_id
@@ -61,13 +66,13 @@ def get_user_id(request: Request, default: str = DEFAULT_USER_ID) -> str:
     # 1. 优先从 request.state 获取（中间件注入）
     if hasattr(request.state, USER_ID_ATTR):
         state_user_id = getattr(request.state, USER_ID_ATTR, None)
-        if state_user_id:
+        if isinstance(state_user_id, str) and state_user_id:
             return state_user_id
     
     # 2. 从 HTTP Header 获取（兼容多种 Header 名称）
     for header_name in USER_ID_HEADERS:
         user_id = request.headers.get(header_name)
-        if user_id:
+        if isinstance(user_id, str) and user_id:
             return user_id
     
     return default

@@ -43,7 +43,7 @@ class RuntimeMetrics:
     Records requests, latency, tokens; supports optional queue_size updates.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_model: Dict[str, ModelMetrics] = {}
         self._queue_sizes: Dict[str, int] = {}  # model_id -> current queue size (set by queue)

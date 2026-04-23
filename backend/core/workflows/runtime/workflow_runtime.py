@@ -4,8 +4,8 @@ Workflow Runtime
 Workflow 运行时，协调执行流程，集成 governance 和 execution_kernel。
 """
 
-from typing import Optional, Dict, Any, Callable, List
-from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, Callable, List, Awaitable, cast, Tuple
+from datetime import UTC, datetime, timedelta
 import asyncio
 import json
 from pathlib import Path
@@ -37,9 +37,13 @@ from execution_kernel.engine.control_flow import execute_condition_node
 from execution_kernel.engine.scheduler import Scheduler
 from execution_kernel.engine.state_machine import StateMachine
 from execution_kernel.engine.executor import Executor
+from execution_kernel.engine.context import GraphContext
 from execution_kernel.persistence.db import Database, get_platform_db_path
 from execution_kernel.cache.node_cache import NodeCache
 from execution_kernel.persistence.repositories import NodeCacheRepository
+from execution_kernel.models.graph_definition import NodeDefinition
+from execution_kernel.models.node_models import NodeCacheEntry
+from execution_kernel.models.graph_instance import NodeCacheDB
 from config.settings import settings
 from log import logger
 
@@ -53,12 +57,12 @@ class _WorkflowNodeCacheRepository:
     def __init__(self, db: Database):
         self._db = db
 
-    async def get(self, node_id: str, input_hash: str):
+    async def get(self, node_id: str, input_hash: str) -> Optional[NodeCacheDB]:
         async with self._db.async_session() as session:
             repo = NodeCacheRepository(session)
             return await repo.get(node_id, input_hash)
 
-    async def save(self, entry):
+    async def save(self, entry: NodeCacheEntry) -> NodeCacheDB:
         async with self._db.async_session() as session:
             repo = NodeCacheRepository(session)
             return await repo.save(entry)
@@ -66,7 +70,7 @@ class _WorkflowNodeCacheRepository:
     async def delete_expired(self) -> int:
         async with self._db.async_session() as session:
             repo = NodeCacheRepository(session)
-            return await repo.delete_expired()
+            return cast(int, await repo.delete_expired())
 
 
 class WorkflowRuntime:
@@ -79,6 +83,8 @@ class WorkflowRuntime:
     3. 调用 execution_kernel 执行
     4. 状态同步和结果处理
     """
+    AGENT_NODE_MAX_CALL_DEPTH = 2
+    AGENT_NODE_DEFAULT_MAX_CALLS = 20
     
     def __init__(
         self,
@@ -91,6 +97,8 @@ class WorkflowRuntime:
         self.version_repository = WorkflowVersionRepository(db)
         self.approval_repository = WorkflowApprovalTaskRepository(db)
         self.execution_manager = execution_manager
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._inference_client = InferenceClient()
         
         # 初始化 execution_kernel 组件
         if scheduler:
@@ -100,7 +108,7 @@ class WorkflowRuntime:
             db_instance = Database()
             state_machine = StateMachine(db=db_instance)
             cache_repo = _WorkflowNodeCacheRepository(db_instance)
-            cache = NodeCache(cache_repo)
+            cache = NodeCache(cast(NodeCacheRepository, cache_repo))
             # Workflow 使用基础 node handlers（llm, tool, condition 等）
             node_handlers = self._create_default_node_handlers()
             executor = Executor(state_machine, cache, node_handlers)
@@ -115,7 +123,14 @@ class WorkflowRuntime:
         if not isinstance(schema, dict) or not schema:
             return None
 
-        type_map = {
+        root_rule = dict(schema)
+        if "type" not in root_rule:
+            root_rule["type"] = "object"
+        return WorkflowRuntime._validate_schema_node(output, root_rule, "schema", "output")
+
+    @staticmethod
+    def _schema_type_map() -> Dict[str, type[Any] | tuple[type[Any], ...]]:
+        return {
             "string": str,
             "number": (int, float),
             "integer": int,
@@ -124,495 +139,930 @@ class WorkflowRuntime:
             "array": list,
         }
 
-        def _err(
-            *,
-            message: str,
-            schema_path: str,
-            output_path: str,
-            expected_type: Optional[str] = None,
-            actual_type: Optional[str] = None,
-        ) -> Dict[str, Any]:
-            return {
-                "error_code": "AGENT_OUTPUT_SCHEMA_VALIDATION_ERROR",
-                "message": message,
-                "schema_path": schema_path,
-                "output_path": output_path,
-                "expected_type": expected_type,
-                "actual_type": actual_type,
-            }
+    @staticmethod
+    def _schema_validation_error(
+        *,
+        message: str,
+        schema_path: str,
+        output_path: str,
+        expected_type: Optional[str] = None,
+        actual_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "error_code": "AGENT_OUTPUT_SCHEMA_VALIDATION_ERROR",
+            "message": message,
+            "schema_path": schema_path,
+            "output_path": output_path,
+            "expected_type": expected_type,
+            "actual_type": actual_type,
+        }
 
-        def _validate(value: Any, rule: Dict[str, Any], schema_path: str, output_path: str) -> Optional[Dict[str, Any]]:
-            expected = str((rule or {}).get("type") or "").strip()
-            if expected:
-                py_type = type_map.get(expected)
-                actual_type = type(value).__name__
-                if py_type and not isinstance(value, py_type):
-                    return _err(
-                        message=f"type mismatch: expected {expected}, got {actual_type}",
-                        schema_path=schema_path,
-                        output_path=output_path,
-                        expected_type=expected,
-                        actual_type=actual_type,
-                    )
+    @staticmethod
+    def _validate_schema_node(
+        value: Any, rule: Dict[str, Any], schema_path: str, output_path: str
+    ) -> Optional[Dict[str, Any]]:
+        expected = str((rule or {}).get("type") or "").strip()
+        type_err = WorkflowRuntime._validate_schema_type_match(
+            value=value,
+            expected=expected,
+            schema_path=schema_path,
+            output_path=output_path,
+        )
+        if type_err:
+            return type_err
 
-            if expected == "object":
-                required = (rule or {}).get("required") or []
-                for key in required:
-                    if not isinstance(value, dict) or key not in value:
-                        return _err(
-                            message=f"missing required field: {key}",
-                            schema_path=f"{schema_path}.required[{key}]",
-                            output_path=f"{output_path}.{key}",
-                            expected_type=None,
-                            actual_type="missing",
-                        )
-                properties = (rule or {}).get("properties") or {}
-                for key, child_rule in properties.items():
-                    if not isinstance(value, dict) or key not in value:
-                        continue
-                    child_schema_path = f"{schema_path}.properties.{key}"
-                    child_output_path = f"{output_path}.{key}"
-                    err = _validate(value.get(key), child_rule or {}, child_schema_path, child_output_path)
-                    if err:
-                        return err
+        object_err = WorkflowRuntime._validate_object_schema_node(
+            value=value,
+            rule=rule,
+            expected=expected,
+            schema_path=schema_path,
+            output_path=output_path,
+        )
+        if object_err:
+            return object_err
+        return WorkflowRuntime._validate_array_schema_node(
+            value=value,
+            rule=rule,
+            expected=expected,
+            schema_path=schema_path,
+            output_path=output_path,
+        )
 
-            if expected == "array":
-                items_rule = (rule or {}).get("items")
-                if items_rule and isinstance(value, list):
-                    for idx, item in enumerate(value):
-                        err = _validate(
-                            item,
-                            items_rule,
-                            f"{schema_path}.items",
-                            f"{output_path}[{idx}]",
-                        )
-                        if err:
-                            return err
+    @staticmethod
+    def _validate_schema_type_match(
+        *,
+        value: Any,
+        expected: str,
+        schema_path: str,
+        output_path: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not expected:
             return None
+        py_type = WorkflowRuntime._schema_type_map().get(expected)
+        actual_type = type(value).__name__
+        if not py_type or isinstance(value, py_type):
+            return None
+        return WorkflowRuntime._schema_validation_error(
+            message=f"type mismatch: expected {expected}, got {actual_type}",
+            schema_path=schema_path,
+            output_path=output_path,
+            expected_type=expected,
+            actual_type=actual_type,
+        )
 
-        root_rule = dict(schema)
-        if "type" not in root_rule:
-            root_rule["type"] = "object"
-        return _validate(output, root_rule, "schema", "output")
+    @staticmethod
+    def _validate_object_schema_node(
+        *,
+        value: Any,
+        rule: Dict[str, Any],
+        expected: str,
+        schema_path: str,
+        output_path: str,
+    ) -> Optional[Dict[str, Any]]:
+        if expected != "object":
+            return None
+        required_err = WorkflowRuntime._validate_required_object_keys(
+            value=value,
+            required=(rule or {}).get("required") or [],
+            schema_path=schema_path,
+            output_path=output_path,
+        )
+        if required_err:
+            return required_err
+        return WorkflowRuntime._validate_object_properties(
+            value=value,
+            properties=(rule or {}).get("properties") or {},
+            schema_path=schema_path,
+            output_path=output_path,
+        )
+
+    @staticmethod
+    def _validate_required_object_keys(
+        *,
+        value: Any,
+        required: List[Any],
+        schema_path: str,
+        output_path: str,
+    ) -> Optional[Dict[str, Any]]:
+        for key in required:
+            if not isinstance(value, dict) or key not in value:
+                return WorkflowRuntime._schema_validation_error(
+                    message=f"missing required field: {key}",
+                    schema_path=f"{schema_path}.required[{key}]",
+                    output_path=f"{output_path}.{key}",
+                    expected_type=None,
+                    actual_type="missing",
+                )
+        return None
+
+    @staticmethod
+    def _validate_object_properties(
+        *,
+        value: Any,
+        properties: Dict[str, Any],
+        schema_path: str,
+        output_path: str,
+    ) -> Optional[Dict[str, Any]]:
+        for key, child_rule in properties.items():
+            if not isinstance(value, dict) or key not in value:
+                continue
+            child_schema_path = f"{schema_path}.properties.{key}"
+            child_output_path = f"{output_path}.{key}"
+            err = WorkflowRuntime._validate_schema_node(
+                value.get(key), child_rule or {}, child_schema_path, child_output_path
+            )
+            if err:
+                return err
+        return None
+
+    @staticmethod
+    def _validate_array_schema_node(
+        *,
+        value: Any,
+        rule: Dict[str, Any],
+        expected: str,
+        schema_path: str,
+        output_path: str,
+    ) -> Optional[Dict[str, Any]]:
+        if expected != "array":
+            return None
+        items_rule = (rule or {}).get("items")
+        if not items_rule or not isinstance(value, list):
+            return None
+        for idx, item in enumerate(value):
+            err = WorkflowRuntime._validate_schema_node(
+                item,
+                items_rule,
+                f"{schema_path}.items",
+                f"{output_path}[{idx}]",
+            )
+            if err:
+                return err
+        return None
 
     def _create_default_node_handlers(self) -> Dict[str, Callable]:
         """创建默认的节点处理器"""
-        client = InferenceClient()
-        AGENT_NODE_MAX_CALL_DEPTH = 2
-        AGENT_NODE_DEFAULT_MAX_CALLS = 20
+        return cast(Dict[str, Callable[[NodeDefinition, Dict[str, Any], GraphContext], Awaitable[Dict[str, Any]]]], {
+            "tool": self._tool_handler,
+            "llm": self._llm_handler,
+            "condition": self._condition_handler,
+            "script": self._script_handler,
+        })
 
-        def _ensure_execution_not_cancelled(context: Any) -> None:
-            global_ctx = getattr(context, "global_data", {}) or {}
-            execution_id = str(global_ctx.get("execution_id") or "").strip()
-            if not execution_id:
-                return
-            execution = self.execution_repository.get_by_id(execution_id)
-            if execution and execution.state == WorkflowExecutionState.CANCELLED:
-                raise RuntimeError(f"WORKFLOW_CANCELLED: execution_id={execution_id}")
+    def _ensure_execution_not_cancelled(self, context: GraphContext) -> None:
+        global_ctx = getattr(context, "global_data", {}) or {}
+        execution_id = str(global_ctx.get("execution_id") or "").strip()
+        if not execution_id:
+            return
+        execution = self.execution_repository.get_by_id(execution_id)
+        if execution and execution.state == WorkflowExecutionState.CANCELLED:
+            raise RuntimeError(f"WORKFLOW_CANCELLED: execution_id={execution_id}")
 
-        async def _tool_handler(node_def, input_data, context):
-            def _infer_prompt_from_payload(payload: Any) -> Optional[str]:
-                if payload is None:
-                    return None
-                if isinstance(payload, str):
-                    s = payload.strip()
-                    return s or None
-                if isinstance(payload, (int, float, bool)):
-                    return str(payload)
-                if isinstance(payload, dict):
-                    preferred_keys = [
-                        "prompt", "message", "query", "text",
-                        "question", "task", "instruction", "content",
-                        "topic", "input",
-                    ]
-                    for k in preferred_keys:
-                        v = payload.get(k)
-                        if isinstance(v, str) and v.strip():
-                            return v.strip()
-                    # 兜底：取首个非空字符串字段
-                    for v in payload.values():
-                        if isinstance(v, str) and v.strip():
-                            return v.strip()
-                    return None
-                return None
+    @staticmethod
+    def _coerce_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
-            _ensure_execution_not_cancelled(context)
-            cfg = node_def.config or {}
-            workflow_node_type = str(cfg.get("workflow_node_type") or "").strip().lower()
-            if workflow_node_type == "input":
-                # Input 节点：
-                # 1) 默认透传 workflow input_data（可被 fixed_input / node input 覆盖）
-                # 2) 若配置 input_key，则仅输出该 key 的裁剪结果
-                global_ctx = getattr(context, "global_data", {}) or {}
-                base = global_ctx.get("input_data") if isinstance(global_ctx.get("input_data"), dict) else {}
-                out = dict(base or {})
-                fixed_input = cfg.get("fixed_input")
-                if isinstance(fixed_input, dict):
-                    out = {**out, **fixed_input}
-                if isinstance(input_data, dict) and input_data:
-                    out = {**out, **input_data}
-                input_key = str(cfg.get("input_key") or "").strip()
-                if input_key:
-                    if input_key in out:
-                        return {input_key: out.get(input_key)}
-                    return {}
-                return out
-            if workflow_node_type == "output":
-                # Output 节点：
-                # 根据 config.output_key + config.expression 计算输出；
-                # expression 复用 Context.resolve 语义。
-                out = dict(input_data or {})
-                fixed_input = cfg.get("fixed_input")
-                if isinstance(fixed_input, dict):
-                    out = {**fixed_input, **out}
-                allow_output_auto_fallback = bool(cfg.get("allow_auto_fallback", False))
-                if allow_output_auto_fallback and not out and hasattr(context, "node_outputs"):
-                    try:
-                        values = list((context.node_outputs or {}).values())
-                        for candidate in reversed(values):
-                            if isinstance(candidate, dict) and candidate:
-                                out = candidate
-                                break
-                    except Exception:
-                        pass
-                # 兜底：若当前仅拿到 input/query 等“输入类字段”，优先回退到最近的 agent_result，避免最终输出只回显用户输入。
-                if allow_output_auto_fallback and isinstance(out, dict):
-                    semantic_keys = {"query", "text", "prompt", "message", "topic", "input"}
-                    has_result_like = any(k in out for k in ("response", "result", "output", "content"))
-                    only_semantic_input = (not has_result_like) and set(out.keys()).issubset(semantic_keys)
-                    if only_semantic_input and hasattr(context, "node_outputs"):
-                        try:
-                            values = list((context.node_outputs or {}).values())
-                            for candidate in reversed(values):
-                                if not isinstance(candidate, dict) or not candidate:
-                                    continue
-                                if str(candidate.get("type") or "").strip().lower() == "agent_result":
-                                    out = candidate
-                                    break
-                                if any(k in candidate for k in ("response", "result", "output", "content")):
-                                    out = candidate
-                                    break
-                        except Exception:
-                            pass
-                output_key = str(cfg.get("output_key") or "").strip()
-                expression = cfg.get("expression")
-                if output_key:
-                    if isinstance(expression, str) and expression.strip():
-                        value = context.resolve(expression)
-                        source_mode = "expression"
-                    else:
-                        value = out.get(output_key) if isinstance(out, dict) and output_key in out else out
-                        source_mode = "passthrough"
-                    return {
-                        output_key: value,
-                        "__workflow_output_source": {
-                            "mode": source_mode,
-                            "output_key": output_key,
-                            "expression": expression if isinstance(expression, str) and expression.strip() else None,
-                        },
-                    }
-                if isinstance(out, dict):
-                    return {
-                        **out,
-                        "__workflow_output_source": {
-                            "mode": "passthrough",
-                            "output_key": None,
-                            "expression": expression if isinstance(expression, str) and expression.strip() else None,
-                        },
-                    }
-                return out
-            if workflow_node_type == "agent":
-                agent_id = str(cfg.get("agent_id") or "").strip()
-                if not agent_id:
-                    raise ValueError("AGENT_NODE_CONFIG_ERROR: missing agent_id")
+    @staticmethod
+    def _infer_prompt_from_payload(payload: Any) -> Optional[str]:
+        if payload is None:
+            return None
+        if isinstance(payload, str):
+            s = payload.strip()
+            return s or None
+        if isinstance(payload, (int, float, bool)):
+            return str(payload)
+        if isinstance(payload, dict):
+            return WorkflowRuntime._infer_prompt_from_dict_payload(payload)
+        return None
 
-                registry = get_agent_registry()
-                target_agent = registry.get_agent(agent_id)
-                if not target_agent:
-                    raise ValueError(f"AGENT_NODE_NOT_FOUND: {agent_id}")
-                # 关键约束：不要修改注册中心返回的全局 Agent 对象，避免跨 workflow/会话污染。
-                run_agent = target_agent.model_copy(deep=True)
+    @staticmethod
+    def _infer_prompt_from_dict_payload(payload: Dict[str, Any]) -> Optional[str]:
+        preferred_keys = [
+            "prompt", "message", "query", "text",
+            "question", "task", "instruction", "content",
+            "topic", "input",
+        ]
+        for k in preferred_keys:
+            v = payload.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        for v in payload.values():
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return None
 
-                global_ctx = getattr(context, "global_data", {}) or {}
-                workspace = global_ctx.get("workspace") or "."
-                workflow_execution_id = str(global_ctx.get("execution_id") or "").strip()
-                user_id = str(global_ctx.get("user_id") or "default").strip() or "default"
-
-                call_chain = global_ctx.get("agent_call_chain")
-                if not isinstance(call_chain, list):
-                    call_chain = []
-                call_chain = [str(x).strip() for x in call_chain if str(x).strip()]
-                if agent_id in call_chain:
-                    raise RuntimeError(
-                        f"AGENT_NODE_RECURSION_GUARD: loop detected in agent_call_chain={call_chain + [agent_id]}"
-                    )
-                if len(call_chain) >= AGENT_NODE_MAX_CALL_DEPTH:
-                    raise RuntimeError(
-                        f"AGENT_NODE_RECURSION_GUARD: max depth exceeded ({AGENT_NODE_MAX_CALL_DEPTH})"
-                    )
-
-                max_calls = int(global_ctx.get("agent_node_max_calls") or AGENT_NODE_DEFAULT_MAX_CALLS)
-                if cfg.get("agent_max_calls") is not None:
-                    max_calls = max(1, int(cfg.get("agent_max_calls")))
-                current_calls = int(global_ctx.get("__agent_node_call_count") or 0)
-                if current_calls >= max_calls:
-                    raise RuntimeError(f"AGENT_NODE_GOVERNANCE_LIMIT: max calls exceeded ({max_calls})")
-                global_ctx["__agent_node_call_count"] = current_calls + 1
-
-                # agent 节点也支持 fixed_input 作为默认入参，允许前端用配置面板提供默认 prompt/message/query/text
-                effective_input = dict(input_data or {})
-                fixed_input = cfg.get("fixed_input")
-                if isinstance(fixed_input, dict):
-                    effective_input = {**fixed_input, **effective_input}
-                # 若上游未显式传入，尝试从最近的节点输出中补齐输入（兼容部分编排未做映射的场景）
-                allow_agent_auto_input_fallback = bool(cfg.get("allow_auto_input_fallback", False))
-                if allow_agent_auto_input_fallback and not effective_input and hasattr(context, "node_outputs"):
-                    try:
-                        values = list((context.node_outputs or {}).values())
-                        for candidate in reversed(values):
-                            if isinstance(candidate, dict) and candidate:
-                                effective_input = dict(candidate)
-                                break
-                    except Exception:
-                        pass
-
-                prompt = cfg.get("prompt") or effective_input.get("prompt")
-                if prompt is None:
-                    prompt = (
-                        effective_input.get("message")
-                        or effective_input.get("query")
-                        or effective_input.get("text")
-                    )
-                if prompt is None:
-                    prompt = _infer_prompt_from_payload(effective_input)
-                # 当节点输入为空时，回退到 workflow 全局 input_data，避免 agent 收到 "{}" 后误触发无关技能。
-                if prompt is None:
-                    workflow_input = global_ctx.get("input_data") or {}
-                    if isinstance(workflow_input, dict):
-                        prompt = (
-                            workflow_input.get("prompt")
-                            or workflow_input.get("message")
-                            or workflow_input.get("query")
-                            or workflow_input.get("text")
-                        )
-                    elif workflow_input not in (None, ""):
-                        prompt = str(workflow_input)
-                if prompt is None:
-                    workflow_input = global_ctx.get("input_data")
-                    prompt = _infer_prompt_from_payload(workflow_input)
-                if prompt is None:
-                    if effective_input:
-                        prompt = json.dumps(effective_input, ensure_ascii=False, sort_keys=True)
-                    else:
-                        workflow_input = global_ctx.get("input_data") or {}
-                        if isinstance(workflow_input, dict) and workflow_input:
-                            prompt = json.dumps(workflow_input, ensure_ascii=False, sort_keys=True)
-                if prompt is None:
-                    dbg_node_keys = sorted([str(k) for k in effective_input.keys()]) if isinstance(effective_input, dict) else []
-                    workflow_input = global_ctx.get("input_data")
-                    dbg_workflow_keys = (
-                        sorted([str(k) for k in workflow_input.keys()])
-                        if isinstance(workflow_input, dict)
-                        else []
-                    )
-                    raise ValueError(
-                        "AGENT_NODE_INPUT_EMPTY: missing prompt/message/query/text in node input and workflow input_data; "
-                        f"node_input_keys={dbg_node_keys}, workflow_input_keys={dbg_workflow_keys}; "
-                        "fix_by=provide one of: "
-                        "1) node.config.prompt, "
-                        "2) node.config.fixed_input.query|text|message|prompt, "
-                        "3) execution input_data.query|text|message|prompt"
-                    )
-
-                pass_context_keys = cfg.get("pass_context_keys")
-                if isinstance(pass_context_keys, list) and pass_context_keys:
-                    passed = {}
-                    for key in pass_context_keys:
-                        k = str(key).strip()
-                        if not k:
-                            continue
-                        if isinstance(input_data, dict) and k in input_data:
-                            passed[k] = input_data.get(k)
-                        elif k in global_ctx:
-                            passed[k] = global_ctx.get(k)
-                    if passed:
-                        prompt = f"{prompt}\n\nContext:\n{json.dumps(passed, ensure_ascii=False)}"
-
-                if cfg.get("max_steps") is not None:
-                    run_agent.max_steps = max(1, int(cfg.get("max_steps")))
-                model_override = str(cfg.get("model_override") or "").strip()
-                if model_override:
-                    run_agent.model_id = model_override
-
-                node_session_id = (
-                    f"wf_{workflow_execution_id}_{node_def.id}"
-                    if workflow_execution_id else f"wf_{node_def.id}"
-                )
-                session = AgentSession(
-                    session_id=node_session_id,
-                    agent_id=run_agent.agent_id,
-                    user_id=user_id,
-                    messages=[Message(role="user", content=str(prompt))],
-                    status="idle",
-                )
-                session.workspace_dir = workspace
-                session.state = {
-                    "workflow_agent_context": {
-                        "workflow_execution_id": workflow_execution_id,
-                        "source_node_id": str(node_def.id),
-                        "call_depth": len(call_chain) + 1,
-                        "call_chain": call_chain + [agent_id],
-                    }
-                }
-
-                runtime = get_agent_runtime(get_agent_executor())
-                timeout_sec = cfg.get("timeout")
-                if timeout_sec is None:
-                    timeout_sec = cfg.get("agent_timeout_seconds")
-                if timeout_sec is not None:
-                    result_session = await asyncio.wait_for(
-                        runtime.run(run_agent, session, workspace=workspace),
-                        timeout=float(timeout_sec),
-                    )
-                else:
-                    result_session = await runtime.run(run_agent, session, workspace=workspace)
-
-                if result_session.status == "error":
-                    raise RuntimeError(
-                        f"AGENT_NODE_RUNTIME_ERROR: {result_session.error_message or f'Agent run failed: {agent_id}'}"
-                    )
-
-                assistant_reply = ""
-                for msg in reversed(result_session.messages):
-                    if msg.role == "assistant":
-                        assistant_reply = msg.content if isinstance(msg.content, str) else str(msg.content)
-                        break
-
-                agent_output = {
-                    "type": "agent_result",
-                    "status": "success",
-                    "agent_id": agent_id,
-                    "agent_session_id": result_session.session_id,
-                    "workflow_node_id": str(node_def.id),
-                    "response": assistant_reply,
-                    "response_preview": assistant_reply[:500],
-                }
-                schema = {}
-                if isinstance(cfg.get("output_schema"), dict):
-                    schema = cfg.get("output_schema")
-                elif isinstance(getattr(node_def, "output_schema", None), dict):
-                    schema = getattr(node_def, "output_schema")
-                err = self._validate_simple_output_schema(agent_output, schema)
-                if err:
-                    raise ValueError(
-                        f"AGENT_NODE_OUTPUT_SCHEMA_ERROR: {json.dumps(err, ensure_ascii=False)}"
-                    )
-                _ensure_execution_not_cancelled(context)
-                return agent_output
-
-            if workflow_node_type == "approval":
-                global_ctx = getattr(context, "global_data", {}) or {}
-                node_id = str(getattr(node_def, "id", "") or "")
-                decisions = global_ctx.get("approval_decisions") or {}
-                if str(decisions.get(node_id) or "").lower() == "approved":
-                    return {"type": "approval_result", "status": "approved", "node_id": node_id}
-                raise RuntimeError(f"WORKFLOW_APPROVAL_NOT_GRANTED: node_id={node_id}")
-
-            tool_name = cfg.get("tool_name") or cfg.get("tool_id")
-            if not tool_name:
-                return {"error": "Tool node missing tool_name/tool_id"}
-
-            # ToolContext is explicit + user-in-control: default deny.
-            global_ctx = getattr(context, "global_data", {}) or {}
-            permissions = global_ctx.get("permissions") or {}
-            workspace = global_ctx.get("workspace") or "."
-            trace_id = global_ctx.get("trace_id")
-            agent_id = global_ctx.get("agent_id")
-
-            tool_ctx = ToolContext(
-                agent_id=agent_id,
-                trace_id=trace_id,
-                workspace=workspace,
-                permissions=permissions,
-            )
-
-            # Default behavior: use resolved node input as tool input.
-            tool_input = dict(input_data or {})
-            fixed_input = cfg.get("fixed_input")
-            if isinstance(fixed_input, dict):
-                tool_input.update(fixed_input)
-
-            result = await ToolRegistry.execute(tool_name, tool_input, tool_ctx)
-            if not result.success:
-                return {"error": result.error or f"Tool failed: {tool_name}"}
-            _ensure_execution_not_cancelled(context)
-            return result.data if isinstance(result.data, dict) else {"output": result.data}
-
-        async def _script_handler(node_def, input_data, context):
-            cfg = node_def.config or {}
-            # script is treated as a constrained tool call to builtin_shell.run (still permissioned)
-            command = cfg.get("command") or (input_data or {}).get("command")
-            if not command:
-                return {"error": "Script node missing command"}
-            cfg = dict(cfg)
-            cfg["tool_name"] = cfg.get("tool_name") or "builtin_shell.run"
-            # Reuse tool handler with command injected
-            return await _tool_handler(
-                node_def=type(node_def)(**{**node_def.model_dump(), "config": cfg}),
-                input_data={**(input_data or {}), "command": command},
+    async def _tool_handler(
+        self, node_def: NodeDefinition, input_data: Dict[str, Any], context: GraphContext
+    ) -> Dict[str, Any]:
+        self._ensure_execution_not_cancelled(context)
+        cfg = node_def.config or {}
+        workflow_node_type = str(cfg.get("workflow_node_type") or "").strip().lower()
+        if workflow_node_type == "input":
+            return self._handle_input_node(cfg, input_data, context)
+        if workflow_node_type == "output":
+            return self._handle_output_node(cfg, input_data, context)
+        if workflow_node_type == "agent":
+            return await self._execute_agent_node(
+                node_def=node_def,
+                input_data=input_data,
                 context=context,
+                cfg=cfg,
             )
+        if workflow_node_type == "approval":
+            return self._handle_approval_node(node_def, context)
+        result = await self._execute_tool_node(cfg, input_data, context)
+        self._ensure_execution_not_cancelled(context)
+        return result
 
-        async def _llm_handler(node_def, input_data, context):
-            _ensure_execution_not_cancelled(context)
-            cfg = node_def.config or {}
-            # 优先使用 model_id（编辑器当前字段），兼容历史字段 model
-            model_id = cfg.get("model_id")
-            legacy_model = cfg.get("model")
-            model = model_id or legacy_model
-            if not model:
-                return {"error": "LLM node missing model"}
-            if model_id and legacy_model and model_id != legacy_model:
-                logger.warning(
-                    "[WorkflowRuntime] LLM node %s has both model_id=%s and legacy model=%s, using model_id",
-                    node_def.id,
-                    model_id,
-                    legacy_model,
-                )
+    async def _script_handler(
+        self, node_def: NodeDefinition, input_data: Dict[str, Any], context: GraphContext
+    ) -> Dict[str, Any]:
+        cfg = node_def.config or {}
+        command = cfg.get("command") or (input_data or {}).get("command")
+        if not command:
+            return {"error": "Script node missing command"}
+        cfg = dict(cfg)
+        cfg["tool_name"] = cfg.get("tool_name") or "builtin_shell.run"
+        return await self._tool_handler(
+            node_def=type(node_def)(**{**node_def.model_dump(), "config": cfg}),
+            input_data={**(input_data or {}), "command": command},
+            context=context,
+        )
 
-            prompt = cfg.get("prompt") or (input_data or {}).get("prompt")
-            if prompt is None:
-                # fallback: stringify input_data deterministically
-                import json
-
-                prompt = json.dumps(input_data or {}, ensure_ascii=False, sort_keys=True)
-
-            system_prompt = cfg.get("system_prompt")
-            temperature = float(cfg.get("temperature", 0.7))
-            max_tokens = int(cfg.get("max_tokens", 2048))
-            stop = cfg.get("stop")
-
-            resp = await client.generate(
-                model=model,
-                prompt=str(prompt),
-                system_prompt=system_prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop if isinstance(stop, list) else None,
-                metadata={"source": "workflow_runtime", "node_id": node_def.id},
+    async def _llm_handler(
+        self, node_def: NodeDefinition, input_data: Dict[str, Any], context: GraphContext
+    ) -> Dict[str, Any]:
+        self._ensure_execution_not_cancelled(context)
+        cfg = node_def.config or {}
+        model_id = cfg.get("model_id")
+        legacy_model = cfg.get("model")
+        model = model_id or legacy_model
+        if not model:
+            return {"error": "LLM node missing model"}
+        if model_id and legacy_model and model_id != legacy_model:
+            logger.warning(
+                "[WorkflowRuntime] LLM node %s has both model_id=%s and legacy model=%s, using model_id",
+                node_def.id,
+                model_id,
+                legacy_model,
             )
-            _ensure_execution_not_cancelled(context)
-            return resp.to_dict()
+        prompt = cfg.get("prompt") or (input_data or {}).get("prompt")
+        if prompt is None:
+            prompt = json.dumps(input_data or {}, ensure_ascii=False, sort_keys=True)
+        resp = await self._inference_client.generate(
+            model=model,
+            prompt=str(prompt),
+            system_prompt=cfg.get("system_prompt"),
+            temperature=float(cfg.get("temperature", 0.7)),
+            max_tokens=int(cfg.get("max_tokens", 2048)),
+            stop=cfg.get("stop") if isinstance(cfg.get("stop"), list) else None,
+            metadata={"source": "workflow_runtime", "node_id": node_def.id},
+        )
+        self._ensure_execution_not_cancelled(context)
+        return cast(Dict[str, Any], resp.to_dict())
 
-        async def _condition_handler(node_def, input_data, context):
-            return await execute_condition_node(node_def, input_data, context)
+    async def _condition_handler(
+        self, node_def: NodeDefinition, input_data: Dict[str, Any], context: GraphContext
+    ) -> Dict[str, Any]:
+        return cast(Dict[str, Any], await execute_condition_node(node_def, input_data, context))
 
+    def _handle_input_node(
+        self, cfg: Dict[str, Any], input_data: Dict[str, Any], context: GraphContext
+    ) -> Dict[str, Any]:
+        global_ctx = getattr(context, "global_data", {}) or {}
+        base = global_ctx.get("input_data") if isinstance(global_ctx.get("input_data"), dict) else {}
+        out: Dict[str, Any] = dict(base or {})
+        fixed_input = cfg.get("fixed_input")
+        if isinstance(fixed_input, dict):
+            out = {**out, **fixed_input}
+        if isinstance(input_data, dict) and input_data:
+            out = {**out, **input_data}
+        input_key = str(cfg.get("input_key") or "").strip()
+        if input_key:
+            return {input_key: out.get(input_key)} if input_key in out else {}
+        return out
+
+    def _handle_output_node(
+        self, cfg: Dict[str, Any], input_data: Dict[str, Any], context: GraphContext
+    ) -> Dict[str, Any]:
+        out: Dict[str, Any] = dict(input_data or {})
+        fixed_input = cfg.get("fixed_input")
+        if isinstance(fixed_input, dict):
+            out = {**fixed_input, **out}
+
+        allow_output_auto_fallback = bool(cfg.get("allow_auto_fallback", False))
+        if allow_output_auto_fallback:
+            out = self._apply_output_auto_fallback(out, context)
+
+        output_key = str(cfg.get("output_key") or "").strip()
+        expression = cfg.get("expression")
+        expression_value = expression if isinstance(expression, str) and expression.strip() else None
+        if output_key:
+            if expression_value:
+                value = context.resolve(expression_value)
+                source_mode = "expression"
+            else:
+                value = out.get(output_key) if output_key in out else out
+                source_mode = "passthrough"
+            return {
+                output_key: value,
+                "__workflow_output_source": {
+                    "mode": source_mode,
+                    "output_key": output_key,
+                    "expression": expression_value,
+                },
+            }
         return {
-            "tool": _tool_handler,
-            "llm": _llm_handler,
-            "condition": _condition_handler,
-            "script": _script_handler,
+            **out,
+            "__workflow_output_source": {
+                "mode": "passthrough",
+                "output_key": None,
+                "expression": expression_value,
+            },
         }
+
+    def _apply_output_auto_fallback(self, out: Dict[str, Any], context: GraphContext) -> Dict[str, Any]:
+        current = dict(out)
+        if not current:
+            first_candidate = self._latest_non_empty_node_output(context)
+            if first_candidate is not None:
+                current = first_candidate
+
+        semantic_keys = {"query", "text", "prompt", "message", "topic", "input"}
+        has_result_like = any(k in current for k in ("response", "result", "output", "content"))
+        only_semantic_input = (not has_result_like) and set(current.keys()).issubset(semantic_keys)
+        if only_semantic_input:
+            second_candidate = self._latest_result_like_node_output(context)
+            if second_candidate is not None:
+                current = second_candidate
+        return current
+
+    @staticmethod
+    def _latest_non_empty_node_output(context: GraphContext) -> Optional[Dict[str, Any]]:
+        if not hasattr(context, "node_outputs"):
+            return None
+        try:
+            values = list((context.node_outputs or {}).values())
+            for candidate in reversed(values):
+                if isinstance(candidate, dict) and candidate:
+                    return candidate
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _latest_result_like_node_output(context: GraphContext) -> Optional[Dict[str, Any]]:
+        if not hasattr(context, "node_outputs"):
+            return None
+        try:
+            values = list((context.node_outputs or {}).values())
+            for candidate in reversed(values):
+                if not isinstance(candidate, dict) or not candidate:
+                    continue
+                if str(candidate.get("type") or "").strip().lower() == "agent_result":
+                    return candidate
+                if any(k in candidate for k in ("response", "result", "output", "content")):
+                    return candidate
+        except Exception:
+            return None
+        return None
+
+    def _handle_approval_node(self, node_def: NodeDefinition, context: GraphContext) -> Dict[str, Any]:
+        global_ctx = getattr(context, "global_data", {}) or {}
+        node_id = str(getattr(node_def, "id", "") or "")
+        decisions = global_ctx.get("approval_decisions") or {}
+        if str(decisions.get(node_id) or "").lower() == "approved":
+            return {"type": "approval_result", "status": "approved", "node_id": node_id}
+        raise RuntimeError(f"WORKFLOW_APPROVAL_NOT_GRANTED: node_id={node_id}")
+
+    async def _execute_tool_node(
+        self, cfg: Dict[str, Any], input_data: Dict[str, Any], context: GraphContext
+    ) -> Dict[str, Any]:
+        tool_name = cfg.get("tool_name") or cfg.get("tool_id")
+        if not tool_name:
+            return {"error": "Tool node missing tool_name/tool_id"}
+
+        global_ctx = getattr(context, "global_data", {}) or {}
+        permissions = global_ctx.get("permissions") or {}
+        workspace = global_ctx.get("workspace") or "."
+        trace_id = global_ctx.get("trace_id")
+        agent_id_raw = global_ctx.get("agent_id")
+        tool_agent_id = str(agent_id_raw).strip() if agent_id_raw is not None else None
+        tool_ctx = ToolContext(
+            agent_id=tool_agent_id,
+            trace_id=trace_id,
+            workspace=workspace,
+            permissions=permissions,
+        )
+
+        tool_input = dict(input_data or {})
+        fixed_input = cfg.get("fixed_input")
+        if isinstance(fixed_input, dict):
+            tool_input.update(fixed_input)
+
+        result = await ToolRegistry.execute(tool_name, tool_input, tool_ctx)
+        if not result.success:
+            return {"error": result.error or f"Tool failed: {tool_name}"}
+        return result.data if isinstance(result.data, dict) else {"output": result.data}
+
+    async def _execute_agent_node(
+        self,
+        *,
+        node_def: NodeDefinition,
+        input_data: Dict[str, Any],
+        context: GraphContext,
+        cfg: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        agent_id = str(cfg.get("agent_id") or "").strip()
+        if not agent_id:
+            raise ValueError("AGENT_NODE_CONFIG_ERROR: missing agent_id")
+
+        registry = get_agent_registry()
+        target_agent = registry.get_agent(agent_id)
+        if not target_agent:
+            raise ValueError(f"AGENT_NODE_NOT_FOUND: {agent_id}")
+        run_agent = target_agent.model_copy(deep=True)
+
+        global_ctx = getattr(context, "global_data", {}) or {}
+        workspace = global_ctx.get("workspace") or "."
+        workflow_execution_id = str(global_ctx.get("execution_id") or "").strip()
+        user_id = str(global_ctx.get("user_id") or "default").strip() or "default"
+
+        call_chain = self._validate_agent_node_governance(
+            agent_id=agent_id,
+            cfg=cfg,
+            global_ctx=global_ctx,
+            coerce_int=self._coerce_int,
+            max_call_depth=self.AGENT_NODE_MAX_CALL_DEPTH,
+            default_max_calls=self.AGENT_NODE_DEFAULT_MAX_CALLS,
+        )
+        prompt = self._resolve_agent_prompt(
+            cfg=cfg,
+            input_data=input_data,
+            context=context,
+            global_ctx=global_ctx,
+            infer_prompt_from_payload=self._infer_prompt_from_payload,
+        )
+        prompt = self._attach_agent_context_suffix(
+            prompt=prompt,
+            cfg=cfg,
+            input_data=input_data,
+            global_ctx=global_ctx,
+        )
+        self._apply_agent_run_overrides(run_agent, cfg, self._coerce_int)
+        session = self._build_agent_session(
+            run_agent=run_agent,
+            prompt=prompt,
+            user_id=user_id,
+            workspace=workspace,
+            workflow_execution_id=workflow_execution_id,
+            node_id=str(node_def.id),
+            call_chain=call_chain,
+            agent_id=agent_id,
+        )
+
+        result_session = await self._run_agent_runtime_session(
+            run_agent=run_agent,
+            session=session,
+            workspace=workspace,
+            cfg=cfg,
+        )
+        self._ensure_agent_session_success(result_session, agent_id)
+        agent_output = self._build_agent_output(result_session, agent_id, str(node_def.id))
+        self._validate_agent_output_schema(agent_output, cfg, node_def)
+        self._ensure_execution_not_cancelled(context)
+        return agent_output
+
+    def _apply_agent_run_overrides(
+        self, run_agent: Any, cfg: Dict[str, Any], coerce_int: Callable[[Any, int], int]
+    ) -> None:
+        if cfg.get("max_steps") is not None:
+            run_agent.max_steps = max(1, coerce_int(cfg.get("max_steps"), run_agent.max_steps))
+        model_override = str(cfg.get("model_override") or "").strip()
+        if model_override:
+            run_agent.model_id = model_override
+
+    def _build_agent_session(
+        self,
+        *,
+        run_agent: Any,
+        prompt: str,
+        user_id: str,
+        workspace: str,
+        workflow_execution_id: str,
+        node_id: str,
+        call_chain: List[str],
+        agent_id: str,
+    ) -> AgentSession:
+        node_session_id = (
+            f"wf_{workflow_execution_id}_{node_id}"
+            if workflow_execution_id else f"wf_{node_id}"
+        )
+        session = AgentSession(
+            session_id=node_session_id,
+            agent_id=run_agent.agent_id,
+            user_id=user_id,
+            messages=[Message(role="user", content=str(prompt))],
+            status="idle",
+        )
+        session.workspace_dir = workspace
+        session.state = {
+            "workflow_agent_context": {
+                "workflow_execution_id": workflow_execution_id,
+                "source_node_id": node_id,
+                "call_depth": len(call_chain) + 1,
+                "call_chain": call_chain + [agent_id],
+            }
+        }
+        return session
+
+    @staticmethod
+    def _ensure_agent_session_success(result_session: AgentSession, agent_id: str) -> None:
+        if result_session.status == "error":
+            raise RuntimeError(
+                f"AGENT_NODE_RUNTIME_ERROR: {result_session.error_message or f'Agent run failed: {agent_id}'}"
+            )
+
+    @staticmethod
+    def _extract_assistant_reply(result_session: AgentSession) -> str:
+        assistant_reply = ""
+        for msg in reversed(result_session.messages):
+            if msg.role == "assistant":
+                assistant_reply = msg.content if isinstance(msg.content, str) else str(msg.content)
+                break
+        return assistant_reply
+
+    def _build_agent_output(
+        self, result_session: AgentSession, agent_id: str, node_id: str
+    ) -> Dict[str, Any]:
+        assistant_reply = self._extract_assistant_reply(result_session)
+        return {
+            "type": "agent_result",
+            "status": "success",
+            "agent_id": agent_id,
+            "agent_session_id": result_session.session_id,
+            "workflow_node_id": node_id,
+            "response": assistant_reply,
+            "response_preview": assistant_reply[:500],
+        }
+
+    def _validate_agent_output_schema(
+        self, agent_output: Dict[str, Any], cfg: Dict[str, Any], node_def: NodeDefinition
+    ) -> None:
+        schema: Dict[str, Any] = {}
+        cfg_output_schema = cfg.get("output_schema")
+        if isinstance(cfg_output_schema, dict):
+            schema = cast(Dict[str, Any], cfg_output_schema)
+        elif isinstance(getattr(node_def, "output_schema", None), dict):
+            schema = cast(Dict[str, Any], getattr(node_def, "output_schema"))
+        err = self._validate_simple_output_schema(agent_output, schema)
+        if err:
+            raise ValueError(
+                f"AGENT_NODE_OUTPUT_SCHEMA_ERROR: {json.dumps(err, ensure_ascii=False)}"
+            )
+
+    def _validate_agent_node_governance(
+        self,
+        *,
+        agent_id: str,
+        cfg: Dict[str, Any],
+        global_ctx: Dict[str, Any],
+        coerce_int: Callable[[Any, int], int],
+        max_call_depth: int,
+        default_max_calls: int,
+    ) -> List[str]:
+        call_chain = global_ctx.get("agent_call_chain")
+        if not isinstance(call_chain, list):
+            call_chain = []
+        normalized_chain = [str(x).strip() for x in call_chain if str(x).strip()]
+        if agent_id in normalized_chain:
+            raise RuntimeError(
+                f"AGENT_NODE_RECURSION_GUARD: loop detected in agent_call_chain={normalized_chain + [agent_id]}"
+            )
+        if len(normalized_chain) >= max_call_depth:
+            raise RuntimeError(
+                f"AGENT_NODE_RECURSION_GUARD: max depth exceeded ({max_call_depth})"
+            )
+        max_calls = coerce_int(global_ctx.get("agent_node_max_calls"), default_max_calls)
+        if cfg.get("agent_max_calls") is not None:
+            max_calls = max(1, coerce_int(cfg.get("agent_max_calls"), max_calls))
+        current_calls = coerce_int(global_ctx.get("__agent_node_call_count"), 0)
+        if current_calls >= max_calls:
+            raise RuntimeError(f"AGENT_NODE_GOVERNANCE_LIMIT: max calls exceeded ({max_calls})")
+        global_ctx["__agent_node_call_count"] = current_calls + 1
+        return normalized_chain
+
+    def _resolve_agent_prompt(
+        self,
+        *,
+        cfg: Dict[str, Any],
+        input_data: Dict[str, Any],
+        context: GraphContext,
+        global_ctx: Dict[str, Any],
+        infer_prompt_from_payload: Callable[[Any], Optional[str]],
+    ) -> str:
+        effective_input = self._build_effective_agent_input(cfg, input_data, context)
+        prompt = self._pick_agent_prompt_candidate(
+            cfg=cfg,
+            effective_input=effective_input,
+            global_ctx=global_ctx,
+            infer_prompt_from_payload=infer_prompt_from_payload,
+        )
+        if prompt is not None:
+            return prompt
+        self._raise_agent_prompt_missing(effective_input, global_ctx.get("input_data"))
+        raise AssertionError("unreachable")
+
+    def _build_effective_agent_input(
+        self, cfg: Dict[str, Any], input_data: Dict[str, Any], context: GraphContext
+    ) -> Dict[str, Any]:
+        effective_input = dict(input_data or {})
+        fixed_input = cfg.get("fixed_input")
+        if isinstance(fixed_input, dict):
+            effective_input = {**fixed_input, **effective_input}
+        if bool(cfg.get("allow_auto_input_fallback", False)) and not effective_input and hasattr(context, "node_outputs"):
+            try:
+                values = list((context.node_outputs or {}).values())
+                for candidate in reversed(values):
+                    if isinstance(candidate, dict) and candidate:
+                        effective_input = dict(candidate)
+                        break
+            except Exception:
+                pass
+        return effective_input
+
+    def _pick_agent_prompt_candidate(
+        self,
+        *,
+        cfg: Dict[str, Any],
+        effective_input: Dict[str, Any],
+        global_ctx: Dict[str, Any],
+        infer_prompt_from_payload: Callable[[Any], Optional[str]],
+    ) -> Optional[str]:
+        prompt = cast(Optional[str], cfg.get("prompt") or effective_input.get("prompt"))
+        if prompt is None:
+            prompt = cast(
+                Optional[str],
+                effective_input.get("message") or effective_input.get("query") or effective_input.get("text"),
+            )
+        if prompt is None:
+            prompt = infer_prompt_from_payload(effective_input)
+        if prompt is None:
+            workflow_input = global_ctx.get("input_data") or {}
+            if isinstance(workflow_input, dict):
+                prompt = cast(
+                    Optional[str],
+                    workflow_input.get("prompt")
+                    or workflow_input.get("message")
+                    or workflow_input.get("query")
+                    or workflow_input.get("text"),
+                )
+            elif workflow_input not in (None, ""):
+                prompt = str(workflow_input)
+        if prompt is None:
+            prompt = infer_prompt_from_payload(global_ctx.get("input_data"))
+        if prompt is None:
+            prompt = self._fallback_prompt_from_structured_data(
+                effective_input=effective_input,
+                workflow_input=global_ctx.get("input_data"),
+            )
+        return prompt
+
+    @staticmethod
+    def _fallback_prompt_from_structured_data(
+        *, effective_input: Dict[str, Any], workflow_input: Any
+    ) -> Optional[str]:
+        if effective_input:
+            return json.dumps(effective_input, ensure_ascii=False, sort_keys=True)
+        workflow_input_dict = workflow_input or {}
+        if isinstance(workflow_input_dict, dict) and workflow_input_dict:
+            return json.dumps(workflow_input_dict, ensure_ascii=False, sort_keys=True)
+        return None
+
+    @staticmethod
+    def _raise_agent_prompt_missing(effective_input: Dict[str, Any], workflow_input: Any) -> None:
+        dbg_node_keys = sorted([str(k) for k in effective_input.keys()]) if isinstance(effective_input, dict) else []
+        dbg_workflow_keys = (
+            sorted([str(k) for k in workflow_input.keys()])
+            if isinstance(workflow_input, dict)
+            else []
+        )
+        raise ValueError(
+            "AGENT_NODE_INPUT_EMPTY: missing prompt/message/query/text in node input and workflow input_data; "
+            f"node_input_keys={dbg_node_keys}, workflow_input_keys={dbg_workflow_keys}; "
+            "fix_by=provide one of: "
+            "1) node.config.prompt, "
+            "2) node.config.fixed_input.query|text|message|prompt, "
+            "3) execution input_data.query|text|message|prompt"
+        )
+
+    def _attach_agent_context_suffix(
+        self,
+        *,
+        prompt: str,
+        cfg: Dict[str, Any],
+        input_data: Dict[str, Any],
+        global_ctx: Dict[str, Any],
+    ) -> str:
+        pass_context_keys = cfg.get("pass_context_keys")
+        if not (isinstance(pass_context_keys, list) and pass_context_keys):
+            return prompt
+
+        passed: Dict[str, Any] = {}
+        for key in pass_context_keys:
+            k = str(key).strip()
+            if not k:
+                continue
+            if isinstance(input_data, dict) and k in input_data:
+                passed[k] = input_data.get(k)
+            elif k in global_ctx:
+                passed[k] = global_ctx.get(k)
+        if not passed:
+            return prompt
+        return f"{prompt}\n\nContext:\n{json.dumps(passed, ensure_ascii=False)}"
+
+    async def _run_agent_runtime_session(
+        self,
+        *,
+        run_agent: Any,
+        session: AgentSession,
+        workspace: str,
+        cfg: Dict[str, Any],
+    ) -> AgentSession:
+        runtime = get_agent_runtime(get_agent_executor())
+        timeout_sec = cfg.get("timeout")
+        if timeout_sec is None:
+            timeout_sec = cfg.get("agent_timeout_seconds")
+        if timeout_sec is not None:
+            return await asyncio.wait_for(
+                runtime.run(run_agent, session, workspace=workspace),
+                timeout=float(timeout_sec),
+            )
+        return await runtime.run(run_agent, session, workspace=workspace)
+
+    def _resolve_execution_start_state(
+        self, execution_id: str
+    ) -> Tuple[WorkflowExecution, Optional[WorkflowExecution]]:
+        latest = self.execution_repository.get_by_id(execution_id)
+        if not latest:
+            raise ValueError(f"Execution not found: {execution_id}")
+        if latest.is_terminal():
+            logger.info(
+                f"[WorkflowRuntime] Skip execute for terminal execution: "
+                f"{execution_id} state={latest.state.value}"
+            )
+            return latest, latest
+        if latest.state == WorkflowExecutionState.RUNNING and latest.graph_instance_id:
+            logger.info(
+                f"[WorkflowRuntime] Skip duplicate execute for running execution: "
+                f"{execution_id} instance={latest.graph_instance_id}"
+            )
+            return latest, latest
+        return latest, None
+
+    def _load_and_validate_version(self, execution: WorkflowExecution) -> WorkflowVersion:
+        version_id = execution.version_id
+        version = self.version_repository.get_version_by_id(version_id)
+        if not version:
+            raise ValueError(f"Version not found: {version_id}")
+
+        trigger_type = str(execution.trigger_type or "manual").lower()
+        allow_draft_for_manual_run = trigger_type in {"manual", "api", "debug"}
+        if not version.can_execute():
+            if not (version.state == WorkflowVersionState.DRAFT and allow_draft_for_manual_run):
+                raise ValueError(f"Version cannot be executed: {version.state.value}")
+
+        compatibility_errors = GraphRuntimeAdapter.validate_compatibility(version)
+        if compatibility_errors:
+            raise ValueError(f"Compatibility check failed: {'; '.join(compatibility_errors)}")
+        return version
+
+    async def _request_governance_slot(
+        self, execution_id: str, workflow_id: str, version_id: str, version: WorkflowVersion
+    ) -> None:
+        request = ExecutionRequest(
+            execution_id=execution_id,
+            workflow_id=workflow_id,
+            version_id=version_id,
+            estimated_tokens=self._estimate_tokens(version),
+        )
+        result = await self.execution_manager.wait_for_execution(request)
+        if not result.allowed:
+            raise RuntimeError(f"Execution not allowed: {result.reason}")
+
+        queued_at_dt = None
+        if result.queued_at:
+            try:
+                queued_at_dt = datetime.fromisoformat(result.queued_at)
+            except Exception:
+                queued_at_dt = None
+        self.execution_repository.update_queue_metrics(
+            execution_id,
+            queue_position=result.queue_position,
+            queued_at=queued_at_dt,
+            wait_duration_ms=result.wait_duration_ms,
+        )
+
+        await self._wait_distributed_running_slot(workflow_id, execution_id)
+
+    def _start_execution_instance(
+        self,
+        execution_id: str,
+        *,
+        on_state_change: Optional[Callable[[WorkflowExecution], None]],
+    ) -> tuple[WorkflowExecution, str]:
+        running_execution = self.execution_repository.update_state(
+            execution_id,
+            WorkflowExecutionState.RUNNING
+        )
+        if running_execution is None:
+            raise RuntimeError(f"Failed to mark execution as running: {execution_id}")
+        current_execution = running_execution
+        if on_state_change:
+            on_state_change(current_execution)
+        instance_id = current_execution.execution_id
+        return current_execution, instance_id
+
+    async def _bootstrap_scheduler_instance(
+        self, execution: WorkflowExecution, version: WorkflowVersion, instance_id: str
+    ) -> None:
+        graph_def = GraphRuntimeAdapter.adapt(version)
+        workspace_dir = str(
+            Path("data/workflow_workspaces").joinpath(execution.execution_id).resolve()
+        )
+        Path(workspace_dir).mkdir(parents=True, exist_ok=True)
+        global_context = {
+            "workflow_id": execution.workflow_id,
+            "version_id": execution.version_id,
+            "execution_id": execution.execution_id,
+            "input_data": execution.input_data or {},
+            "workspace": workspace_dir,
+            **(execution.global_context or {})
+        }
+        self.execution_repository.update_graph_instance_id(
+            execution.execution_id,
+            instance_id
+        )
+        await self.scheduler.start_instance(
+            graph_def=graph_def,
+            instance_id=instance_id,
+            global_context=global_context
+        )
+
+    async def _await_or_background_execution(
+        self,
+        *,
+        execution: WorkflowExecution,
+        execution_id: str,
+        instance_id: str,
+        wait_for_completion: bool,
+        wait_timeout_seconds: Optional[float],
+        on_state_change: Optional[Callable[[WorkflowExecution], None]],
+    ) -> WorkflowExecution:
+        if wait_for_completion:
+            final_state = await self.scheduler.wait_for_completion(
+                instance_id=instance_id,
+                timeout=cast(float, wait_timeout_seconds),
+            )
+            final_state_value = final_state.value if hasattr(final_state, "value") else str(final_state)
+            if wait_timeout_seconds and final_state_value == "running":
+                timeout_msg = (
+                    f"WORKFLOW_WAIT_TIMEOUT: wait={int(wait_timeout_seconds)}s exceeded, "
+                    f"execution still running (execution_id={execution_id})"
+                )
+                timeout_execution = self.execution_repository.update_state(
+                    execution_id,
+                    WorkflowExecutionState.RUNNING,
+                    error_message=timeout_msg,
+                    error_details={
+                        "code": "WORKFLOW_WAIT_TIMEOUT",
+                        "message": timeout_msg,
+                        "wait_timeout_seconds": wait_timeout_seconds,
+                        "execution_id": execution_id,
+                    },
+                )
+                if timeout_execution is None:
+                    raise RuntimeError(f"Failed to update timeout state: {execution_id}")
+                execution = timeout_execution
+                logger.warning(f"[WorkflowRuntime] {timeout_msg}")
+                if on_state_change:
+                    on_state_change(execution)
+                return execution
+            return await self._handle_completion(
+                execution_id,
+                instance_id,
+                on_state_change
+            )
+
+        task = asyncio.create_task(
+            self._execute_async(execution_id, instance_id, on_state_change)
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return execution
     
     async def execute(
         self,
@@ -638,41 +1088,13 @@ class WorkflowRuntime:
         version_id = execution.version_id
         
         try:
-            # 防重复/跨进程一致性：以 DB 当前状态为准，避免已取消或已启动执行被再次启动。
-            latest = self.execution_repository.get_by_id(execution_id)
-            if not latest:
-                raise ValueError(f"Execution not found: {execution_id}")
-            if latest.is_terminal():
-                logger.info(
-                    f"[WorkflowRuntime] Skip execute for terminal execution: "
-                    f"{execution_id} state={latest.state.value}"
-                )
-                return latest
-            if latest.state == WorkflowExecutionState.RUNNING and latest.graph_instance_id:
-                logger.info(
-                    f"[WorkflowRuntime] Skip duplicate execute for running execution: "
-                    f"{execution_id} instance={latest.graph_instance_id}"
-                )
-                return latest
-            execution = latest
+            execution, skip_execution = self._resolve_execution_start_state(execution_id)
+            if skip_execution is not None:
+                return skip_execution
             workflow_id = execution.workflow_id
             version_id = execution.version_id
 
-            # 1. 获取版本
-            version = self.version_repository.get_version_by_id(version_id)
-            if not version:
-                raise ValueError(f"Version not found: {version_id}")
-            
-            trigger_type = str(execution.trigger_type or "manual").lower()
-            allow_draft_for_manual_run = trigger_type in {"manual", "api", "debug"}
-            if not version.can_execute():
-                if not (version.state == WorkflowVersionState.DRAFT and allow_draft_for_manual_run):
-                    raise ValueError(f"Version cannot be executed: {version.state.value}")
-            
-            # 2. 验证兼容性
-            compatibility_errors = GraphRuntimeAdapter.validate_compatibility(version)
-            if compatibility_errors:
-                raise ValueError(f"Compatibility check failed: {'; '.join(compatibility_errors)}")
+            version = self._load_and_validate_version(execution)
 
             # 2.5 审批门控：若存在 approval 节点且未审批，则创建审批任务并暂停执行
             if self._require_approval_before_start(execution, version):
@@ -686,131 +1108,36 @@ class WorkflowRuntime:
                     on_state_change(paused)
                 return paused or execution
             
-            # 3. 请求执行治理
-            request = ExecutionRequest(
+            await self._request_governance_slot(execution_id, workflow_id, version_id, version)
+            execution, instance_id = self._start_execution_instance(
+                execution_id, on_state_change=on_state_change
+            )
+            await self._bootstrap_scheduler_instance(execution, version, instance_id)
+            return await self._await_or_background_execution(
+                execution=execution,
                 execution_id=execution_id,
-                workflow_id=workflow_id,
-                version_id=version_id,
-                estimated_tokens=self._estimate_tokens(version)
-            )
-            
-            result = await self.execution_manager.wait_for_execution(request)
-            
-            if not result.allowed:
-                raise RuntimeError(f"Execution not allowed: {result.reason}")
-
-            # 记录治理侧排队观测信息（如果有）
-            queued_at_dt = None
-            if result.queued_at:
-                try:
-                    queued_at_dt = datetime.fromisoformat(result.queued_at)
-                except Exception:
-                    queued_at_dt = None
-            self.execution_repository.update_queue_metrics(
-                execution_id,
-                queue_position=result.queue_position,
-                queued_at=queued_at_dt,
-                wait_duration_ms=result.wait_duration_ms,
-            )
-
-            # 3.5 跨进程并发兜底：基于 DB 的 running 数进行软限制，缓解多 worker 下内存治理不一致。
-            await self._wait_distributed_running_slot(workflow_id, execution_id)
-            
-            # 4. 更新执行状态为 RUNNING
-            execution = self.execution_repository.update_state(
-                execution_id,
-                WorkflowExecutionState.RUNNING
-            )
-            if on_state_change:
-                on_state_change(execution)
-            
-            # 5. 转换为 execution_kernel 格式
-            graph_def = GraphRuntimeAdapter.adapt(version)
-            
-            # 6. 确定 instance_id（使用 execution_id 保持一致性）
-            instance_id = execution.execution_id
-            
-            # 7. 构造 global_context
-            workspace_dir = str(
-                Path("data/workflow_workspaces").joinpath(execution.execution_id).resolve()
-            )
-            Path(workspace_dir).mkdir(parents=True, exist_ok=True)
-            global_context = {
-                "workflow_id": execution.workflow_id,
-                "version_id": execution.version_id,
-                "execution_id": execution.execution_id,
-                "input_data": execution.input_data or {},
-                "workspace": workspace_dir,
-                **(execution.global_context or {})
-            }
-            
-            # 更新 GraphInstance ID
-            self.execution_repository.update_graph_instance_id(
-                execution_id,
-                instance_id
-            )
-            
-            # 8. 使用 scheduler 启动实例
-            await self.scheduler.start_instance(
-                graph_def=graph_def,
                 instance_id=instance_id,
-                global_context=global_context
+                wait_for_completion=wait_for_completion,
+                wait_timeout_seconds=wait_timeout_seconds,
+                on_state_change=on_state_change,
             )
-            
-            # 9. 等待完成或异步执行
-            if wait_for_completion:
-                # 同步执行 - 等待完成
-                final_state = await self.scheduler.wait_for_completion(
-                    instance_id=instance_id,
-                    timeout=wait_timeout_seconds,
-                )
-                final_state_value = final_state.value if hasattr(final_state, "value") else str(final_state)
-                if wait_timeout_seconds and final_state_value == "running":
-                    # 等待超时不应判定为执行失败：实例可能仍在后台继续运行。
-                    timeout_msg = (
-                        f"WORKFLOW_WAIT_TIMEOUT: wait={int(wait_timeout_seconds)}s exceeded, "
-                        f"execution still running (execution_id={execution_id})"
-                    )
-                    execution = self.execution_repository.update_state(
-                        execution_id,
-                        WorkflowExecutionState.RUNNING,
-                        error_message=timeout_msg,
-                        error_details={
-                            "code": "WORKFLOW_WAIT_TIMEOUT",
-                            "message": timeout_msg,
-                            "wait_timeout_seconds": wait_timeout_seconds,
-                            "execution_id": execution_id,
-                        },
-                    )
-                    logger.warning(f"[WorkflowRuntime] {timeout_msg}")
-                    if on_state_change:
-                        on_state_change(execution)
-                    return execution
-
-                # 10. 从 kernel 查询结果并处理
-                execution = await self._handle_completion(
-                    execution_id,
-                    instance_id,
-                    on_state_change
-                )
-            else:
-                # 异步执行
-                asyncio.create_task(
-                    self._execute_async(execution_id, instance_id, on_state_change)
-                )
-            
-            return execution
             
         except Exception as e:
             logger.error(f"[WorkflowRuntime] Execution failed: {execution_id} - {e}")
             
             # 标记执行失败
-            execution = self.execution_repository.update_state(
+            failed_execution = self.execution_repository.update_state(
                 execution_id,
                 WorkflowExecutionState.FAILED,
                 error_message=str(e),
                 error_details={"exception_type": type(e).__name__}
             )
+            if failed_execution is None:
+                latest = self.execution_repository.get_by_id(execution_id)
+                if latest is None:
+                    raise RuntimeError(f"Execution not found after failure: {execution_id}") from e
+                failed_execution = latest
+            execution = failed_execution
             
             # 释放治理资源
             self.execution_manager.complete_execution(execution_id, workflow_id)
@@ -828,50 +1155,28 @@ class WorkflowRuntime:
         fail_open = bool(getattr(settings, "workflow_distributed_running_limit_fail_open", True))
         stale_seconds = max(60, int(getattr(settings, "workflow_distributed_running_stale_seconds", 1800) or 1800))
         auto_reconcile_stale = bool(getattr(settings, "workflow_distributed_running_auto_reconcile_stale", True))
-        deadline = datetime.utcnow().timestamp() + max(0.0, timeout_s)
+        deadline = datetime.now(UTC).timestamp() + max(0.0, timeout_s)
         while True:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             stale_cutoff = now - timedelta(seconds=stale_seconds)
             running_execs = self.execution_repository.get_running_executions(workflow_id)
-            active_running = []
-            stale_running = []
-            for ex in running_execs:
-                if ex.execution_id == execution_id:
-                    continue
-                started = ex.started_at or ex.created_at
-                if started and started < stale_cutoff:
-                    stale_running.append(ex)
-                    continue
-                active_running.append(ex)
+            active_running, stale_running = self._partition_running_executions(
+                running_execs,
+                current_execution_id=execution_id,
+                stale_cutoff=stale_cutoff,
+            )
 
             if stale_running and auto_reconcile_stale:
-                for ex in stale_running:
-                    try:
-                        msg = (
-                            "AUTO_RECONCILED_STALE_RUNNING: "
-                            f"started_at={ex.started_at.isoformat() if ex.started_at else 'unknown'} "
-                            f"older_than={stale_seconds}s"
-                        )
-                        self.execution_repository.update_state(
-                            ex.execution_id,
-                            WorkflowExecutionState.FAILED,
-                            error_message=msg,
-                            error_details={"code": "STALE_RUNNING_RECONCILED"},
-                        )
-                        logger.warning(
-                            f"[WorkflowRuntime] Reconciled stale running execution: "
-                            f"workflow_id={workflow_id} execution_id={ex.execution_id}"
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"[WorkflowRuntime] Failed to reconcile stale running execution: "
-                            f"execution_id={ex.execution_id} error={e}"
-                        )
+                self._reconcile_stale_running_executions(
+                    workflow_id=workflow_id,
+                    stale_running=stale_running,
+                    stale_seconds=stale_seconds,
+                )
 
             running = len(active_running)
             if running < limit:
                 return
-            if datetime.utcnow().timestamp() >= deadline:
+            if datetime.now(UTC).timestamp() >= deadline:
                 if fail_open:
                     logger.warning(
                         "[WorkflowRuntime] Distributed running limit wait timeout, fail-open continue: "
@@ -885,6 +1190,55 @@ class WorkflowRuntime:
                     f"stale_ignored={len(stale_running)}"
                 )
             await asyncio.sleep(0.2)
+
+    def _partition_running_executions(
+        self,
+        running_execs: List[WorkflowExecution],
+        *,
+        current_execution_id: str,
+        stale_cutoff: datetime,
+    ) -> tuple[List[WorkflowExecution], List[WorkflowExecution]]:
+        active_running: List[WorkflowExecution] = []
+        stale_running: List[WorkflowExecution] = []
+        for ex in running_execs:
+            if ex.execution_id == current_execution_id:
+                continue
+            started = ex.started_at or ex.created_at
+            if started and started < stale_cutoff:
+                stale_running.append(ex)
+                continue
+            active_running.append(ex)
+        return active_running, stale_running
+
+    def _reconcile_stale_running_executions(
+        self,
+        *,
+        workflow_id: str,
+        stale_running: List[WorkflowExecution],
+        stale_seconds: int,
+    ) -> None:
+        for ex in stale_running:
+            try:
+                msg = (
+                    "AUTO_RECONCILED_STALE_RUNNING: "
+                    f"started_at={ex.started_at.isoformat() if ex.started_at else 'unknown'} "
+                    f"older_than={stale_seconds}s"
+                )
+                self.execution_repository.update_state(
+                    ex.execution_id,
+                    WorkflowExecutionState.FAILED,
+                    error_message=msg,
+                    error_details={"code": "STALE_RUNNING_RECONCILED"},
+                )
+                logger.warning(
+                    f"[WorkflowRuntime] Reconciled stale running execution: "
+                    f"workflow_id={workflow_id} execution_id={ex.execution_id}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[WorkflowRuntime] Failed to reconcile stale running execution: "
+                    f"execution_id={ex.execution_id} error={e}"
+                )
     
     async def _execute_async(
         self,
@@ -895,7 +1249,7 @@ class WorkflowRuntime:
         """异步执行"""
         try:
             # 等待完成
-            final_state = await self.scheduler.wait_for_completion(
+            await self.scheduler.wait_for_completion(
                 instance_id=instance_id,
                 timeout=3600
             )
@@ -909,7 +1263,7 @@ class WorkflowRuntime:
                 error_message=str(e)
             )
             
-            if on_state_change:
+            if on_state_change and execution is not None:
                 on_state_change(execution)
     
     async def _handle_completion(
@@ -919,71 +1273,25 @@ class WorkflowRuntime:
         on_state_change: Optional[Callable[[WorkflowExecution], None]]
     ) -> WorkflowExecution:
         """处理执行完成"""
-        # 从 kernel DB 查询实例状态和节点结果
         result = await GraphRuntimeAdapter.extract_execution_result_from_kernel(
             instance_id,
             self.scheduler.db
         )
-        
-        # 确定最终状态
-        kernel_state = result.get("state", "failed")
-        if kernel_state == "completed":
-            final_state = WorkflowExecutionState.COMPLETED
-        elif kernel_state == "failed":
-            final_state = WorkflowExecutionState.FAILED
-        elif kernel_state == "cancelled":
-            final_state = WorkflowExecutionState.CANCELLED
-        else:
-            final_state = WorkflowExecutionState.FAILED
-        
-        # 更新执行输出和状态
-        output_data = result.get("output_data", {})
-        agent_summaries = result.get("agent_summaries", [])
-        if isinstance(output_data, dict) and isinstance(agent_summaries, list) and agent_summaries:
-            output_data = {**output_data, "agent_summaries": agent_summaries}
-        if output_data:
-            self.execution_repository.update_output(execution_id, output_data)
-        raw_node_states = result.get("node_states", [])
-        if isinstance(raw_node_states, list) and raw_node_states:
-            normalized_nodes: List[WorkflowExecutionNode] = []
-            for item in raw_node_states:
-                if not isinstance(item, dict):
-                    continue
-                node_id = str(item.get("node_id") or "").strip()
-                if not node_id:
-                    continue
-                state_raw = str(item.get("state") or "pending").lower()
-                if state_raw == "retrying":
-                    state_raw = "running"
-                if state_raw not in {s.value for s in WorkflowExecutionNodeState}:
-                    state_raw = "pending"
-                try:
-                    normalized_nodes.append(
-                        WorkflowExecutionNode(
-                            node_id=node_id,
-                            state=WorkflowExecutionNodeState(state_raw),
-                            input_data=item.get("input_data") or {},
-                            output_data=item.get("output_data") or {},
-                            error_message=item.get("error_message"),
-                            error_details=item.get("error_details"),
-                            started_at=item.get("started_at"),
-                            finished_at=item.get("finished_at"),
-                            retry_count=int(item.get("retry_count") or 0),
-                        )
-                    )
-                except Exception:
-                    continue
-            if normalized_nodes:
-                self.execution_repository.update_node_states(execution_id, normalized_nodes)
-        
+        final_state = self._map_kernel_state_to_workflow_state(result.get("state", "failed"))
+        self._persist_completion_result(execution_id, result)
         execution = self.execution_repository.update_state(
             execution_id,
             final_state
         )
+        if execution is None:
+            latest = self.execution_repository.get_by_id(execution_id)
+            if latest is None:
+                raise RuntimeError(f"Execution not found while handling completion: {execution_id}")
+            execution = latest
         
         # 释放治理资源
-        execution_id_val = execution.execution_id if execution else execution_id
-        workflow_id = execution.workflow_id if execution else ""
+        execution_id_val = execution.execution_id
+        workflow_id = execution.workflow_id
         tokens_consumed = result.get("tokens_consumed", 0)
         
         self.execution_manager.complete_execution(
@@ -998,6 +1306,81 @@ class WorkflowRuntime:
         logger.info(f"[WorkflowRuntime] Execution completed: {execution_id} - {final_state.value}")
         
         return execution
+
+    @staticmethod
+    def _map_kernel_state_to_workflow_state(kernel_state: Any) -> WorkflowExecutionState:
+        state = str(kernel_state or "failed").lower()
+        if state == "completed":
+            return WorkflowExecutionState.COMPLETED
+        if state == "cancelled":
+            return WorkflowExecutionState.CANCELLED
+        if state == "failed":
+            return WorkflowExecutionState.FAILED
+        return WorkflowExecutionState.FAILED
+
+    def _persist_completion_result(self, execution_id: str, result: Dict[str, Any]) -> None:
+        output_data = self._build_completion_output_data(result)
+        if output_data:
+            self.execution_repository.update_output(execution_id, output_data)
+
+        normalized_nodes = self._normalize_completion_node_states(result.get("node_states", []))
+        if normalized_nodes:
+            self.execution_repository.update_node_states(execution_id, normalized_nodes)
+
+    @staticmethod
+    def _build_completion_output_data(result: Dict[str, Any]) -> Dict[str, Any]:
+        output_data_raw = result.get("output_data", {})
+        output_data = output_data_raw if isinstance(output_data_raw, dict) else {}
+        agent_summaries = result.get("agent_summaries", [])
+        if isinstance(agent_summaries, list) and agent_summaries:
+            return {**output_data, "agent_summaries": agent_summaries}
+        return output_data
+
+    @staticmethod
+    def _normalize_completion_node_states(raw_node_states: Any) -> List[WorkflowExecutionNode]:
+        if not isinstance(raw_node_states, list) or not raw_node_states:
+            return []
+        normalized_nodes: List[WorkflowExecutionNode] = []
+        valid_states = {s.value for s in WorkflowExecutionNodeState}
+        for item in raw_node_states:
+            normalized = WorkflowRuntime._normalize_single_node_state_item(item, valid_states)
+            if normalized is not None:
+                normalized_nodes.append(normalized)
+        return normalized_nodes
+
+    @staticmethod
+    def _normalize_single_node_state_item(
+        item: Any, valid_states: set[str]
+    ) -> Optional[WorkflowExecutionNode]:
+        if not isinstance(item, dict):
+            return None
+        node_id = str(item.get("node_id") or "").strip()
+        if not node_id:
+            return None
+        state_raw = WorkflowRuntime._normalize_node_state_value(item.get("state"), valid_states)
+        try:
+            return WorkflowExecutionNode(
+                node_id=node_id,
+                state=WorkflowExecutionNodeState(state_raw),
+                input_data=item.get("input_data") or {},
+                output_data=item.get("output_data") or {},
+                error_message=item.get("error_message"),
+                error_details=item.get("error_details"),
+                started_at=item.get("started_at"),
+                finished_at=item.get("finished_at"),
+                retry_count=int(item.get("retry_count") or 0),
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_node_state_value(raw_state: Any, valid_states: set[str]) -> str:
+        state_raw = str(raw_state or "pending").lower()
+        if state_raw == "retrying":
+            state_raw = "running"
+        if state_raw not in valid_states:
+            return "pending"
+        return state_raw
     
     async def cancel(self, execution_id: str) -> bool:
         """取消执行"""
@@ -1092,40 +1475,58 @@ class WorkflowRuntime:
             decisions = {}
         requested_by = str(execution.triggered_by or "system")
 
-        pending_created = False
-        for node in version.dag.nodes:
-            cfg = node.config or {}
-            node_type = str(cfg.get("workflow_node_type") or node.type or "").strip().lower()
-            if node_type != "approval":
-                continue
-            if str(decisions.get(node.id) or "").lower() == "approved":
-                continue
+        unapproved_nodes = self._collect_unapproved_approval_nodes(version, decisions)
+        if not unapproved_nodes:
+            return False
 
-            existing = self.approval_repository.get_pending_by_execution_node(execution.execution_id, node.id)
-            if not existing:
-                self.approval_repository.create_task(
-                    execution_id=execution.execution_id,
-                    workflow_id=execution.workflow_id,
-                    node_id=node.id,
-                    title=str(cfg.get("title") or f"Approve node {node.id}")[:256],
-                    reason=str(cfg.get("reason") or "Workflow requires approval before execution"),
-                    payload={"node_config": cfg},
-                    requested_by=requested_by,
-                    expires_in_seconds=cfg.get("expires_in_seconds"),
-                )
+        pending_created = False
+        for node_id, cfg in unapproved_nodes:
+            if self._create_pending_approval_task_if_missing(execution, node_id, cfg, requested_by):
                 pending_created = True
 
         has_pending = len(self.approval_repository.list_pending_by_execution(execution.execution_id)) > 0
-        if pending_created or has_pending:
-            # 只要存在未 approved 的审批节点，就暂停
-            for node in version.dag.nodes:
-                cfg = node.config or {}
-                node_type = str(cfg.get("workflow_node_type") or node.type or "").strip().lower()
-                if node_type == "approval" and str(decisions.get(node.id) or "").lower() != "approved":
-                    return True
-        return False
+        return pending_created or has_pending
+
+    def _collect_unapproved_approval_nodes(
+        self, version: WorkflowVersion, decisions: Dict[str, Any]
+    ) -> List[tuple[str, Dict[str, Any]]]:
+        nodes: List[tuple[str, Dict[str, Any]]] = []
+        for node in version.dag.nodes:
+            cfg = node.config or {}
+            if self._is_unapproved_approval_node(node, cfg, decisions):
+                nodes.append((node.id, cfg))
+        return nodes
+
+    @staticmethod
+    def _is_unapproved_approval_node(node: Any, cfg: Dict[str, Any], decisions: Dict[str, Any]) -> bool:
+        node_type = str(cfg.get("workflow_node_type") or node.type or "").strip().lower()
+        if node_type != "approval":
+            return False
+        return str(decisions.get(node.id) or "").lower() != "approved"
+
+    def _create_pending_approval_task_if_missing(
+        self,
+        execution: WorkflowExecution,
+        node_id: str,
+        cfg: Dict[str, Any],
+        requested_by: str,
+    ) -> bool:
+        existing = self.approval_repository.get_pending_by_execution_node(execution.execution_id, node_id)
+        if existing:
+            return False
+        self.approval_repository.create_task(
+            execution_id=execution.execution_id,
+            workflow_id=execution.workflow_id,
+            node_id=node_id,
+            title=str(cfg.get("title") or f"Approve node {node_id}")[:256],
+            reason=str(cfg.get("reason") or "Workflow requires approval before execution"),
+            payload={"node_config": cfg},
+            requested_by=requested_by,
+            expires_in_seconds=cfg.get("expires_in_seconds"),
+        )
+        return True
     
-    def _count_tokens(self, result: Dict[str, Any]) -> int:
+    def _count_tokens(self, _result: Dict[str, Any]) -> int:
         """计算实际 Token 消耗"""
         # 简化计算，实际应该从 execution_kernel 获取
         return 0

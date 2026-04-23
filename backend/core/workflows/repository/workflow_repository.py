@@ -8,8 +8,8 @@ Governance note (AGENTS.md §7):
 - 所有持久化必须通过项目 ORM/数据层抽象完成。
 """
 
-from typing import List, Optional, Dict, Any
-from datetime import datetime
+from typing import List, Optional, Dict, Any, Callable, cast
+from datetime import UTC, datetime
 import time
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
@@ -26,7 +26,7 @@ class WorkflowRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def _run_write_with_retry(self, op_name: str, fn):
+    def _run_write_with_retry(self, op_name: str, fn: Callable[[], Any]) -> Any:
         attempts = max(1, int(getattr(settings, "workflow_db_write_retry_attempts", 4) or 4))
         base_delay_ms = max(1, int(getattr(settings, "workflow_db_write_retry_base_delay_ms", 50) or 50))
         for attempt in range(1, attempts + 1):
@@ -48,26 +48,27 @@ class WorkflowRepository:
                 time.sleep(sleep_s)
 
     def _deserialize_from_orm(self, row: WorkflowORM) -> Workflow:
+        row_any = cast(Any, row)
         return Workflow(
-            id=row.id,
-            namespace=row.namespace,
-            name=row.name,
-            description=row.description,
-            lifecycle_state=WorkflowLifecycleState(row.lifecycle_state),
-            latest_version_id=row.latest_version_id,
-            published_version_id=row.published_version_id,
-            owner_id=row.owner_id,
-            acl=row.acl or {},
-            tags=row.tags or [],
-            metadata=row.meta_data or {},
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            created_by=row.created_by,
-            updated_by=row.updated_by,
+            id=cast(str, row_any.id),
+            namespace=cast(str, row_any.namespace),
+            name=cast(str, row_any.name),
+            description=cast(Optional[str], row_any.description),
+            lifecycle_state=WorkflowLifecycleState(cast(str, row_any.lifecycle_state)),
+            latest_version_id=cast(Optional[str], row_any.latest_version_id),
+            published_version_id=cast(Optional[str], row_any.published_version_id),
+            owner_id=cast(str, row_any.owner_id),
+            acl=cast(Dict[str, Any], row_any.acl or {}),
+            tags=cast(List[str], row_any.tags or []),
+            metadata=cast(Dict[str, Any], row_any.meta_data or {}),
+            created_at=cast(datetime, row_any.created_at),
+            updated_at=cast(datetime, row_any.updated_at),
+            created_by=cast(Optional[str], row_any.created_by),
+            updated_by=cast(Optional[str], row_any.updated_by),
         )
 
     def create(self, workflow: Workflow) -> Workflow:
-        def _write():
+        def _write() -> None:
             orm = WorkflowORM(
                 id=workflow.id,
                 namespace=workflow.namespace,
@@ -165,7 +166,7 @@ class WorkflowRepository:
         if lifecycle_state:
             q = q.filter(WorkflowORM.lifecycle_state == lifecycle_state.value)
         _ = tags
-        return q.count()
+        return cast(int, q.count())
 
     def update(
         self,
@@ -182,7 +183,7 @@ class WorkflowRepository:
             return None
 
         updates = dict(updates or {})
-        updates["updated_at"] = datetime.utcnow()
+        updates["updated_at"] = datetime.now(UTC)
         if updated_by:
             updates["updated_by"] = updated_by
 
@@ -240,8 +241,8 @@ class WorkflowRepository:
             return False
 
         if soft:
-            row.lifecycle_state = WorkflowLifecycleState.DELETED.value
-            row.updated_at = datetime.utcnow()
+            setattr(row, "lifecycle_state", WorkflowLifecycleState.DELETED.value)
+            setattr(row, "updated_at", datetime.now(UTC))
         else:
             self.db.delete(row)
 
@@ -260,11 +261,14 @@ class WorkflowRepository:
         return row is not None
 
     def count_by_namespace(self, namespace: str) -> int:
-        return (
+        return cast(
+            int,
+            (
             self.db.query(WorkflowORM)
             .filter(
                 WorkflowORM.namespace == namespace,
                 WorkflowORM.lifecycle_state != WorkflowLifecycleState.DELETED.value,
             )
             .count()
+            ),
         )

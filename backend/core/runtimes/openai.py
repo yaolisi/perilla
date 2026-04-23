@@ -1,10 +1,13 @@
 import httpx
 import json
-from typing import AsyncIterator, Optional, Dict, Any
+from typing import AsyncIterator, Optional, Dict, Any, cast
 from log import logger
 from core.runtimes.base import ModelRuntime
 from core.types import ChatCompletionRequest
 from core.models.descriptor import ModelDescriptor
+
+STREAM_DONE_SENTINEL = "[DONE]"
+
 
 class OpenAIRuntime(ModelRuntime):
     """
@@ -40,7 +43,12 @@ class OpenAIRuntime(ModelRuntime):
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            content = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            return cast(str, content)
 
     async def stream_chat(self, descriptor: ModelDescriptor, req: ChatCompletionRequest) -> AsyncIterator[str]:
         headers = self._get_headers(descriptor)
@@ -61,24 +69,17 @@ class OpenAIRuntime(ModelRuntime):
                     if response.status_code != 200:
                         error_text = await response.aread()
                         logger.error(f"[OpenAIRuntime] Error {response.status_code}: {error_text.decode()}")
-                        raise Exception(f"OpenAI runtime stream error: {response.status_code} - {error_text.decode()}")
+                        raise RuntimeError(
+                            f"OpenAI runtime stream error: {response.status_code} - {error_text.decode()}"
+                        )
                     
                     async for line in response.aiter_lines():
-                        if not line or not line.startswith("data: "):
+                        content = self._extract_stream_content(line)
+                        if content is None:
                             continue
-                        
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
+                        if content == STREAM_DONE_SENTINEL:
                             break
-                        
-                        try:
-                            chunk = json.loads(data_str)
-                            if "choices" in chunk and len(chunk["choices"]) > 0:
-                                delta = chunk["choices"][0].get("delta", {})
-                                if "content" in delta:
-                                    yield delta["content"]
-                        except json.JSONDecodeError:
-                            continue
+                        yield content
             except Exception as e:
                 logger.error(f"[OpenAIRuntime] Stream failed: {str(e)}")
                 raise
@@ -100,9 +101,8 @@ class OpenAIRuntime(ModelRuntime):
         cloud_providers = ["openai", "gemini", "deepseek", "kimi"]
         if descriptor.provider in cloud_providers or descriptor.runtime in cloud_providers:
             return True
-        
-        # 对于本地服务（如 LM Studio），我们尝试检查一下端口
-        return True # 暂时返回 True，减少 UI 上的 Load 步骤
+        # 对于本地服务，保持“尽量不阻塞 UI”的策略；仅在明显缺失关键信息时返回 False。
+        return bool(descriptor.base_url or descriptor.provider_model_id)
 
     def _get_payload(self, descriptor: ModelDescriptor, req: ChatCompletionRequest, stream: bool) -> Dict[str, Any]:
         return {
@@ -113,3 +113,23 @@ class OpenAIRuntime(ModelRuntime):
             "max_tokens": req.max_tokens,
             "stream": stream
         }
+
+    @staticmethod
+    def _extract_stream_content(line: str) -> Optional[str]:
+        if not line or not line.startswith("data: "):
+            return None
+        data_str = line[6:].strip()
+        if data_str == STREAM_DONE_SENTINEL:
+            return STREAM_DONE_SENTINEL
+        try:
+            chunk = json.loads(data_str)
+        except json.JSONDecodeError:
+            return None
+        choices = chunk.get("choices", [])
+        if not choices:
+            return None
+        delta = choices[0].get("delta", {})
+        content = delta.get("content")
+        if isinstance(content, str):
+            return content
+        return None

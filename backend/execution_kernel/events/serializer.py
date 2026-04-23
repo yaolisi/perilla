@@ -5,7 +5,7 @@ V2.6: Observability & Replay Layer - Event Serializer
 
 import json
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Any, Dict, cast
 import logging
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class EventSerializer:
         Returns:
             JSON 字符串
         """
-        def default_converter(obj):
+        def default_converter(obj: Any) -> Any:
             if isinstance(obj, datetime):
                 return obj.isoformat()
             if isinstance(obj, Exception):
@@ -68,7 +68,8 @@ class EventSerializer:
             事件负载字典
         """
         try:
-            return json.loads(json_str)
+            data = json.loads(json_str)
+            return data if isinstance(data, dict) else {"_deserialization_data": data}
         except json.JSONDecodeError as e:
             logger.error(f"Event deserialization failed: {e}")
             return {"_deserialization_error": str(e)}
@@ -80,7 +81,7 @@ class EventSerializer:
         
         移除或转换不可序列化的值
         """
-        result = {}
+        result: Dict[str, Any] = {}
         for key, value in payload.items():
             # 处理特殊类型
             if isinstance(value, Exception):
@@ -104,4 +105,4 @@ class EventSerializer:
                 except (TypeError, ValueError):
                     # 不可序列化，转换为字符串
                     result[key] = f"<{type(value).__name__}>"
-        return result
+        return cast(Dict[str, Any], result)

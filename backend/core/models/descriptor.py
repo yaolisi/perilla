@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional, cast
 from pydantic import BaseModel, Field
 
 class ModelCapability(BaseModel):
@@ -40,4 +40,4 @@ class ModelDescriptor(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="运行时特定的额外参数")
     
     def to_dict(self) -> Dict[str, Any]:
-        return self.model_dump()
+        return cast(Dict[str, Any], self.model_dump())

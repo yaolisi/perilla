@@ -4,7 +4,7 @@ V2.7: Optimization Layer - Learned Scheduler Policy
 基于 OptimizationSnapshot 的学习型调度策略
 """
 
-from typing import Optional
+from typing import Any, Dict, List, Optional, cast
 import hashlib
 import logging
 
@@ -66,7 +66,7 @@ class LearnedPolicy(SchedulerPolicy):
         self.consider_skill = consider_skill
         
         # V2.7: 动态计算版本号，包含参数哈希
-        self._version = self._compute_version()
+        self.version = self._compute_version()
     
     def _compute_version(self) -> str:
         """
@@ -82,11 +82,6 @@ class LearnedPolicy(SchedulerPolicy):
         )
         param_hash = hashlib.md5(param_str.encode()).hexdigest()[:8]
         return f"{self.BASE_VERSION}_{param_hash}"
-    
-    @property
-    def version(self) -> str:
-        """获取版本号（包含参数哈希）"""
-        return self._version
     
     def priority(
         self,
@@ -135,7 +130,7 @@ class LearnedPolicy(SchedulerPolicy):
         # 优先从 config 中获取 skill 名称
         skill_name = node.config.get("skill")
         if skill_name:
-            return skill_name
+            return cast(str, skill_name)
         
         # 对于 tool 类型的节点，尝试使用 node_type
         if node.type.value == "tool":
@@ -145,10 +140,10 @@ class LearnedPolicy(SchedulerPolicy):
     
     def sort_nodes(
         self,
-        nodes,
+        nodes: List[NodeDefinition],
         context: PolicyContext,
         snapshot: Optional[OptimizationSnapshot] = None,
-    ):
+    ) -> List[NodeDefinition]:
         """
         对节点列表进行排序
         
@@ -165,7 +160,7 @@ class LearnedPolicy(SchedulerPolicy):
         
         return [node for node, _ in node_priorities]
     
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
             "name": self.get_name(),

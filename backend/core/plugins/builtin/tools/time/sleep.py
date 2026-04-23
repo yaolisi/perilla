@@ -1,5 +1,5 @@
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -18,21 +18,21 @@ class TimeSleepTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
+        return cast(Dict[str, Any], create_input_schema({
             "seconds": {
                 "type": "number",
                 "description": "Number of seconds to sleep (can be decimal, e.g., 0.5 for 500ms). Maximum: 60 seconds.",
                 "minimum": 0,
                 "maximum": 60
             }
-        }, required=["seconds"])
+        }, required=["seconds"]))
 
     @property
     def output_schema(self) -> Dict[str, Any]:
         return {"type": "object", "properties": {"slept": {"type": "number"}}}
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return []
 
     @property

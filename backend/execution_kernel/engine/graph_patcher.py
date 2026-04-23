@@ -4,7 +4,7 @@ Graph Patcher (Phase B)
 """
 
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime
+from datetime import UTC, datetime
 import copy
 
 from execution_kernel.models.graph_definition import (
@@ -43,6 +43,10 @@ class GraphPatcher:
     
     def __init__(self):
         self._version_separator = "."
+
+    @staticmethod
+    def _utc_now_naive() -> datetime:
+        return datetime.now(UTC).replace(tzinfo=None)
     
     def apply_patch(
         self,
@@ -287,7 +291,7 @@ class GraphPatcher:
             running_nodes=running,
             failed_nodes=failed,
             graph_version=new_version,
-            updated_at=datetime.utcnow(),
+            updated_at=self._utc_now_naive(),
         )
     
     def generate_next_version(self, current_version: str) -> str:

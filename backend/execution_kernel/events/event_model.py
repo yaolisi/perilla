@@ -3,9 +3,9 @@ V2.6: Observability & Replay Layer - Event Model
 定义 ExecutionEvent 数据模型
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import uuid
 
 from execution_kernel.events.event_types import ExecutionEventType
@@ -29,12 +29,11 @@ class ExecutionEvent(BaseModel):
     instance_id: str
     sequence: int  # 单实例内严格递增，用于确定性 replay
     event_type: ExecutionEventType
-    timestamp: int = Field(default_factory=lambda: int(datetime.utcnow().timestamp() * 1000))
+    timestamp: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp() * 1000))
     payload: Dict[str, Any] = Field(default_factory=dict)
     schema_version: int = 1
     
-    class Config:
-        frozen = True  # 不可变，保证事件不可篡改
+    model_config = ConfigDict(frozen=True)
     
     @classmethod
     def create(

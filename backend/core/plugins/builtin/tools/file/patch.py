@@ -1,7 +1,7 @@
 import difflib
 import re
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -36,21 +36,24 @@ class FilePatchTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "path": {
-                "type": "string",
-                "description": "File path to patch: relative to workspace, or absolute path under allowed roots."
-            },
-            "patch": {
-                "type": "string",
-                "description": "Unified diff string (e.g., '--- a/file.py\\n+++ b/file.py\\n@@ -1,3 +1,4 @@\\n+new line')"
-            },
-            "create_if_missing": {
-                "type": "boolean",
-                "description": "Create the file if it doesn't exist (default: false)",
-                "default": False
-            }
-        }, required=["path", "patch"])
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "path": {
+                    "type": "string",
+                    "description": "File path to patch: relative to workspace, or absolute path under allowed roots."
+                },
+                "patch": {
+                    "type": "string",
+                    "description": "Unified diff string (e.g., '--- a/file.py\\n+++ b/file.py\\n@@ -1,3 +1,4 @@\\n+new line')"
+                },
+                "create_if_missing": {
+                    "type": "boolean",
+                    "description": "Create the file if it doesn't exist (default: false)",
+                    "default": False
+                }
+            }, required=["path", "patch"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -63,7 +66,7 @@ class FilePatchTool(Tool):
         }}
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["file.write"]
 
     @property
@@ -160,7 +163,7 @@ class FilePatchTool(Tool):
             logger.error(f"[file.patch] Error: {e}")
             return ToolResult(success=False, data=None, error=str(e))
 
-    def _apply_unified_diff(self, original_lines: list, patch_content: str) -> list:
+    def _apply_unified_diff(self, original_lines: List[str], patch_content: str) -> List[str]:
         """Apply unified diff to original lines."""
         # Parse unified diff format
         lines = patch_content.splitlines(keepends=True)
@@ -168,7 +171,7 @@ class FilePatchTool(Tool):
         # Find the start of file content in diff
         original_file = None
         new_file = None
-        hunks = []
+        hunks: List[Dict[str, Any]] = []
         current_hunk = None
         
         for i, line in enumerate(lines):
@@ -196,13 +199,13 @@ class FilePatchTool(Tool):
                     }
             elif current_hunk is not None:
                 if line.startswith('-'):
-                    current_hunk["old_lines"].append(line[1:])
+                    cast(List[str], current_hunk["old_lines"]).append(line[1:])
                 elif line.startswith('+'):
-                    current_hunk["new_lines"].append(line[1:])
+                    cast(List[str], current_hunk["new_lines"]).append(line[1:])
                 elif line.startswith(' '):
                     # Context line belongs to both sides
-                    current_hunk["old_lines"].append(line[1:])
-                    current_hunk["new_lines"].append(line[1:])
+                    cast(List[str], current_hunk["old_lines"]).append(line[1:])
+                    cast(List[str], current_hunk["new_lines"]).append(line[1:])
         
         if current_hunk:
             hunks.append(current_hunk)
@@ -214,16 +217,16 @@ class FilePatchTool(Tool):
         # Apply hunks in reverse order to maintain line numbers
         result = original_lines[:]
         for hunk in reversed(hunks):
-            old_start = hunk["old_start"] - 1  # Convert to 0-indexed
-            old_count = hunk["old_count"]
-            new_lines = hunk["new_lines"]
+            old_start = cast(int, hunk["old_start"]) - 1  # Convert to 0-indexed
+            old_count = cast(int, hunk["old_count"])
+            new_lines = cast(List[str], hunk["new_lines"])
             
             # Replace old lines with new lines
             result[old_start:old_start + old_count] = new_lines
         
         return result
 
-    def _apply_simple_patch(self, original_lines: list, patch_lines: list) -> list:
+    def _apply_simple_patch(self, original_lines: List[str], patch_lines: List[str]) -> List[str]:
         """Apply patch when unified diff parsing fails - try simple approach."""
         # Try to use Python's difflib
         from io import StringIO

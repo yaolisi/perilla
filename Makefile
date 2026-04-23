@@ -1,4 +1,4 @@
-.PHONY: help bootstrap bootstrap-prod env-init install install-gpu install-prod install-prod-soft up up-gpu up-prod down down-gpu down-prod status logs healthcheck doctor reset
+.PHONY: help bootstrap bootstrap-prod env-init install install-gpu install-prod install-prod-soft up up-gpu up-prod down down-gpu down-prod status logs healthcheck doctor test-no-fallback reset
 
 help:
 	@echo "OpenVitamin Docker helper targets:"
@@ -23,6 +23,10 @@ help:
 	@echo "  make doctor        - Run environment diagnostics"
 	@echo "  DOCTOR_STRICT_WARNINGS=1 make doctor"
 	@echo "                   - Treat warnings as failures"
+	@echo "  make test-no-fallback"
+	@echo "                   - Run API no-fallback regression tests"
+	@echo "  make test-no-fallback TEST_ARGS=\"-k memory -x\""
+	@echo "                   - Run subset/extra pytest args for no-fallback suite"
 	@echo "  make reset         - Remove containers and volumes"
 
 install:
@@ -79,6 +83,9 @@ healthcheck:
 
 doctor:
 	@bash scripts/doctor.sh
+
+test-no-fallback:
+	@bash scripts/test-no-fallback.sh $(TEST_ARGS)
 
 reset:
 	@bash scripts/reset.sh

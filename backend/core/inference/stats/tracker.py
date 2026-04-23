@@ -5,7 +5,7 @@ Tracks inference performance metrics for system monitoring.
 """
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 from collections import deque
 import threading
 
@@ -45,7 +45,7 @@ class InferenceStatsTracker:
         speed = tracker.get_tokens_per_second()
     """
     
-    def __init__(self, window_size: int = 10):
+    def __init__(self, window_size: int = 10) -> None:
         """
         Initialize the tracker.
         
@@ -54,7 +54,7 @@ class InferenceStatsTracker:
         """
         self._lock = threading.Lock()
         self._window_size = window_size
-        self._records: deque = deque(maxlen=window_size)
+        self._records: deque[InferenceRecord] = deque(maxlen=window_size)
         self._last_speed: Optional[float] = None
         self._last_timestamp: Optional[float] = None
         self._total_tokens: int = 0
@@ -119,7 +119,7 @@ class InferenceStatsTracker:
             total_tps = sum(r.tokens_per_second for r in self._records)
             return total_tps / len(self._records)
     
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         """
         Get comprehensive stats.
         

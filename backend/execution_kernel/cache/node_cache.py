@@ -3,7 +3,7 @@ Node Cache
 节点级缓存，基于 node_id + input hash
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Optional, Dict, Any
 import hashlib
 import json
@@ -15,6 +15,10 @@ from execution_kernel.models.graph_definition import NodeDefinition
 
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class NodeCache:
@@ -62,9 +66,16 @@ class NodeCache:
             return None
         
         # 检查过期
-        if cache_entry.expires_at and cache_entry.expires_at < datetime.utcnow():
-            logger.debug(f"Cache expired: {node_def.id}")
-            return None
+        if cache_entry.expires_at:
+            now = _utc_now()
+            expires_at = cache_entry.expires_at
+            if expires_at.tzinfo is None:
+                if expires_at < now.replace(tzinfo=None):
+                    logger.debug(f"Cache expired: {node_def.id}")
+                    return None
+            elif expires_at < now:
+                logger.debug(f"Cache expired: {node_def.id}")
+                return None
         
         logger.info(f"Cache hit: {node_def.id}")
         return cache_entry.output_data
@@ -87,8 +98,8 @@ class NodeCache:
             node_id=node_def.id,
             input_hash=input_hash,
             output_data=output_data,
-            created_at=datetime.utcnow(),
-            expires_at=datetime.utcnow() + timedelta(seconds=ttl),
+            created_at=_utc_now(),
+            expires_at=_utc_now() + timedelta(seconds=ttl),
         )
         
         await self.repository.save(entry)

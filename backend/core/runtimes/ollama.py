@@ -1,10 +1,13 @@
 import httpx
 import json
-from typing import AsyncIterator
+from typing import AsyncIterator, cast
 from log import logger
 from core.runtimes.base import ModelRuntime
 from core.types import ChatCompletionRequest
 from core.models.descriptor import ModelDescriptor
+
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+
 
 class OllamaRuntime(ModelRuntime):
     """
@@ -22,7 +25,7 @@ class OllamaRuntime(ModelRuntime):
             }
         }
         
-        base_url = descriptor.base_url or "http://localhost:11434"
+        base_url = descriptor.base_url or DEFAULT_OLLAMA_BASE_URL
         async with httpx.AsyncClient(timeout=None) as client:
             resp = await client.post(
                 f"{base_url}/api/chat",
@@ -33,7 +36,8 @@ class OllamaRuntime(ModelRuntime):
                 raise ValueError(f"Ollama error: {error_msg}. Please ensure model is pulled.")
             resp.raise_for_status()
             data = resp.json()
-            return data["message"]["content"]
+            content = data.get("message", {}).get("content", "")
+            return cast(str, content)
 
     async def stream_chat(self, descriptor: ModelDescriptor, req: ChatCompletionRequest) -> AsyncIterator[str]:
         payload = {
@@ -47,7 +51,7 @@ class OllamaRuntime(ModelRuntime):
             }
         }
         
-        base_url = descriptor.base_url or "http://localhost:11434"
+        base_url = descriptor.base_url or DEFAULT_OLLAMA_BASE_URL
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "POST",
@@ -73,7 +77,7 @@ class OllamaRuntime(ModelRuntime):
 
     async def is_loaded(self, descriptor: ModelDescriptor) -> bool:
         """检查 Ollama 模型是否已加载"""
-        base_url = descriptor.base_url or "http://localhost:11434"
+        base_url = descriptor.base_url or DEFAULT_OLLAMA_BASE_URL
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 resp = await client.get(f"{base_url}/api/ps")

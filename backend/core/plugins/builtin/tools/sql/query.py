@@ -1,5 +1,5 @@
 import sqlite3
-from typing import Dict, Any, List
+from typing import Any, Dict, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -17,17 +17,20 @@ class SqlQueryTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "query": {"type": "string", "description": "The SQL SELECT query to execute."},
-            "db_path": {"type": "string", "description": "Path to the SQLite database file."}
-        }, required=["query", "db_path"])
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "query": {"type": "string", "description": "The SQL SELECT query to execute."},
+                "db_path": {"type": "string", "description": "Path to the SQLite database file."}
+            }, required=["query", "db_path"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
         return {"type": "array", "items": {"type": "object"}}
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["sql.query"]
 
     @property
@@ -42,11 +45,15 @@ class SqlQueryTool(Tool):
         }
 
     async def run(self, input_data: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        query = input_data.get("query")
-        db_path = input_data.get("db_path")
+        query_raw = input_data.get("query")
+        db_path_raw = input_data.get("db_path")
+        query = query_raw if isinstance(query_raw, str) else ""
+        db_path = db_path_raw if isinstance(db_path_raw, str) else ""
         
-        if not query.strip().upper().startswith("SELECT"):
+        if not query or not query.strip().upper().startswith("SELECT"):
             return ToolResult(success=False, data=None, error="Only SELECT queries are allowed.")
+        if not db_path:
+            return ToolResult(success=False, data=None, error="db_path is required.")
 
         try:
             target_abs = resolve_in_workspace(workspace=ctx.workspace, path=db_path)

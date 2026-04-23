@@ -3,11 +3,15 @@ Graph Instance Database Models
 SQLAlchemy 2.0 模型，Postgres 兼容
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 from sqlalchemy import String, Text, DateTime, Integer, JSON, Enum as SQLEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 import enum
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -45,8 +49,8 @@ class GraphDefinitionDB(Base):
     graph_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     version: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     definition_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now_naive, onupdate=_utc_now_naive)
     
     # Phase B: 唯一约束 (graph_id, version)
     __table_args__ = (
@@ -68,8 +72,8 @@ class GraphInstanceDB(Base):
         default=GraphInstanceStateDB.PENDING
     )
     global_context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now_naive, onupdate=_utc_now_naive)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -93,8 +97,8 @@ class NodeRuntimeDB(Base):
     error_type: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now_naive, onupdate=_utc_now_naive)
 
 
 class NodeCacheDB(Base):
@@ -105,7 +109,7 @@ class NodeCacheDB(Base):
     node_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     output_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now_naive)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
@@ -122,7 +126,7 @@ class GraphPatchDB(Base):
     operations: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")  # pending, applied, failed
     result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now_naive)
     applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -139,4 +143,4 @@ class ExecutionPointerDB(Base):
     ready_nodes: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     running_nodes: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     failed_nodes: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now_naive, onupdate=_utc_now_naive)

@@ -1,5 +1,4 @@
-import json
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -25,52 +24,55 @@ class HttpRequestTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "url": {
-                "type": "string",
-                "description": "The URL to request."
-            },
-            "method": {
-                "type": "string",
-                "description": "HTTP method (GET, POST, PUT, DELETE, PATCH, etc.). Default: GET.",
-                "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
-                "default": "GET"
-            },
-            "body": {
-                "type": ["object", "string"],
-                "description": "Request body: JSON object (auto-serialized) or raw string."
-            },
-            "headers": {
-                "type": "object",
-                "description": "Optional HTTP headers as key-value pairs.",
-                "additionalProperties": {"type": "string"}
-            },
-            "params": {
-                "type": "object",
-                "description": "Optional query parameters as key-value pairs.",
-                "additionalProperties": {"type": "string"}
-            },
-            "auth": {
-                "type": "object",
-                "description": "Authentication: {type: 'bearer', token: 'xxx'} or {type: 'basic', username: 'xxx', password: 'xxx'}.",
-                "properties": {
-                    "type": {"type": "string", "enum": ["bearer", "basic"]},
-                    "token": {"type": "string"},
-                    "username": {"type": "string"},
-                    "password": {"type": "string"}
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "url": {
+                    "type": "string",
+                    "description": "The URL to request."
+                },
+                "method": {
+                    "type": "string",
+                    "description": "HTTP method (GET, POST, PUT, DELETE, PATCH, etc.). Default: GET.",
+                    "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+                    "default": "GET"
+                },
+                "body": {
+                    "type": ["object", "string"],
+                    "description": "Request body: JSON object (auto-serialized) or raw string."
+                },
+                "headers": {
+                    "type": "object",
+                    "description": "Optional HTTP headers as key-value pairs.",
+                    "additionalProperties": {"type": "string"}
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Optional query parameters as key-value pairs.",
+                    "additionalProperties": {"type": "string"}
+                },
+                "auth": {
+                    "type": "object",
+                    "description": "Authentication: {type: 'bearer', token: 'xxx'} or {type: 'basic', username: 'xxx', password: 'xxx'}.",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["bearer", "basic"]},
+                        "token": {"type": "string"},
+                        "username": {"type": "string"},
+                        "password": {"type": "string"}
+                    }
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Request timeout in seconds (default: 30).",
+                    "default": 30
+                },
+                "json": {
+                    "type": "boolean",
+                    "description": "Whether to send body as JSON (default: true if body is object).",
+                    "default": None
                 }
-            },
-            "timeout": {
-                "type": "number",
-                "description": "Request timeout in seconds (default: 30).",
-                "default": 30
-            },
-            "json": {
-                "type": "boolean",
-                "description": "Whether to send body as JSON (default: true if body is object).",
-                "default": None
-            }
-        }, required=["url"])
+            }, required=["url"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -85,7 +87,7 @@ class HttpRequestTool(Tool):
         }
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["net.http"]
 
     @property

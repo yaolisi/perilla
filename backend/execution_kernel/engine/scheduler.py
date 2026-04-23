@@ -4,7 +4,7 @@ Scheduler
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Dict, Any, Set, List, Optional
 import logging
 from collections import defaultdict
@@ -47,6 +47,11 @@ from execution_kernel.optimization.snapshot.snapshot import OptimizationSnapshot
 
 logger = logging.getLogger(__name__)
 POINTER_UPDATE_STRATEGY = (os.getenv("EXECUTION_POINTER_STRATEGY", "best_effort") or "best_effort").strip().lower()
+
+
+def _utc_now_naive() -> datetime:
+    """Preserve DB-side naive datetime semantics."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Scheduler:
@@ -153,7 +158,7 @@ class Scheduler:
                 graph_definition_version=graph_def.version,
                 state=GraphInstanceState.RUNNING,
                 global_context=global_context or {},
-                started_at=datetime.utcnow(),
+                started_at=_utc_now_naive(),
             )
             await instance_repo.create(instance)
             
@@ -246,11 +251,11 @@ class Scheduler:
                     await instance_repo.update_state(
                         instance_id,
                         GraphInstanceState.CANCELLED,
-                        finished_at=datetime.utcnow(),
+                        finished_at=_utc_now_naive(),
                     )
 
                     all_nodes = await node_repo.get_all_by_instance(instance_id)
-                    now = datetime.utcnow()
+                    now = _utc_now_naive()
                     for n in all_nodes:
                         if n.state in {NodeStateDB.SUCCESS, NodeStateDB.SKIPPED, NodeStateDB.CANCELLED}:
                             continue
@@ -343,7 +348,7 @@ class Scheduler:
                 # 将因分支路径未命中而“永远不可满足”的 pending 节点标记为 skipped，
                 # 避免实例长期停留在 running。
                 skipped_any = False
-                now = datetime.utcnow()
+                now = _utc_now_naive()
                 for node_db in all_nodes:
                     if NodeState(node_db.state.value) != NodeState.PENDING:
                         continue
@@ -381,7 +386,7 @@ class Scheduler:
                     await instance_repo.update_state(
                         instance_id, 
                         GraphInstanceState.COMPLETED,
-                        finished_at=datetime.utcnow(),
+                        finished_at=_utc_now_naive(),
                     )
                     logger.info(f"Graph instance {instance_id} completed")
                     
@@ -411,7 +416,7 @@ class Scheduler:
                         await instance_repo.update_state(
                             instance_id,
                             GraphInstanceState.FAILED,
-                            finished_at=datetime.utcnow(),
+                            finished_at=_utc_now_naive(),
                         )
                         logger.info(f"Graph instance {instance_id} failed")
                         
@@ -655,7 +660,7 @@ class Scheduler:
             )
         
         # 执行节点（带重试）
-        node_started_at = datetime.utcnow()
+        node_started_at = _utc_now_naive()
         try:
             output = await self.executor.execute_with_retry(
                 node_runtime, node_def, context
@@ -669,7 +674,7 @@ class Scheduler:
             
             # V2.6: 发射 NodeSucceeded 事件（duration 用本地时间差，避免依赖未刷新的 node_db）
             async with self.db.async_session() as session:
-                duration_ms = int((datetime.utcnow() - node_started_at).total_seconds() * 1000)
+                duration_ms = int((_utc_now_naive() - node_started_at).total_seconds() * 1000)
                 
                 await self._emit_event(
                     session,
@@ -792,7 +797,7 @@ class Scheduler:
     
     async def wait_for_completion(self, instance_id: str, timeout: float = None) -> GraphInstanceState:
         """等待图实例完成"""
-        start_time = datetime.utcnow()
+        start_time = _utc_now_naive()
         
         while True:
             async with self.db.async_session() as session:
@@ -807,7 +812,7 @@ class Scheduler:
             
             # 超时检查
             if timeout:
-                elapsed = (datetime.utcnow() - start_time).total_seconds()
+                elapsed = (_utc_now_naive() - start_time).total_seconds()
                 if elapsed > timeout:
                     return GraphInstanceState.RUNNING
             
@@ -979,7 +984,7 @@ class Scheduler:
             # 获取所有运行中的实例
             running_instances = await instance_repo.get_running_instances()
             if stale_only_seconds is not None and stale_only_seconds > 0:
-                cutoff = datetime.utcnow() - timedelta(seconds=int(stale_only_seconds))
+                cutoff = _utc_now_naive() - timedelta(seconds=int(stale_only_seconds))
                 filtered: List[Any] = []
                 skipped_live = 0
                 for inst in running_instances:
@@ -1077,7 +1082,7 @@ class Scheduler:
         - 且没有 RUNNING 节点
         -> 标记为 FAILED
         """
-        cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+        cutoff = _utc_now_naive() - timedelta(minutes=max_age_minutes)
         cleaned = 0
         async with self.db.async_session() as session:
             instance_repo = GraphInstanceRepository(session)
@@ -1092,7 +1097,7 @@ class Scheduler:
                 await instance_repo.update_state(
                     inst.id,
                     GraphInstanceState.FAILED,
-                    finished_at=datetime.utcnow(),
+                    finished_at=_utc_now_naive(),
                 )
                 cleaned += 1
             await session.commit()
@@ -1109,7 +1114,7 @@ class Scheduler:
                 pointer_db.ready_nodes.remove(node_id)
             if node_id not in pointer_db.running_nodes:
                 pointer_db.running_nodes.append(node_id)
-            pointer_db.updated_at = datetime.utcnow()
+            pointer_db.updated_at = _utc_now_naive()
             flag_modified(pointer_db, "ready_nodes")
             flag_modified(pointer_db, "running_nodes")
         await self._update_pointer_with_retry(instance_id, _mutate)
@@ -1121,7 +1126,7 @@ class Scheduler:
                 pointer_db.running_nodes.remove(node_id)
             if node_id not in pointer_db.completed_nodes:
                 pointer_db.completed_nodes.append(node_id)
-            pointer_db.updated_at = datetime.utcnow()
+            pointer_db.updated_at = _utc_now_naive()
             flag_modified(pointer_db, "running_nodes")
             flag_modified(pointer_db, "completed_nodes")
         await self._update_pointer_with_retry(instance_id, _mutate)
@@ -1133,7 +1138,7 @@ class Scheduler:
                 pointer_db.running_nodes.remove(node_id)
             if node_id not in pointer_db.failed_nodes:
                 pointer_db.failed_nodes.append(node_id)
-            pointer_db.updated_at = datetime.utcnow()
+            pointer_db.updated_at = _utc_now_naive()
             flag_modified(pointer_db, "running_nodes")
             flag_modified(pointer_db, "failed_nodes")
         await self._update_pointer_with_retry(instance_id, _mutate)
@@ -1143,7 +1148,7 @@ class Scheduler:
         async def _mutate(pointer_db):
             pointer_db.running_nodes = []
             pointer_db.ready_nodes = []
-            pointer_db.updated_at = datetime.utcnow()
+            pointer_db.updated_at = _utc_now_naive()
             flag_modified(pointer_db, "running_nodes")
             flag_modified(pointer_db, "ready_nodes")
         await self._update_pointer_with_retry(instance_id, _mutate)
@@ -1160,7 +1165,7 @@ class Scheduler:
             flag_modified(pointer_db, "failed_nodes")
             flag_modified(pointer_db, "running_nodes")
             flag_modified(pointer_db, "ready_nodes")
-            pointer_db.updated_at = datetime.utcnow()
+            pointer_db.updated_at = _utc_now_naive()
         await self._update_pointer_with_retry(instance_id, _mutate)
 
     async def _update_pointer_with_retry(self, instance_id: str, mutator) -> None:

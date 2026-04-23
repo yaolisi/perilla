@@ -6,12 +6,18 @@ SQLAlchemy 2.0 异步引擎配置
 """
 
 from pathlib import Path
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import create_engine, text
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy import Engine, create_engine, text
 from sqlalchemy import event
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from contextlib import asynccontextmanager, contextmanager
-from typing import AsyncGenerator, Generator
+from typing import Any, AsyncGenerator, Generator, Optional
 import os
 import logging
 
@@ -62,15 +68,16 @@ DEFAULT_DATABASE_URL = get_default_database_url()
 class Database:
     """数据库管理器"""
     
-    def __init__(self, database_url: str = None):
-        self.database_url = database_url or os.getenv("EXECUTION_KERNEL_DB_URL", DEFAULT_DATABASE_URL)
-        self._async_engine = None
-        self._sync_engine = None
-        self._async_session_factory = None
-        self._sync_session_factory = None
+    def __init__(self, database_url: Optional[str] = None) -> None:
+        db_url = database_url or os.getenv("EXECUTION_KERNEL_DB_URL") or DEFAULT_DATABASE_URL
+        self.database_url: str = db_url
+        self._async_engine: Optional[AsyncEngine] = None
+        self._sync_engine: Optional[Engine] = None
+        self._async_session_factory: Optional[async_sessionmaker[AsyncSession]] = None
+        self._sync_session_factory: Optional[sessionmaker[Session]] = None
     
     @property
-    def async_engine(self):
+    def async_engine(self) -> AsyncEngine:
         """异步引擎"""
         if self._async_engine is None:
             connect_args = {}
@@ -86,7 +93,7 @@ class Database:
         return self._async_engine
     
     @property
-    def sync_engine(self):
+    def sync_engine(self) -> Engine:
         """同步引擎"""
         if self._sync_engine is None:
             # 转换为同步 URL
@@ -104,13 +111,13 @@ class Database:
         return self._sync_engine
 
     @staticmethod
-    def _configure_sqlite_pragmas(engine):
+    def _configure_sqlite_pragmas(engine: Engine) -> None:
         """为 SQLite 连接设置并发友好的 PRAGMA。"""
         if not str(engine.url).startswith("sqlite"):
             return
 
         @event.listens_for(engine, "connect")
-        def _set_sqlite_pragma(dbapi_connection, _connection_record):
+        def _set_sqlite_pragma(dbapi_connection: Any, _connection_record: Any) -> None:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA synchronous=NORMAL")
@@ -127,7 +134,7 @@ class Database:
             )
         return self._async_session_factory
     
-    def get_sync_session_factory(self) -> sessionmaker:
+    def get_sync_session_factory(self) -> sessionmaker[Session]:
         """获取同步 Session 工厂"""
         if self._sync_session_factory is None:
             self._sync_session_factory = sessionmaker(
@@ -150,7 +157,7 @@ class Database:
             await session.close()
     
     @contextmanager
-    def sync_session(self) -> Generator:
+    def sync_session(self) -> Generator[Session, None, None]:
         """同步 Session 上下文管理器"""
         session = self.get_sync_session_factory()()
         try:
@@ -162,25 +169,25 @@ class Database:
         finally:
             session.close()
     
-    async def create_tables(self):
+    async def create_tables(self) -> None:
         """创建所有表"""
         async with self.async_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await self._migrate_legacy_schema(conn)
     
-    async def drop_tables(self):
+    async def drop_tables(self) -> None:
         """删除所有表（仅用于测试）"""
         async with self.async_engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
     
-    async def close(self):
+    async def close(self) -> None:
         """关闭连接"""
         if self._async_engine:
             await self._async_engine.dispose()
         if self._sync_engine:
             self._sync_engine.dispose()
 
-    async def _migrate_legacy_schema(self, conn):
+    async def _migrate_legacy_schema(self, conn: AsyncConnection) -> None:
         """
         兼容旧版 schema：
         - graph_definitions 缺少 graph_id 列时自动补齐并回填
@@ -198,7 +205,7 @@ class Database:
 
 
 # 全局数据库实例
-_db: Database = None
+_db: Optional[Database] = None
 
 
 def get_database() -> Database:
@@ -209,7 +216,7 @@ def get_database() -> Database:
     return _db
 
 
-def init_database(database_url: str = None):
+def init_database(database_url: Optional[str] = None) -> Database:
     """初始化数据库"""
     global _db
     _db = Database(database_url)

@@ -12,9 +12,11 @@ user_id 约定从 Header: X-User-Id 读取；无则 default
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 
+from api.errors import raise_api_error
 from config.settings import settings
 from core.memory.memory_store import MemoryStore, MemoryStoreConfig
 
@@ -50,7 +52,9 @@ _store = MemoryStore(
 
 
 @router.get("")
-async def list_memory(request: Request, limit: int = 50, include_deprecated: bool = False):
+async def list_memory(
+    request: Request, limit: int = 50, include_deprecated: bool = False
+) -> Dict[str, Any]:
     """列出当前用户的记忆（最近优先）"""
     user_id = _get_user_id(request)
     items = _store.list(user_id=user_id, limit=limit, include_deprecated=include_deprecated)
@@ -58,17 +62,22 @@ async def list_memory(request: Request, limit: int = 50, include_deprecated: boo
 
 
 @router.delete("/{memory_id}")
-async def delete_memory(memory_id: str, request: Request):
+async def delete_memory(memory_id: str, request: Request) -> Dict[str, Any]:
     """删除一条记忆"""
     user_id = _get_user_id(request)
     ok = _store.delete(user_id=user_id, memory_id=memory_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="memory not found")
+        raise_api_error(
+            status_code=404,
+            code="memory_not_found",
+            message="memory not found",
+            details={"memory_id": memory_id},
+        )
     return {"deleted": True, "id": memory_id}
 
 
 @router.post("/clear")
-async def clear_memory(request: Request):
+async def clear_memory(request: Request) -> Dict[str, Any]:
     """清空当前用户的所有记忆"""
     user_id = _get_user_id(request)
     n = _store.clear(user_id=user_id)

@@ -1,5 +1,5 @@
 import difflib
-from typing import Dict, Any
+from typing import Dict, Any, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -17,7 +17,7 @@ class TextDiffTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
+        return cast(Dict[str, Any], create_input_schema({
             "text1": {
                 "type": "string",
                 "description": "The original text (or file path)."
@@ -47,7 +47,7 @@ class TextDiffTool(Tool):
                 "description": "Label for the second text in diff output (default: 'text2').",
                 "default": "text2"
             }
-        }, required=["text1", "text2"])
+        }, required=["text1", "text2"]))
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -57,7 +57,7 @@ class TextDiffTool(Tool):
         }
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return []
 
     @property
@@ -81,27 +81,28 @@ class TextDiffTool(Tool):
             lines1 = text1.splitlines(keepends=True)
             lines2 = text2.splitlines(keepends=True)
 
+            result: Any
             if format_type == "unified":
-                diff = list(difflib.unified_diff(
+                diff_lines = list(difflib.unified_diff(
                     lines1, lines2,
                     fromfile=fromfile,
                     tofile=tofile,
                     lineterm="",
                     n=context
                 ))
-                result = "".join(diff)
+                result = "".join(diff_lines)
             elif format_type == "context":
-                diff = list(difflib.context_diff(
+                diff_lines = list(difflib.context_diff(
                     lines1, lines2,
                     fromfile=fromfile,
                     tofile=tofile,
                     lineterm="",
                     n=context
                 ))
-                result = "".join(diff)
+                result = "".join(diff_lines)
             elif format_type == "html":
-                diff = difflib.HtmlDiff()
-                result = diff.make_file(
+                html_diff = difflib.HtmlDiff()
+                result = html_diff.make_file(
                     lines1, lines2,
                     fromdesc=fromfile,
                     todesc=tofile,
@@ -111,17 +112,18 @@ class TextDiffTool(Tool):
             elif format_type == "lines":
                 # Return line-by-line comparison
                 matcher = difflib.SequenceMatcher(None, lines1, lines2)
-                result = []
+                line_ops: List[tuple[str, str]] = []
                 for tag, i1, i2, j1, j2 in matcher.get_opcodes():
                     if tag == "equal":
-                        result.extend([("=", line) for line in lines1[i1:i2]])
+                        line_ops.extend([("=", line) for line in lines1[i1:i2]])
                     elif tag == "delete":
-                        result.extend([("-", line) for line in lines1[i1:i2]])
+                        line_ops.extend([("-", line) for line in lines1[i1:i2]])
                     elif tag == "insert":
-                        result.extend([("+", line) for line in lines2[j1:j2]])
+                        line_ops.extend([("+", line) for line in lines2[j1:j2]])
                     elif tag == "replace":
-                        result.extend([("-", line) for line in lines1[i1:i2]])
-                        result.extend([("+", line) for line in lines2[j1:j2]])
+                        line_ops.extend([("-", line) for line in lines1[i1:i2]])
+                        line_ops.extend([("+", line) for line in lines2[j1:j2]])
+                result = line_ops
             else:
                 return ToolResult(success=False, data=None, error=f"Invalid format: {format_type}")
 

@@ -9,12 +9,16 @@ Skill v2 Registry: 支持多版本管理的内存注册表。
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Dict, List, Optional, Tuple
 
 from log import logger
 from core.skills.models import Skill, SkillDefinition
 from core.skills.service import get_skill_store
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class SkillRegistry:
@@ -150,7 +154,7 @@ class SkillRegistry:
         
         # 设置为废弃
         versions[version].enabled = False
-        versions[version].updated_at = datetime.utcnow()
+        versions[version].updated_at = _utc_now()
         
         logger.info(f"[SkillRegistry] Deprecated {skill_id}@{version}")
         return True

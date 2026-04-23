@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 from .base import Tool
 from .context import ToolContext
 from .result import ToolResult
-import jsonschema
+import jsonschema  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,7 @@ class ToolRegistry:
     _tools: Dict[str, Tool] = {}
 
     @classmethod
-    def register(cls, tool: Tool):
+    def register(cls, tool: Tool) -> None:
         if tool.name in cls._tools:
             logger.warning(f"Tool '{tool.name}' is already registered. Overwriting.")
         cls._tools[tool.name] = tool
@@ -26,7 +26,7 @@ class ToolRegistry:
         return list(cls._tools.values())
 
     @classmethod
-    def clear(cls):
+    def clear(cls) -> None:
         cls._tools.clear()
         
     @classmethod

@@ -1,5 +1,5 @@
-import psutil
-from typing import Dict, Any
+import psutil  # type: ignore[import-untyped]
+from typing import Dict, Any, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -17,7 +17,7 @@ class SystemDiskTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
+        return cast(Dict[str, Any], create_input_schema({
             "path": {
                 "type": "string",
                 "description": "Path to check disk usage for (default: '/'). If not provided, returns all partitions.",
@@ -28,7 +28,7 @@ class SystemDiskTool(Tool):
                 "description": "Whether to return all mounted partitions (default: false).",
                 "default": False
             }
-        })
+        }))
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -38,7 +38,7 @@ class SystemDiskTool(Tool):
         }
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["system.info"]
 
     @property

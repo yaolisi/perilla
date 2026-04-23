@@ -3,7 +3,7 @@ V2.6: Observability & Replay Layer - Event Store
 事件存储（SQLAlchemy ORM）
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List, Optional, Dict, Any
 import logging
 
@@ -18,6 +18,10 @@ from execution_kernel.models.graph_instance import Base
 
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class ExecutionEventDB(Base):
@@ -55,7 +59,7 @@ class ExecutionEventDB(Base):
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     
     # 创建时间（数据库时间）
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_now_naive)
     
     # 复合索引
     __table_args__ = (

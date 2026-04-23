@@ -1,7 +1,7 @@
 import re
 import os
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -36,36 +36,39 @@ class FileSearchTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "path": {
-                "type": "string",
-                "description": "Directory or file path to search: relative to workspace, or absolute path."
-            },
-            "pattern": {
-                "type": "string",
-                "description": "Search pattern (regex supported)."
-            },
-            "glob": {
-                "type": "string",
-                "description": "File glob pattern (e.g., '*.py', '*.txt'). Default: all files.",
-                "default": "*"
-            },
-            "ignore_case": {
-                "type": "boolean",
-                "description": "Case insensitive search (default: false).",
-                "default": False
-            },
-            "max_results": {
-                "type": "integer",
-                "description": "Maximum number of results (default: 100).",
-                "default": 100
-            },
-            "include_hidden": {
-                "type": "boolean",
-                "description": "Include hidden files (default: false).",
-                "default": False
-            }
-        }, required=["path", "pattern"])
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "path": {
+                    "type": "string",
+                    "description": "Directory or file path to search: relative to workspace, or absolute path."
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Search pattern (regex supported)."
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "File glob pattern (e.g., '*.py', '*.txt'). Default: all files.",
+                    "default": "*"
+                },
+                "ignore_case": {
+                    "type": "boolean",
+                    "description": "Case insensitive search (default: false).",
+                    "default": False
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of results (default: 100).",
+                    "default": 100
+                },
+                "include_hidden": {
+                    "type": "boolean",
+                    "description": "Include hidden files (default: false).",
+                    "default": False
+                }
+            }, required=["path", "pattern"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -76,7 +79,7 @@ class FileSearchTool(Tool):
         }}
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["file.read"]
 
     @property
@@ -123,7 +126,7 @@ class FileSearchTool(Tool):
             except re.error as e:
                 return ToolResult(success=False, data=None, error=f"Invalid regex pattern: {str(e)}")
 
-            matches = []
+            matches: List[Dict[str, Any]] = []
             files_searched = 0
 
             # Determine files to search

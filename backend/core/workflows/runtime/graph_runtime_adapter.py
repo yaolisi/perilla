@@ -459,14 +459,16 @@ class GraphRuntimeAdapter:
             if cls._resolve_workflow_node_type(node) == "loop"
         }
         if loop_node_ids:
-            outgoing_by_node: Dict[str, List[WorkflowEdge]] = {nid: [] for nid in loop_node_ids}
+            loop_outgoing_by_node: Dict[str, List[WorkflowEdge]] = {
+                nid: [] for nid in loop_node_ids
+            }
             for edge in dag.edges:
-                if edge.from_node in outgoing_by_node:
-                    outgoing_by_node[edge.from_node].append(edge)
-            for node_id, outgoing in outgoing_by_node.items():
+                if edge.from_node in loop_outgoing_by_node:
+                    loop_outgoing_by_node[edge.from_node].append(edge)
+            for node_id, outgoing in loop_outgoing_by_node.items():
                 has_continue = False
                 has_exit = False
-                bad_edges: List[str] = []
+                loop_bad_edges: List[str] = []
                 for edge in outgoing:
                     trigger_hint = str(edge.source_handle or edge.label or "").strip().lower()
                     if trigger_hint in {"continue", "loop_continue"}:
@@ -474,7 +476,7 @@ class GraphRuntimeAdapter:
                     elif trigger_hint in {"exit", "loop_exit"}:
                         has_exit = True
                     else:
-                        bad_edges.append(
+                        loop_bad_edges.append(
                             f"{edge.from_node}->{edge.to_node}(source_handle={edge.source_handle},label={edge.label})"
                         )
                 if not has_continue or not has_exit:
@@ -485,7 +487,7 @@ class GraphRuntimeAdapter:
                         miss.append("exit")
                     errors.append(
                         f"Loop node {node_id} missing branch trigger(s): {', '.join(miss)} "
-                        f"(edge source_handle/label should be continue/exit). bad_edges={bad_edges}"
+                        f"(edge source_handle/label should be continue/exit). bad_edges={loop_bad_edges}"
                     )
         
         return errors

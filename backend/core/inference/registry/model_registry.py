@@ -52,7 +52,7 @@ class InferenceModelRegistry:
         alias = registry.resolve("reasoning-model")
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         self._aliases: Dict[str, ModelAlias] = {}
         self._load_defaults()
     
@@ -192,7 +192,7 @@ class InferenceModelRegistry:
         
         return added
     
-    def sync_from_registry(self) -> Dict[str, str]:
+    def sync_from_registry(self) -> Dict[str, int]:
         """
         Full sync with ModelRegistry - remove stale aliases.
         
@@ -240,7 +240,7 @@ class InferenceModelRegistry:
 
 
 # Singleton
-_registry = None
+_registry: Optional[InferenceModelRegistry] = None
 
 
 def get_inference_model_registry() -> InferenceModelRegistry:

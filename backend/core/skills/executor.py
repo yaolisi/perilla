@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import re
 import traceback
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Optional, Type, cast
 
-import jsonschema
-from jsonschema import ValidationError as JSONSchemaValidationError
+import jsonschema  # type: ignore[import-untyped]
+from jsonschema import ValidationError as JSONSchemaValidationError  # type: ignore[import-untyped]
 from jinja2 import Template, UndefinedError
 
 from log import logger
@@ -63,7 +63,7 @@ class SkillExecutor:
     _executors: Dict[str, Type["BaseSkillExecutor"]] = {}
     
     @classmethod
-    def register_executor(cls, skill_id: str, executor_class: Type["BaseSkillExecutor"]):
+    def register_executor(cls, skill_id: str, executor_class: Type["BaseSkillExecutor"]) -> None:
         """注册 Skill 执行器"""
         cls._executors[skill_id] = executor_class
         logger.info(f"[SkillExecutor] Registered executor for {skill_id}")
@@ -95,7 +95,7 @@ class SkillExecutor:
             # 1. 验证请求
             validation_error = request.validate()
             if validation_error:
-                return SkillExecutionResponse.error(
+                return SkillExecutionResponse.failure(
                     error_code="INVALID_REQUEST",
                     error_message=validation_error,
                     trace_id=request.trace_id,
@@ -105,7 +105,7 @@ class SkillExecutor:
             # 2. 查找 Skill 定义
             definition = cls._find_skill(request.skill_id, request.version)
             if not definition:
-                return SkillExecutionResponse.error(
+                return SkillExecutionResponse.failure(
                     error_code="SKILL_NOT_FOUND",
                     error_message=f"Skill not found: {request.skill_id}@{request.version or 'latest'}",
                     trace_id=request.trace_id,
@@ -118,7 +118,7 @@ class SkillExecutor:
             try:
                 cls._validate_input(definition, request.input)
             except SchemaValidationError as e:
-                return SkillExecutionResponse.error(
+                return SkillExecutionResponse.failure(
                     error_code="SCHEMA_VALIDATION_ERROR",
                     error_message=str(e),
                     trace_id=request.trace_id,
@@ -137,7 +137,7 @@ class SkillExecutor:
             # 这里统一转为 error 响应，避免被误标记为 success。
             if isinstance(result, dict) and result.get("error"):
                 metrics.finalize()
-                return SkillExecutionResponse.error(
+                return SkillExecutionResponse.failure(
                     error_code="EXECUTION_ERROR",
                     error_message=str(result.get("error")),
                     trace_id=request.trace_id,
@@ -161,7 +161,7 @@ class SkillExecutor:
             metrics.finalize()
             logger.exception(f"[SkillExecutor] Execution failed: {e}")
             
-            return SkillExecutionResponse.error(
+            return SkillExecutionResponse.failure(
                 error_code="EXECUTION_ERROR",
                 error_message=str(e),
                 trace_id=request.trace_id,
@@ -173,10 +173,10 @@ class SkillExecutor:
     @staticmethod
     def _find_skill(skill_id: str, version: Optional[str]) -> Optional[SkillDefinition]:
         """查找 Skill 定义"""
-        return SkillRegistry.get(skill_id, version)
+        return cast(Optional[SkillDefinition], SkillRegistry.get(skill_id, version))
     
     @staticmethod
-    def _validate_input(definition: SkillDefinition, input_data: Dict[str, Any]):
+    def _validate_input(definition: SkillDefinition, input_data: Dict[str, Any]) -> None:
         """
         Schema 校验
         
@@ -334,7 +334,7 @@ class DefaultSkillExecutor(BaseSkillExecutor):
         try:
             # 使用 Jinja2 引擎
             jinja_template = Template(template)
-            return jinja_template.render(**variables)
+            return cast(str, jinja_template.render(**variables))
         except UndefinedError as e:
             # 变量未定义，返回原始模板并记录警告
             logger.warning(f"[DefaultSkillExecutor] Template variable undefined: {e}")
@@ -385,7 +385,7 @@ class DefaultSkillExecutor(BaseSkillExecutor):
         )
         
         # 构建 tool 输入 - 按优先级顺序
-        tool_input = {}
+        tool_input: Dict[str, Any] = {}
         
         # 1. 先应用 tool_params 模板（支持 Jinja2 渲染和默认值）
         for key, value_template in tool_params.items():
@@ -647,23 +647,25 @@ class LegacySkillExecutor:
         
         # 将 v2 响应转换为旧格式
         if response.status == "success":
+            output_payload = response.output or {}
             return {
-                "type": response.output.get("type", "unknown"),
-                "output": response.output.get("output"),
+                "type": output_payload.get("type", "unknown"),
+                "output": output_payload.get("output"),
                 "skill_id": response.skill_id,
                 "version": response.version,
             }
         else:
+            error_payload = response.error or {}
             return {
                 "type": "error",
                 "output": None,
-                "error": response.error.get("message", "Unknown error"),
+                "error": error_payload.get("message", "Unknown error"),
                 "skill_id": response.skill_id,
                 "version": response.version,
             }
 
 
-def get_skill(skill_id: str, version: Optional[str] = None):
+def get_skill(skill_id: str, version: Optional[str] = None) -> Optional[SkillDefinition]:
     """
     兼容旧 API：获取 Skill 定义
     
@@ -672,7 +674,7 @@ def get_skill(skill_id: str, version: Optional[str] = None):
     response = await SkillExecutor.execute(request)
     ```
     """
-    return SkillRegistry.get(skill_id, version)
+    return cast(Optional[SkillDefinition], SkillRegistry.get(skill_id, version))
 
 
 # 保持旧 API 的导入兼容性

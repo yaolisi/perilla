@@ -5,9 +5,9 @@ import hashlib
 from string import Formatter
 import uuid
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Annotated, List, Optional, Dict, Any, cast
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,7 @@ from core.security.skill_policy import get_blocked_skills
 from core.idempotency.service import IdempotencyService
 from core.data.base import SessionLocal
 from config.settings import settings
+from api.errors import raise_api_error  # type: ignore[import-untyped]
 
 router = APIRouter(
     prefix="/api/agents",
@@ -65,6 +66,10 @@ MAX_AGENT_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024  # 100MB
 UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1MB
 UPLOAD_CONCURRENCY = max(1, int(getattr(settings, "agent_upload_max_concurrency", 4) or 4))
 _upload_semaphore = asyncio.Semaphore(UPLOAD_CONCURRENCY)
+VISION_DETECT_OBJECTS_SKILL_ID = "builtin_vision.detect_objects"
+AGENT_NOT_FOUND_MESSAGE = "Agent not found"
+SESSION_NOT_FOUND_MESSAGE = "Session not found"
+REQUEST_CANCELLED_OR_TIMED_OUT_MESSAGE = "Request cancelled or timed out"
 
 def _get_user_id(request: Request) -> str:
     uid = (request.headers.get("X-User-Id") or "").strip()
@@ -125,16 +130,22 @@ def _validate_execution_strategy_field(value: Optional[str]) -> None:
         return
     v = str(value).strip().lower()
     if v not in {"serial", "parallel_kernel"}:
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail="execution_strategy must be one of: serial, parallel_kernel, or null",
+            code="agent_invalid_execution_strategy",
+            message="execution_strategy must be one of: serial, parallel_kernel, or null",
         )
 
 
 def _coerce_max_parallel_nodes(val: Any, field_label: str) -> int:
     """将 JSON 中的 max_parallel_nodes 规范为 1..64 的 int。"""
     if isinstance(val, bool):
-        raise HTTPException(status_code=400, detail=f"{field_label} must be an integer")
+        raise_api_error(
+            status_code=400,
+            code="agent_invalid_integer_field",
+            message=f"{field_label} must be an integer",
+            details={"field": field_label},
+        )
     if isinstance(val, int):
         n = val
     elif isinstance(val, float) and val.is_integer():
@@ -143,9 +154,19 @@ def _coerce_max_parallel_nodes(val: Any, field_label: str) -> int:
         try:
             n = int(val)
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=f"{field_label} must be an integer")
+            raise_api_error(
+                status_code=400,
+                code="agent_invalid_integer_field",
+                message=f"{field_label} must be an integer",
+                details={"field": field_label},
+            )
     if n < 1 or n > 64:
-        raise HTTPException(status_code=400, detail=f"{field_label} must be between 1 and 64")
+        raise_api_error(
+            status_code=400,
+            code="agent_parallel_nodes_out_of_range",
+            message=f"{field_label} must be between 1 and 64",
+            details={"field": field_label},
+        )
     return n
 
 
@@ -174,17 +195,19 @@ def _validate_kernel_opts_consistency(
     top_es = _normalized_execution_strategy(top_execution_strategy)
     mp_es = _normalized_execution_strategy(mp.get("execution_strategy"))
     if top_es and mp_es and top_es != mp_es:
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail="execution_strategy conflicts: top-level and model_params disagree; align or remove one.",
+            code="agent_kernel_opts_execution_strategy_conflict",
+            message="execution_strategy conflicts: top-level and model_params disagree; align or remove one.",
         )
 
     if top_max_parallel is not None and mp.get("max_parallel_nodes") is not None:
         mp_n = _coerce_max_parallel_nodes(mp.get("max_parallel_nodes"), "model_params.max_parallel_nodes")
         if top_max_parallel != mp_n:
-            raise HTTPException(
+            raise_api_error(
                 status_code=400,
-                detail="max_parallel_nodes conflicts: top-level and model_params disagree; align or remove one.",
+                code="agent_kernel_opts_max_parallel_conflict",
+                message="max_parallel_nodes conflicts: top-level and model_params disagree; align or remove one.",
             )
 
 
@@ -196,9 +219,10 @@ def _apply_response_mode(
     params = dict(model_params or {})
     mode = (response_mode or params.get("response_mode") or "default").strip() or "default"
     if mode not in {"default", "direct_tool_result"}:
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail="response_mode must be one of: default, direct_tool_result",
+            code="agent_invalid_response_mode",
+            message="response_mode must be one of: default, direct_tool_result",
         )
 
     params["response_mode"] = mode
@@ -232,10 +256,10 @@ def _normalize_id_list(items: List[str]) -> List[str]:
 # v1.5 compatibility: historical skill id aliases (avoid breaking old agents / old UI payloads)
 _SKILL_ID_ALIASES = {
     # old -> new
-    "builtin_vision.detect": "builtin_vision.detect_objects",
+    "builtin_vision.detect": VISION_DETECT_OBJECTS_SKILL_ID,
     # Some older payloads/records used non-builtin ids
-    "vision.detect": "builtin_vision.detect_objects",
-    "vision.detect_objects": "builtin_vision.detect_objects",
+    "vision.detect": VISION_DETECT_OBJECTS_SKILL_ID,
+    "vision.detect_objects": VISION_DETECT_OBJECTS_SKILL_ID,
 }
 
 
@@ -289,21 +313,23 @@ def _validate_replan_prompt_template(replan_prompt: str) -> Optional[str]:
 def _enforce_skill_safety(skill_ids: List[str]) -> None:
     blocked = get_blocked_skills(skill_ids)
     if blocked:
-        raise HTTPException(
+        raise_api_error(
             status_code=403,
-            detail=(
+            code="agent_skill_blocked_by_policy",
+            message=(
                 "dangerous skills are disabled by server policy: "
                 + ", ".join(sorted(blocked))
             ),
+            details={"blocked_skills": sorted(blocked)},
         )
 
 @router.get("")
-async def list_agents():
+async def list_agents() -> Any:
     registry = get_agent_registry()
     return {"object": "list", "data": registry.list_agents()}
 
 @router.post("")
-async def create_agent(req: CreateAgentRequest):
+async def create_agent(req: CreateAgentRequest) -> Any:
     """Create a new agent with validation"""
     registry = get_agent_registry()
     
@@ -315,9 +341,11 @@ async def create_agent(req: CreateAgentRequest):
         available_models = model_registry.list_models()
         model_exists = any(m.id == req.model_id for m in available_models)
         if not model_exists:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Model '{req.model_id}' not found. Please select a valid model."
+            raise_api_error(
+                status_code=400,
+                code="agent_model_not_found",
+                message=f"Model '{req.model_id}' not found. Please select a valid model.",
+                details={"model_id": req.model_id},
             )
 
     # v1.5: enabled_skills 优先；若无则从 tool_ids 映射为 builtin_<tool_id>
@@ -326,9 +354,11 @@ async def create_agent(req: CreateAgentRequest):
         enabled_skills = _normalize_skill_ids([f"builtin_{t}" for t in _normalize_id_list(req.tool_ids)])
     for skill_id in enabled_skills:
         if not SkillRegistry.get(skill_id):
-            raise HTTPException(
+            raise_api_error(
                 status_code=400,
-                detail=f"Skill '{skill_id}' not found. Please select a valid skill."
+                code="agent_skill_not_found",
+                message=f"Skill '{skill_id}' not found. Please select a valid skill.",
+                details={"skill_id": skill_id},
             )
     _enforce_skill_safety(enabled_skills)
 
@@ -337,32 +367,41 @@ async def create_agent(req: CreateAgentRequest):
     if rag_ids:
         kb_store = get_kb_store()
         if not kb_store:
-            raise HTTPException(
+            raise_api_error(
                 status_code=503,
-                detail="Knowledge base store is not available. Please try again later."
+                code="agent_kb_store_unavailable",
+                message="Knowledge base store is not available. Please try again later.",
             )
         for kb_id in rag_ids:
             if not kb_store.get_knowledge_base(kb_id):
-                raise HTTPException(
+                raise_api_error(
                     status_code=400,
-                    detail=f"Knowledge base '{kb_id}' not found. Please select a valid knowledge base."
+                    code="agent_knowledge_base_not_found",
+                    message=f"Knowledge base '{kb_id}' not found. Please select a valid knowledge base.",
+                    details={"knowledge_base_id": kb_id},
                 )
 
     failure_strategy = (req.on_failure_strategy or "stop").strip() or "stop"
     if failure_strategy not in {"stop", "continue", "replan"}:
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail="on_failure_strategy must be one of: stop, continue, replan",
+            code="agent_invalid_on_failure_strategy",
+            message="on_failure_strategy must be one of: stop, continue, replan",
         )
     replan_prompt = (req.replan_prompt or "").strip()
     if failure_strategy == "replan" and not replan_prompt:
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail="replan_prompt is required when on_failure_strategy is 'replan'",
+            code="agent_replan_prompt_required",
+            message="replan_prompt is required when on_failure_strategy is 'replan'",
         )
     replan_validate_error = _validate_replan_prompt_template(replan_prompt)
     if replan_validate_error:
-        raise HTTPException(status_code=400, detail=replan_validate_error)
+        raise_api_error(
+            status_code=400,
+            code="agent_invalid_replan_prompt",
+            message=replan_validate_error,
+        )
 
     # Generate agent_id
     agent_id = f"agent_{uuid.uuid4().hex[:8]}"
@@ -397,31 +436,47 @@ async def create_agent(req: CreateAgentRequest):
     if registry.create_agent(agent):
         logger.info(f"[Agent API] Agent created successfully: {agent_id} - {req.name}")
         return agent
-    raise HTTPException(status_code=500, detail="Failed to create agent")
+    raise_api_error(status_code=500, code="agent_create_failed", message="Failed to create agent")
 
 @router.get("/{agent_id}")
-async def get_agent(agent_id: str):
+async def get_agent(agent_id: str) -> Any:
     registry = get_agent_registry()
     agent = registry.get_agent(agent_id)
     if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise_api_error(
+            status_code=404,
+            code="agent_not_found",
+            message=AGENT_NOT_FOUND_MESSAGE,
+            details={"agent_id": agent_id},
+        )
     return agent
 
 @router.put("/{agent_id}")
-async def update_agent(agent_id: str, req: CreateAgentRequest):
+async def update_agent(agent_id: str, req: CreateAgentRequest) -> Any:
     registry = get_agent_registry()
     
     # 获取现有 agent，用于合并 model_params
     existing_agent = registry.get_agent(agent_id)
     if not existing_agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise_api_error(
+            status_code=404,
+            code="agent_not_found",
+            message=AGENT_NOT_FOUND_MESSAGE,
+            details={"agent_id": agent_id},
+        )
+    assert existing_agent is not None
     
     enabled_skills = _normalize_skill_ids(req.enabled_skills)
     if not enabled_skills and req.tool_ids:
         enabled_skills = _normalize_skill_ids([f"builtin_{t}" for t in _normalize_id_list(req.tool_ids)])
     for skill_id in enabled_skills:
         if not SkillRegistry.get(skill_id):
-            raise HTTPException(status_code=400, detail=f"Skill '{skill_id}' not found.")
+            raise_api_error(
+                status_code=400,
+                code="agent_skill_not_found",
+                message=f"Skill '{skill_id}' not found.",
+                details={"skill_id": skill_id},
+            )
     _enforce_skill_safety(enabled_skills)
     
     # 深度合并 model_params：保留原有字段，只更新请求中提供的字段
@@ -436,19 +491,25 @@ async def update_agent(agent_id: str, req: CreateAgentRequest):
 
     failure_strategy = (req.on_failure_strategy or "stop").strip() or "stop"
     if failure_strategy not in {"stop", "continue", "replan"}:
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail="on_failure_strategy must be one of: stop, continue, replan",
+            code="agent_invalid_on_failure_strategy",
+            message="on_failure_strategy must be one of: stop, continue, replan",
         )
     replan_prompt = (req.replan_prompt or "").strip()
     if failure_strategy == "replan" and not replan_prompt:
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail="replan_prompt is required when on_failure_strategy is 'replan'",
+            code="agent_replan_prompt_required",
+            message="replan_prompt is required when on_failure_strategy is 'replan'",
         )
     replan_validate_error = _validate_replan_prompt_template(replan_prompt)
     if replan_validate_error:
-        raise HTTPException(status_code=400, detail=replan_validate_error)
+        raise_api_error(
+            status_code=400,
+            code="agent_invalid_replan_prompt",
+            message=replan_validate_error,
+        )
 
     exec_strategy = (
         req.execution_strategy
@@ -485,14 +546,19 @@ async def update_agent(agent_id: str, req: CreateAgentRequest):
     )
     if registry.update_agent(agent):
         return agent
-    raise HTTPException(status_code=500, detail="Failed to update agent")
+    raise_api_error(status_code=500, code="agent_update_failed", message="Failed to update agent")
 
 @router.delete("/{agent_id}")
-async def delete_agent(agent_id: str):
+async def delete_agent(agent_id: str) -> Any:
     registry = get_agent_registry()
     if registry.delete_agent(agent_id):
         return {"status": "ok"}
-    raise HTTPException(status_code=404, detail="Agent not found")
+    raise_api_error(
+        status_code=404,
+        code="agent_not_found",
+        message=AGENT_NOT_FOUND_MESSAGE,
+        details={"agent_id": agent_id},
+    )
 
 def _get_agent_workspaces_root() -> Path:
     """Return data/agent_workspaces directory for session file uploads."""
@@ -562,23 +628,312 @@ async def _save_uploaded_files(session_id: str, files: List[UploadFile]) -> Path
                     break
                 written += len(chunk)
                 total_written += len(chunk)
-                if written > MAX_AGENT_UPLOAD_FILE_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"file '{safe_name}' exceeds max size {MAX_AGENT_UPLOAD_FILE_BYTES} bytes",
-                    )
-                if total_written > MAX_AGENT_UPLOAD_TOTAL_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"total upload size exceeds max {MAX_AGENT_UPLOAD_TOTAL_BYTES} bytes",
-                    )
+                _validate_upload_size_limits(
+                    safe_name=safe_name,
+                    written_bytes=written,
+                    total_written_bytes=total_written,
+                )
                 out.write(chunk)
         await f.close()
     return workspace_dir.resolve()
 
 
+def _validate_upload_size_limits(
+    *,
+    safe_name: str,
+    written_bytes: int,
+    total_written_bytes: int,
+) -> None:
+    if written_bytes > MAX_AGENT_UPLOAD_FILE_BYTES:
+        raise_api_error(
+            status_code=413,
+            code="agent_upload_file_too_large",
+            message=f"file '{safe_name}' exceeds max size {MAX_AGENT_UPLOAD_FILE_BYTES} bytes",
+            details={"filename": safe_name},
+        )
+    if total_written_bytes > MAX_AGENT_UPLOAD_TOTAL_BYTES:
+        raise_api_error(
+            status_code=413,
+            code="agent_upload_total_too_large",
+            message=f"total upload size exceeds max {MAX_AGENT_UPLOAD_TOTAL_BYTES} bytes",
+        )
+
+
+def _parse_run_with_files_messages(messages: str) -> List[Message]:
+    try:
+        messages_list = json.loads(messages)
+    except json.JSONDecodeError as e:
+        raise_api_error(
+            status_code=400,
+            code="agent_invalid_messages_json",
+            message=f"Invalid messages JSON: {e}",
+        )
+    if not isinstance(messages_list, list):
+        raise_api_error(
+            status_code=400,
+            code="agent_invalid_messages_format",
+            message="messages must be a JSON array",
+        )
+    return [Message(**m) if isinstance(m, dict) else m for m in messages_list]
+
+
+async def _acquire_upload_slot() -> None:
+    try:
+        await asyncio.wait_for(_upload_semaphore.acquire(), timeout=0.001)
+    except asyncio.TimeoutError:
+        raise_api_error(
+            status_code=429,
+            code="agent_upload_rate_limited",
+            message="too many concurrent upload requests, please retry later",
+        )
+
+
+async def _process_uploaded_files(session_id: str, files: List[UploadFile]) -> tuple[str, List[str]]:
+    workspace_path = await _save_uploaded_files(session_id, files)
+    workspace_dir_str = str(workspace_path)
+    saved_names = [
+        _normalize_filename(Path(f.filename).name)
+        for f in files
+        if f.filename and f.filename.strip()
+    ]
+    logger.info(f"[Agent API] Saved {len(files)} file(s) to workspace {workspace_dir_str} names={saved_names}")
+    if saved_names:
+        first_path = workspace_path / saved_names[0]
+        logger.info(
+            f"[Agent API] verify first file exists={first_path.is_file()} "
+            f"path={first_path} dir_list={list(workspace_path.iterdir())}"
+        )
+    return workspace_dir_str, saved_names
+
+
+def _build_image_upload_hint(first_file: str, enabled_skills: List[str], execution_mode: str) -> str:
+    has_vision = VISION_DETECT_OBJECTS_SKILL_ID in enabled_skills
+    has_vlm = "builtin_vlm.generate" in enabled_skills
+    if has_vision:
+        if execution_mode == "plan_based":
+            return (
+                f"\n\n[Files saved to workspace. Image: \"{first_file}\". "
+                f"You can reference the image by filename \"{first_file}\" when needed. "
+                "Do NOT ask user for paths.]"
+            )
+        return (
+            f"\n\n[Files saved to workspace. Image: \"{first_file}\". "
+            f"Call vision.detect_objects with {{\"image\": \"{first_file}\"}} to analyze. "
+            f"Respond ONLY in JSON, e.g. {{\"type\": \"skill_call\", \"skill_id\": \"{VISION_DETECT_OBJECTS_SKILL_ID}\", "
+            f"\"input\": {{\"image\": \"{first_file}\"}}}}. Do NOT ask user for paths.]"
+        )
+    if has_vlm:
+        if execution_mode == "plan_based":
+            return (
+                f"\n\n[Files saved to workspace. Image: \"{first_file}\". "
+                f"Use the image filename \"{first_file}\" as reference when needed. "
+                "Do NOT ask user for paths.]"
+            )
+        return (
+            f"\n\n[Files saved to workspace. Image: \"{first_file}\". "
+            f"You MUST call builtin_vlm.generate skill to analyze this image and get the actual text/content from the image. "
+            f"Do NOT use the image filename (e.g. \"{first_file}\") as the recognized text. "
+            f"Use {{\"type\": \"skill_call\", \"skill_id\": \"builtin_vlm.generate\", \"input\": "
+            f"{{\"image\": \"{first_file}\", \"prompt\": \"<user's question>\"}}}}. "
+            "Do NOT ask user for paths. Do NOT provide final answer without calling the skill first.]"
+        )
+    return (
+        f"\n\n[Files saved to workspace. Image: \"{first_file}\". "
+        f"Use the image path \"{first_file}\" when needed. "
+        "Do NOT ask user for paths.]"
+    )
+
+
+def _build_file_upload_hint(saved_names: List[str], agent: AgentDefinition) -> str:
+    first_file = saved_names[0]
+    image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+    is_image = any(Path(name).suffix.lower() in image_exts for name in saved_names)
+    if is_image:
+        enabled_skills = agent.enabled_skills or []
+        execution_mode = (getattr(agent, "execution_mode", None) or "legacy").strip().lower()
+        return _build_image_upload_hint(first_file, enabled_skills, execution_mode)
+
+    if len(saved_names) > 1:
+        return (
+            "\n\n[Files have been saved to the current workspace: "
+            + ", ".join(f'"{n}"' for n in saved_names)
+            + ". When using file.read, use the **relative path** (filename only), e.g. path=\""
+            + first_file
+            + "\". Do NOT use absolute paths.]"
+        )
+    return (
+        "\n\n[Files have been saved to the current workspace. "
+        "When using file.read, use the **relative path** (filename only), e.g. path=\""
+        + first_file
+        + "\". Do NOT use absolute paths.]"
+    )
+
+
+def _attach_upload_hint(messages_objs: List[Message], saved_names: List[str], agent: AgentDefinition) -> None:
+    if not (messages_objs and saved_names):
+        return
+    last = messages_objs[-1]
+    hint = _build_file_upload_hint(saved_names, agent)
+    if isinstance(last.content, str):
+        merged_content: Any = last.content + hint
+    else:
+        merged_content = list(last.content)
+        merged_content.append({"type": "text", "text": hint})
+    messages_objs[-1] = Message(role=last.role, content=merged_content)
+
+
+def _prepare_run_with_files_session(
+    *,
+    session_store: Any,
+    session_id: str,
+    agent_id: str,
+    messages_objs: List[Message],
+    saved_names: List[str],
+    workspace_dir_str: str,
+) -> AgentSession:
+    session = cast(Optional[AgentSession], session_store.get_session(session_id))
+    if not session:
+        session = AgentSession(
+            session_id=session_id,
+            agent_id=agent_id,
+            messages=messages_objs,
+            status="idle",
+        )
+    else:
+        session.messages.extend(messages_objs)
+        session.status = "idle"
+        session.step = 0
+
+    if saved_names:
+        state = session.state or {}
+        state["last_uploaded_images"] = saved_names
+        state["last_uploaded_image"] = saved_names[0]
+        session.state = state
+
+    session.workspace_dir = workspace_dir_str
+    session.status = "running"
+    session.error_message = None
+    session_store.save_session(session)
+    return cast(AgentSession, session)
+
+
+def _claim_run_idempotency(
+    *,
+    idem_key: Optional[str],
+    user_id: str,
+    agent_id: str,
+    req: RunAgentRequest,
+    session_store: Any,
+) -> tuple[Optional[Any], Optional[IdempotencyService], Optional[Any]]:
+    if not idem_key:
+        return None, None, None
+    idem_db = SessionLocal()
+    idem_service = IdempotencyService(idem_db)
+    req_hash = _stable_request_hash(
+        {
+            "agent_id": agent_id,
+            "session_id": req.session_id,
+            "messages": [m.model_dump(mode="json") for m in (req.messages or [])],
+        }
+    )
+    claim = idem_service.claim(
+        scope="agent_run",
+        owner_id=user_id,
+        key=idem_key,
+        request_hash=req_hash,
+    )
+    if claim.conflict:
+        raise_api_error(
+            status_code=409,
+            code="idempotency_conflict",
+            message="Idempotency-Key already used with different request payload",
+            details={"scope": "agent_run"},
+        )
+    idem_record = claim.record
+    if not claim.is_new:
+        if claim.record.response_ref:
+            existing_session = session_store.get_session(claim.record.response_ref)
+            if existing_session:
+                return idem_db, idem_service, existing_session
+        raise_api_error(
+            status_code=409,
+            code="idempotency_in_progress",
+            message="Idempotent request is still processing; retry later",
+            details={"scope": "agent_run"},
+        )
+    return idem_db, idem_service, idem_record
+
+
+def _prepare_run_session(
+    *,
+    session_store: Any,
+    session_id: str,
+    agent_id: str,
+    messages: List[Message],
+    agent: AgentDefinition,
+) -> tuple[AgentSession, str]:
+    session = session_store.get_session(session_id)
+    if not session:
+        session = AgentSession(
+            session_id=session_id,
+            agent_id=agent_id,
+            messages=messages,
+            status="idle",
+        )
+    else:
+        session.messages.extend(messages)
+        session.status = "idle"
+        session.step = 0
+
+    workspace = _resolve_agent_runtime_workspace(agent, session_id)
+    session.workspace_dir = workspace
+    session.status = "running"
+    session.error_message = None
+    session_store.save_session(session)
+    return session, workspace
+
+
+async def _execute_run_runtime(
+    *,
+    executor: Any,
+    agent: AgentDefinition,
+    session: AgentSession,
+    workspace: str,
+    session_store: Any,
+    session_id: str,
+    agent_id: str,
+    idem_service: Optional[IdempotencyService],
+    idem_record: Optional[Any],
+) -> AgentSession:
+    try:
+        runtime = get_agent_runtime(executor)
+        result_session = await runtime.run(agent, session, workspace=workspace)
+        if idem_service and idem_record:
+            idem_service.mark_succeeded(record_id=idem_record.id, response_ref=result_session.session_id)
+        return result_session
+    except asyncio.CancelledError:
+        session.status = "error"
+        session.error_message = REQUEST_CANCELLED_OR_TIMED_OUT_MESSAGE
+        session_store.save_session(session)
+        logger.warning(f"[Agent API] run cancelled session_id={session_id} agent_id={agent_id}")
+        if idem_service and idem_record:
+            idem_service.mark_failed(
+                record_id=idem_record.id,
+                error_message=REQUEST_CANCELLED_OR_TIMED_OUT_MESSAGE,
+            )
+        raise
+    except Exception as e:
+        session.status = "error"
+        session.error_message = str(e)
+        session_store.save_session(session)
+        logger.exception(f"[Agent API] run failed session_id={session_id} agent_id={agent_id}: {e}")
+        if idem_service and idem_record:
+            idem_service.mark_failed(record_id=idem_record.id, error_message=str(e))
+        raise
+
+
 @router.post("/{agent_id}/run")
-async def run_agent(agent_id: str, req: RunAgentRequest, request: Request):
+async def run_agent(agent_id: str, req: RunAgentRequest, request: Request) -> Any:
     registry = get_agent_registry()
     session_store = get_agent_session_store()
     executor = get_agent_executor()
@@ -590,89 +945,47 @@ async def run_agent(agent_id: str, req: RunAgentRequest, request: Request):
     
     agent = registry.get_agent(agent_id)
     if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    
-    # 获取或创建会话
-    session_id = req.session_id or f"asess_{uuid.uuid4().hex[:12]}"
-
-    if idem_key:
-        idem_db = SessionLocal()
-        idem_service = IdempotencyService(idem_db)
-        req_hash = _stable_request_hash(
-            {
-                "agent_id": agent_id,
-                "session_id": req.session_id,
-                "messages": [m.model_dump(mode="json") for m in (req.messages or [])],
-            }
+        raise_api_error(
+            status_code=404,
+            code="agent_not_found",
+            message=AGENT_NOT_FOUND_MESSAGE,
+            details={"agent_id": agent_id},
         )
-        claim = idem_service.claim(
-            scope="agent_run",
-            owner_id=user_id,
-            key=idem_key,
-            request_hash=req_hash,
-        )
-        if claim.conflict:
-            raise HTTPException(
-                status_code=409,
-                detail="Idempotency-Key already used with different request payload",
-            )
-        idem_record = claim.record
-        if not claim.is_new:
-            if claim.record.response_ref:
-                existing_session = session_store.get_session(claim.record.response_ref)
-                if existing_session:
-                    return existing_session
-            raise HTTPException(status_code=409, detail="Idempotent request is still processing; retry later")
-
-    session = session_store.get_session(session_id)
+    assert agent is not None
     
-    if not session:
-        session = AgentSession(
+    try:
+        # 获取或创建会话
+        session_id = req.session_id or f"asess_{uuid.uuid4().hex[:12]}"
+
+        idem_db, idem_service, idem_claim_or_session = _claim_run_idempotency(
+            idem_key=idem_key,
+            user_id=user_id,
+            agent_id=agent_id,
+            req=req,
+            session_store=session_store,
+        )
+        if isinstance(idem_claim_or_session, AgentSession):
+            return idem_claim_or_session
+        idem_record = idem_claim_or_session
+
+        session, workspace = _prepare_run_session(
+            session_store=session_store,
             session_id=session_id,
             agent_id=agent_id,
             messages=req.messages,
-            status="idle"
+            agent=agent,
         )
-    else:
-        # 如果是已有会话，追加新消息
-        session.messages.extend(req.messages)
-        session.status = "idle"
-        session.step = 0 # 重置步数以开始新一轮 Loop
-
-    # 默认使用会话 workspace；支持 Agent 级 workspace_root 覆盖（编程类 Agent 常用）
-    workspace = _resolve_agent_runtime_workspace(agent, session_id)
-    session.workspace_dir = workspace
-    # 进入执行态，便于前端轮询感知（即便请求较慢）
-    session.status = "running"
-    session.error_message = None
-    session_store.save_session(session)
-
-    try:
-        runtime = get_agent_runtime(executor)
-        result_session = await runtime.run(agent, session, workspace=workspace)
-        if idem_service and idem_record:
-            idem_service.mark_succeeded(record_id=idem_record.id, response_ref=result_session.session_id)
-        return result_session
-    except asyncio.CancelledError:
-        # Request cancelled/timed out by client/proxy: avoid leaving session in running forever.
-        session.status = "error"
-        session.error_message = "Request cancelled or timed out"
-        session_store.save_session(session)
-        logger.warning(
-            f"[Agent API] run cancelled session_id={session_id} agent_id={agent_id}"
+        return await _execute_run_runtime(
+            executor=executor,
+            agent=agent,
+            session=session,
+            workspace=workspace,
+            session_store=session_store,
+            session_id=session_id,
+            agent_id=agent_id,
+            idem_service=idem_service,
+            idem_record=idem_record,
         )
-        if idem_service and idem_record:
-            idem_service.mark_failed(record_id=idem_record.id, error_message="Request cancelled or timed out")
-        raise
-    except Exception as e:
-        # 避免会话卡在 idle 且前端无反馈
-        session.status = "error"
-        session.error_message = str(e)
-        session_store.save_session(session)
-        logger.exception(f"[Agent API] run failed session_id={session_id} agent_id={agent_id}: {e}")
-        if idem_service and idem_record:
-            idem_service.mark_failed(record_id=idem_record.id, error_message=str(e))
-        raise
     finally:
         if idem_db is not None:
             idem_db.close()
@@ -681,10 +994,10 @@ async def run_agent(agent_id: str, req: RunAgentRequest, request: Request):
 @router.post("/{agent_id}/run/with-files")
 async def run_agent_with_files(
     agent_id: str,
-    messages: str = Form(..., description="JSON array of Message objects"),
-    session_id: Optional[str] = Form(None),
-    files: List[UploadFile] = File(default=[]),
-):
+    messages: Annotated[str, Form(..., description="JSON array of Message objects")],
+    session_id: Annotated[Optional[str], Form(None)] = None,
+    files: Annotated[List[UploadFile], File(default=[])] = [],
+) -> Any:
     """Run agent with uploaded files. Files are saved to session workspace so file.read can access them."""
     registry = get_agent_registry()
     session_store = get_agent_session_store()
@@ -692,144 +1005,41 @@ async def run_agent_with_files(
     
     agent = registry.get_agent(agent_id)
     if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    
-    try:
-        messages_list = json.loads(messages)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid messages JSON: {e}")
-    
-    if not isinstance(messages_list, list):
-        raise HTTPException(status_code=400, detail="messages must be a JSON array")
-    
-    # 转为 Message 对象，避免 session.messages 里混入 dict 导致 loop 中 model_dump 报错
-    messages_objs = [Message(**m) if isinstance(m, dict) else m for m in messages_list]
-    
+        raise_api_error(
+            status_code=404,
+            code="agent_not_found",
+            message=AGENT_NOT_FOUND_MESSAGE,
+            details={"agent_id": agent_id},
+        )
+    assert agent is not None
+    messages_objs = _parse_run_with_files_messages(messages)
     session_id = session_id or f"asess_{uuid.uuid4().hex[:12]}"
-    # 带文件上传场景固定使用会话 workspace，保证上传文件可读
     workspace_dir = _get_agent_workspaces_root() / session_id
     workspace_dir.mkdir(parents=True, exist_ok=True)
     workspace_dir_str = str(workspace_dir.resolve())
     saved_names: List[str] = []
     logger.info(f"[Agent API] run/with-files received files count={len(files)} session_id={session_id}")
     if len(files or []) > MAX_AGENT_UPLOAD_FILES:
-        raise HTTPException(
+        raise_api_error(
             status_code=413,
-            detail=f"too many uploaded files; max allowed is {MAX_AGENT_UPLOAD_FILES}",
+            code="agent_upload_too_many_files",
+            message=f"too many uploaded files; max allowed is {MAX_AGENT_UPLOAD_FILES}",
         )
     if files:
+        await _acquire_upload_slot()
         try:
-            await asyncio.wait_for(_upload_semaphore.acquire(), timeout=0.001)
-        except asyncio.TimeoutError:
-            raise HTTPException(
-                status_code=429,
-                detail="too many concurrent upload requests, please retry later",
-            )
-        try:
-            workspace_path = await _save_uploaded_files(session_id, files)
+            workspace_dir_str, saved_names = await _process_uploaded_files(session_id, files)
         finally:
             _upload_semaphore.release()
-        workspace_dir_str = str(workspace_path)
-        saved_names = [_normalize_filename(Path(f.filename).name) for f in files if f.filename and f.filename.strip()]
-        logger.info(f"[Agent API] Saved {len(files)} file(s) to workspace {workspace_dir_str} names={saved_names}")
-        if saved_names:
-            first_path = workspace_path / saved_names[0]
-            logger.info(f"[Agent API] verify first file exists={first_path.is_file()} path={first_path} dir_list={list(workspace_path.iterdir())}")
-        # 在最后一条用户消息后追加提示：文件在工作目录，支持 file.read / vision.detect_objects
-        if messages_objs and saved_names:
-            last = messages_objs[-1]
-            first_file = saved_names[0]
-            # 检测是否为图像文件，便于给 vision 分析场景更明确的指引
-            img_ext = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
-            is_image = any(Path(n).suffix.lower() in img_ext for n in saved_names)
-            if is_image:
-                # 根据 Agent 启用的 skills 动态生成 hint
-                enabled_skills = agent.enabled_skills or []
-                has_vision = "builtin_vision.detect_objects" in enabled_skills
-                has_vlm = "builtin_vlm.generate" in enabled_skills
-                execution_mode = (getattr(agent, "execution_mode", None) or "legacy").strip().lower()
-                
-                if has_vision:
-                    # Agent 启用了 vision.detect_objects，提供该 skill 的示例
-                    if execution_mode == "plan_based":
-                        # Plan-based 模式不依赖 LLM 输出 JSON skill_call，避免把“JSON-only”指令注入用户消息污染后续 prompt。
-                        hint = (
-                            f"\n\n[Files saved to workspace. Image: \"{first_file}\". "
-                            f"You can reference the image by filename \"{first_file}\" when needed. "
-                            f"Do NOT ask user for paths.]"
-                        )
-                    else:
-                        hint = (
-                            f"\n\n[Files saved to workspace. Image: \"{first_file}\". "
-                            f"Call vision.detect_objects with {{\"image\": \"{first_file}\"}} to analyze. "
-                            f"Respond ONLY in JSON, e.g. {{\"type\": \"skill_call\", \"skill_id\": \"builtin_vision.detect_objects\", \"input\": {{\"image\": \"{first_file}\"}}}}. "
-                            f"Do NOT ask user for paths.]"
-                        )
-                elif has_vlm:
-                    # Agent 只启用了 VLM，提供 VLM 的示例
-                    if execution_mode == "plan_based":
-                        hint = (
-                            f"\n\n[Files saved to workspace. Image: \"{first_file}\". "
-                            f"Use the image filename \"{first_file}\" as reference when needed. "
-                            f"Do NOT ask user for paths.]"
-                        )
-                    else:
-                        hint = (
-                            f"\n\n[Files saved to workspace. Image: \"{first_file}\". "
-                            f"You MUST call builtin_vlm.generate skill to analyze this image and get the actual text/content from the image. "
-                            f"Do NOT use the image filename (e.g. \"{first_file}\") as the recognized text. "
-                            f"Use {{\"type\": \"skill_call\", \"skill_id\": \"builtin_vlm.generate\", \"input\": {{\"image\": \"{first_file}\", \"prompt\": \"<user's question>\"}}}}. "
-                            f"Do NOT ask user for paths. Do NOT provide final answer without calling the skill first.]"
-                        )
-                else:
-                    # Agent 没有启用任何图像相关的 skill，只提供通用提示
-                    hint = (
-                        f"\n\n[Files saved to workspace. Image: \"{first_file}\". "
-                        f"Use the image path \"{first_file}\" when needed. "
-                        f"Do NOT ask user for paths.]"
-                    )
-            else:
-                hint = (
-                    "\n\n[Files have been saved to the current workspace. "
-                    "When using file.read, use the **relative path** (filename only), e.g. path=\""
-                    + first_file
-                    + "\". Do NOT use absolute paths.]"
-                )
-            if len(saved_names) > 1 and not is_image:
-                hint = (
-                    "\n\n[Files have been saved to the current workspace: "
-                    + ", ".join(f'"{n}"' for n in saved_names)
-                    + ". When using file.read, use the **relative path** (filename only), e.g. path=\""
-                    + first_file
-                    + "\". Do NOT use absolute paths.]"
-                )
-            messages_objs[-1] = Message(role=last.role, content=last.content + hint)
-    
-    session = session_store.get_session(session_id)
-    if not session:
-        session = AgentSession(
-            session_id=session_id,
-            agent_id=agent_id,
-            messages=messages_objs,
-            status="idle"
-        )
-    else:
-        session.messages.extend(messages_objs)
-        session.status = "idle"
-        session.step = 0
-
-    # Track last uploaded files for deterministic image selection
-    if saved_names:
-        state = session.state or {}
-        state["last_uploaded_images"] = saved_names
-        state["last_uploaded_image"] = saved_names[0]
-        session.state = state
-    
-    session.workspace_dir = workspace_dir_str
-    # 在进入 loop 前持久化 session（含 workspace_dir），便于同会话后续请求使用正确工作目录
-    session.status = "running"
-    session.error_message = None
-    session_store.save_session(session)
+    _attach_upload_hint(messages_objs, saved_names, agent)
+    session = _prepare_run_with_files_session(
+        session_store=session_store,
+        session_id=session_id,
+        agent_id=agent_id,
+        messages_objs=messages_objs,
+        saved_names=saved_names,
+        workspace_dir_str=workspace_dir_str,
+    )
 
     try:
         runtime = get_agent_runtime(executor)
@@ -838,7 +1048,7 @@ async def run_agent_with_files(
     except asyncio.CancelledError:
         # Request cancelled/timed out by client/proxy: avoid leaving session in running forever.
         session.status = "error"
-        session.error_message = "Request cancelled or timed out"
+        session.error_message = REQUEST_CANCELLED_OR_TIMED_OUT_MESSAGE
         session_store.save_session(session)
         logger.warning(
             f"[Agent API] run/with-files cancelled session_id={session_id} agent_id={agent_id}"
@@ -853,36 +1063,64 @@ async def run_agent_with_files(
         raise
 
 @session_router.get("/agent-sessions")
-async def list_agent_sessions(request: Request, agent_id: Optional[str] = None, limit: int = 50):
+async def list_agent_sessions(request: Request, agent_id: Optional[str] = None, limit: int = 50) -> Any:
     user_id = _get_user_id(request)
     session_store = get_agent_session_store()
     sessions = session_store.list_sessions(user_id=user_id, limit=limit, agent_id=agent_id)
     return {"object": "list", "data": sessions}
 
 @session_router.get("/agent-sessions/{session_id}")
-async def get_agent_session(session_id: str):
+async def get_agent_session(session_id: str) -> Any:
     session_store = get_agent_session_store()
     session = session_store.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise_api_error(
+            status_code=404,
+            code="agent_session_not_found",
+            message=SESSION_NOT_FOUND_MESSAGE,
+            details={"session_id": session_id},
+        )
     return session
 
 @session_router.get("/agent-sessions/{session_id}/files/{filename}")
-async def get_agent_session_file(session_id: str, filename: str):
+async def get_agent_session_file(session_id: str, filename: str) -> FileResponse:
     """Serve a file from the agent session workspace."""
     session_store = get_agent_session_store()
     session = session_store.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise_api_error(
+            status_code=404,
+            code="agent_session_not_found",
+            message=SESSION_NOT_FOUND_MESSAGE,
+            details={"session_id": session_id},
+        )
+    assert session is not None
     workspace = getattr(session, "workspace_dir", None)
     if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        raise_api_error(
+            status_code=404,
+            code="agent_workspace_not_found",
+            message="Workspace not found",
+            details={"session_id": session_id},
+        )
+        raise AssertionError("unreachable")
+    workspace = cast(str, workspace)
     try:
         resolved = resolve_in_workspace(workspace=workspace, path=filename, allowed_absolute_roots=None)
     except WorkspacePathError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise_api_error(
+            status_code=400,
+            code="agent_invalid_workspace_path",
+            message=str(e),
+            details={"session_id": session_id},
+        )
     if not resolved.exists() or not resolved.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise_api_error(
+            status_code=404,
+            code="agent_session_file_not_found",
+            message="File not found",
+            details={"session_id": session_id, "filename": filename},
+        )
     return FileResponse(str(resolved))
 
 class UpdateAgentSessionRequest(BaseModel):
@@ -890,11 +1128,17 @@ class UpdateAgentSessionRequest(BaseModel):
     status: Optional[str] = None
 
 @session_router.patch("/agent-sessions/{session_id}")
-async def update_agent_session(session_id: str, req: UpdateAgentSessionRequest):
+async def update_agent_session(session_id: str, req: UpdateAgentSessionRequest) -> Any:
     session_store = get_agent_session_store()
     session = session_store.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise_api_error(
+            status_code=404,
+            code="agent_session_not_found",
+            message=SESSION_NOT_FOUND_MESSAGE,
+            details={"session_id": session_id},
+        )
+    assert session is not None
     
     if req.messages is not None:
         session.messages = req.messages
@@ -903,34 +1147,54 @@ async def update_agent_session(session_id: str, req: UpdateAgentSessionRequest):
     
     if session_store.save_session(session):
         return session
-    raise HTTPException(status_code=500, detail="Failed to update session")
+    raise_api_error(
+        status_code=500,
+        code="agent_session_save_failed",
+        message="Failed to update session",
+        details={"session_id": session_id},
+    )
 
 @session_router.get("/agent-sessions/{session_id}/trace")
-async def get_agent_trace(session_id: str):
+async def get_agent_trace(session_id: str) -> Any:
     trace_store = get_agent_trace_store()
     traces = trace_store.get_session_traces(session_id)
     # 将Pydantic模型转换为字典，确保可以正确序列化为JSON
     return {"object": "list", "data": [trace.model_dump() for trace in traces]}
 
 @session_router.delete("/agent-sessions/{session_id}/messages/{message_index}")
-async def delete_agent_session_message(session_id: str, message_index: int):
+async def delete_agent_session_message(session_id: str, message_index: int) -> Any:
     """Delete a message from agent session by index"""
     session_store = get_agent_session_store()
     success = session_store.delete_message(session_id, message_index)
     if not success:
-        raise HTTPException(status_code=404, detail="Session or message not found")
+        raise_api_error(
+            status_code=404,
+            code="agent_session_message_not_found",
+            message="Session or message not found",
+            details={"session_id": session_id, "message_index": message_index},
+        )
     # Return updated session
     updated_session = session_store.get_session(session_id)
     if not updated_session:
-        raise HTTPException(status_code=404, detail="Session not found after deletion")
+        raise_api_error(
+            status_code=404,
+            code="agent_session_not_found_after_delete",
+            message="Session not found after deletion",
+            details={"session_id": session_id},
+        )
     return updated_session
 
 @session_router.delete("/agent-sessions/{session_id}")
-async def delete_agent_session(request: Request, session_id: str):
+async def delete_agent_session(request: Request, session_id: str) -> Any:
     """Delete an entire agent session"""
     user_id = _get_user_id(request)
     session_store = get_agent_session_store()
     success = session_store.delete_session(session_id, user_id)
     if not success:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise_api_error(
+            status_code=404,
+            code="agent_session_not_found",
+            message=SESSION_NOT_FOUND_MESSAGE,
+            details={"session_id": session_id},
+        )
     return {"deleted": True, "session_id": session_id}

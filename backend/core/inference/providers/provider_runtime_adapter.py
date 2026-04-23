@@ -4,7 +4,7 @@ V2.8 Inference Gateway Layer - Provider Runtime Adapter
 Adapts existing runtimes to InferenceGateway interface.
 Wraps RuntimeFactory and ModelRegistry without modification.
 """
-from typing import AsyncIterator, Optional, Dict, List
+from typing import Any, AsyncIterator, Dict, List, Optional, cast
 import asyncio
 import time
 from dataclasses import dataclass
@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from log import logger, log_structured
 from core.runtimes.factory import get_runtime_factory
 from core.models.registry import get_model_registry
+from core.models.descriptor import ModelDescriptor
 from core.types import ChatCompletionRequest, Message
 from core.runtimes.base import EmbeddingRuntime
 
@@ -134,12 +135,12 @@ class ProviderRuntimeAdapter:
         response = await adapter.generate("ollama", "qwen2", request)
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.runtime_factory = get_runtime_factory()
         self.model_registry = get_model_registry()
 
     @staticmethod
-    def _request_has_image(messages: list) -> bool:
+    def _request_has_image(messages: List[Message]) -> bool:
         try:
             for m in messages or []:
                 content = getattr(m, "content", None) if not isinstance(m, dict) else m.get("content")
@@ -154,7 +155,9 @@ class ProviderRuntimeAdapter:
         return False
 
     @staticmethod
-    def _validate_multimodal_support(descriptor, messages: list) -> None:
+    def _validate_multimodal_support(
+        descriptor: ModelDescriptor, messages: List[Message]
+    ) -> None:
         """
         Deterministic multimodal policy:
         - If request includes images, the target model must advertise vision capability.
@@ -366,7 +369,7 @@ class ProviderRuntimeAdapter:
 
         completed_normally = False
         try:
-            async def _stream():
+            async def _stream() -> AsyncIterator[str]:
                 async for token in runtime.stream_chat(descriptor, cc_request):
                     if token:
                         nonlocal output_chars
@@ -449,7 +452,7 @@ class ProviderRuntimeAdapter:
         start_embed = time.time()
         try:
             loop = asyncio.get_running_loop()
-            async def _embed_coro():
+            async def _embed_coro() -> Any:
                 return await loop.run_in_executor(None, lambda: rt.embed(texts))
             embeddings = await queue.run(_embed_coro())
         except Exception as e:
@@ -551,7 +554,7 @@ class ProviderRuntimeAdapter:
                     raise FileNotFoundError(f"Audio file not found: {audio}")
                 audio_path = str(Path(resolved).resolve())
 
-            async def _transcribe_coro():
+            async def _transcribe_coro() -> Any:
                 return await runtime.transcribe(audio_path, options=request.options or {})
             try:
                 result = await queue.run(_transcribe_coro())
@@ -575,7 +578,7 @@ class ProviderRuntimeAdapter:
                 except Exception:
                     pass
     
-    def _build_messages(self, request: InferenceRequest) -> list:
+    def _build_messages(self, request: InferenceRequest) -> List[Message]:
         """
         Build message list from InferenceRequest (message-first).
 
@@ -593,7 +596,7 @@ class ProviderRuntimeAdapter:
         messages.append(Message(role="user", content=request.prompt or ""))
         return messages
     
-    def _find_model(self, model_id: str, provider: str):
+    def _find_model(self, model_id: str, provider: str) -> Optional[ModelDescriptor]:
         """
         Find model descriptor by ID or provider_model_id.
         
@@ -620,9 +623,9 @@ class ProviderRuntimeAdapter:
         )
         return None
     
-    def list_available_models(self) -> list:
+    def list_available_models(self) -> List[ModelDescriptor]:
         """List all models available in the registry"""
-        return self.model_registry.list_models()
+        return cast(List[ModelDescriptor], self.model_registry.list_models())
     
     def get_runtime_capabilities(self, runtime_name: str) -> RuntimeCapabilities:
         """

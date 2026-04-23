@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/v1/audit", tags=["audit"])
 
 class AuditLogItem(BaseModel):
     id: str
-    created_at: Optional[str]
+    created_at: Optional[str] = None
     tenant_id: Optional[str] = None
     user_id: str
     platform_role: str
@@ -42,15 +42,15 @@ class AuditLogListResponse(BaseModel):
 @router.get("/logs", response_model=AuditLogListResponse)
 def list_audit_logs(
     request: Request,
-    db: Session = Depends(get_db),
-    _role=Depends(require_audit_reader),
-    limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    db: Annotated[Session, Depends(get_db)],
+    _role: Annotated[Any, Depends(require_audit_reader)],
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
     user_id: Optional[str] = None,
     path_prefix: Optional[str] = None,
     method: Optional[str] = None,
-    since_iso: Optional[str] = Query(default=None, description="ISO8601 起始时间（可选）"),
-):
+    since_iso: Annotated[Optional[str], Query(description="ISO8601 起始时间（可选）")] = None,
+) -> AuditLogListResponse:
     since_dt = None
     if since_iso:
         try:

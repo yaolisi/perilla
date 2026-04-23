@@ -5,8 +5,8 @@ Node Runtime Models
 
 from enum import Enum
 from typing import Dict, Any, Optional
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import UTC, datetime
+from pydantic import BaseModel, ConfigDict, Field
 import uuid
 
 
@@ -44,6 +44,10 @@ VALID_TRANSITIONS: Dict[NodeState, set] = {
 }
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 class NodeRuntime(BaseModel):
     """节点运行时状态"""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="运行时 ID")
@@ -57,11 +61,10 @@ class NodeRuntime(BaseModel):
     error_type: Optional[str] = Field(default=None, description="错误类型")
     started_at: Optional[datetime] = Field(default=None, description="开始时间")
     finished_at: Optional[datetime] = Field(default=None, description="结束时间")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="创建时间")
-    updated_at: datetime = Field(default_factory=datetime.utcnow, description="更新时间")
+    created_at: datetime = Field(default_factory=_utc_now, description="创建时间")
+    updated_at: datetime = Field(default_factory=_utc_now, description="更新时间")
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
     
     def can_transition_to(self, new_state: NodeState) -> bool:
         """检查是否可以转换到新状态"""
@@ -83,13 +86,12 @@ class GraphInstance(BaseModel):
     graph_definition_version: str = Field(default="1.0.0", description="图定义版本")
     state: GraphInstanceState = Field(default=GraphInstanceState.PENDING, description="实例状态")
     global_context: Dict[str, Any] = Field(default_factory=dict, description="全局上下文")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="创建时间")
-    updated_at: datetime = Field(default_factory=datetime.utcnow, description="更新时间")
+    created_at: datetime = Field(default_factory=_utc_now, description="创建时间")
+    updated_at: datetime = Field(default_factory=_utc_now, description="更新时间")
     started_at: Optional[datetime] = Field(default=None, description="开始时间")
     finished_at: Optional[datetime] = Field(default=None, description="结束时间")
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class NodeCacheEntry(BaseModel):
@@ -98,14 +100,16 @@ class NodeCacheEntry(BaseModel):
     node_id: str = Field(..., description="节点 ID")
     input_hash: str = Field(..., description="输入数据哈希")
     output_data: Dict[str, Any] = Field(default_factory=dict, description="输出数据")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utc_now)
     expires_at: Optional[datetime] = Field(default=None, description="过期时间")
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
     
     def is_expired(self) -> bool:
         """检查是否过期"""
         if self.expires_at is None:
             return False
-        return datetime.utcnow() > self.expires_at
+        now = _utc_now()
+        if self.expires_at.tzinfo is None:
+            return now.replace(tzinfo=None) > self.expires_at
+        return now > self.expires_at

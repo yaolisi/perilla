@@ -1,6 +1,6 @@
 import os
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from core.types import Message
 
 DEFAULT_AGENT_SYSTEM_TEMPLATE = """[Built-in Agent System Template]
@@ -67,62 +67,49 @@ def _latest_user_text(conversation: List[Message]) -> str:
             return msg.content
     return ""
 
-def build_prompt(
-    system_prompt: str,
-    name: str,
-    description: str,
-    conversation: List[Message],
-    tools: List[Dict[str, Any]],
-    rag_context: str = "",
-    enabled_skills: List[str] = None
-) -> List[Message]:
-    """
-    组装 Agent 提示词上下文
-    """
-    enabled_skills = enabled_skills or []
-    tools_desc = ""
+
+def _format_tools_description(tools: List[Dict[str, Any]]) -> str:
+    parts: List[str] = []
     for tool in tools:
-        # v1.5: 若有 skill_id 则展示，供 LLM 在 skill_call 中使用
         sid = tool.get("skill_id") or tool.get("id")
         if sid:
-            tools_desc += f"- {tool['name']} (id: {sid}): {tool.get('description', '')}\n  Schema: {tool.get('input_schema', {})}\n"
+            parts.append(
+                f"- {tool['name']} (id: {sid}): {tool.get('description', '')}\n"
+                f"  Schema: {tool.get('input_schema', {})}\n"
+            )
         else:
-            tools_desc += f"- {tool['name']}: {tool.get('description', '')}\n  Schema: {tool.get('input_schema', {})}\n"
+            parts.append(
+                f"- {tool['name']}: {tool.get('description', '')}\n  Schema: {tool.get('input_schema', {})}\n"
+            )
+    return "".join(parts)
 
-    # 替换系统提示词模板
-    template = get_agent_system_template()
-    full_system_prompt = ""
-    if template:
-        # 根据 enabled_skills 动态调整模板内容
-        # 如果启用了 builtin_vision.detect_objects，保留图像分析指导
-        # 否则移除该指导，避免误导 LLM 调用未启用的 skill
-        template_text = template
-        if "builtin_vision.detect_objects" not in enabled_skills:
-            # 移除图像分析指导（使用多种匹配方式确保可靠）
-            # 方式1：匹配完整的第10条指导（包括换行符）
-            pattern1 = r'10\.\s*For image analysis:.*?to the user\.\s*\n'
-            # 方式2：匹配到字符串结尾（如果没有换行符）
-            pattern2 = r'10\.\s*For image analysis:.*?to the user\.\s*$'
-            original_len = len(template_text)
-            template_text = re.sub(pattern1, '', template_text, flags=re.DOTALL)
-            template_text = re.sub(pattern2, '', template_text, flags=re.DOTALL | re.MULTILINE)
-            # 如果替换成功，清理可能产生的多余空行
-            if len(template_text) < original_len:
-                template_text = re.sub(r'\n\n+', '\n\n', template_text)
-                # 如果启用了 VLM generate，添加针对 VLM 的图像分析指导
-                if "builtin_vlm.generate" in enabled_skills:
-                    template_text += "\n10. For image analysis: When the user provides an image (e.g. to recognize text / OCR / 识别图中的文字), you MUST call builtin_vlm.generate skill first with the image path and the user's question. The image path is only a file reference (e.g. OCR1.png)—do NOT output the filename as the recognized text. Use the VLM result as the answer."
-                # 添加明确的指导：不要使用未启用的 skill
-                template_text += "\nIMPORTANT: Only use skills that are listed in 'Available Skills' above. Do NOT call skills that are not in the list."
 
-        # 如果启用了 builtin_project.analyze，添加项目分析指导
-        if "builtin_project.analyze" in enabled_skills:
-            # 检查是否已经有项目分析指导（避免重复添加）
-            if "project.analyze" not in template_text.lower():
-                # 在模板末尾添加项目分析指导
-                project_guideline_index = 11
-                template_text += f"""
-                
+def _adjust_system_template_text(template_text: str, enabled_skills: List[str]) -> str:
+    """按已启用 skills 裁剪/追加系统模板中与能力相关的条目。"""
+    out = template_text
+    if "builtin_vision.detect_objects" not in enabled_skills:
+        pattern_nl = r'10\.\s*For image analysis:.*?to the user\.\s*\n'
+        pattern_eof = r'10\.\s*For image analysis:.*?to the user\.\s*$'
+        original_len = len(out)
+        out = re.sub(pattern_nl, "", out, flags=re.DOTALL)
+        out = re.sub(pattern_eof, "", out, flags=re.DOTALL | re.MULTILINE)
+        if len(out) < original_len:
+            out = re.sub(r"\n\n+", "\n\n", out)
+            if "builtin_vlm.generate" in enabled_skills:
+                out += (
+                    "\n10. For image analysis: When the user provides an image (e.g. to recognize text / OCR / 识别图中的文字), "
+                    "you MUST call builtin_vlm.generate skill first with the image path and the user's question. The image path is only a file reference "
+                    "(e.g. OCR1.png)—do NOT output the filename as the recognized text. Use the VLM result as the answer."
+                )
+            out += (
+                "\nIMPORTANT: Only use skills that are listed in 'Available Skills' above. "
+                "Do NOT call skills that are not in the list."
+            )
+
+    if "builtin_project.analyze" in enabled_skills and "project.analyze" not in out.lower():
+        project_guideline_index = 11
+        out += f"""
+
 {project_guideline_index}. For project analysis: When you need to understand a codebase's structure, architecture, dependencies, entry points, or test framework, you MUST call builtin_project.analyze skill. This provides a comprehensive project model including:
    - Project meta (language, file count, size)
    - Directory structure and architecture layers
@@ -142,12 +129,30 @@ Examples:
 - User: "Check this project" (no path mentioned) → Call builtin_project.analyze without workspace parameter (uses session workspace)
 
 Use this before making changes to understand the project context."""
-        
-        full_system_prompt = template_text.format(
-            name=name,
-            description=description,
-            tools_desc=tools_desc
-        )
+
+    return out
+
+
+def build_prompt(
+    system_prompt: str,
+    name: str,
+    description: str,
+    conversation: List[Message],
+    tools: List[Dict[str, Any]],
+    rag_context: str = "",
+    enabled_skills: Optional[List[str]] = None,
+) -> List[Message]:
+    """
+    组装 Agent 提示词上下文
+    """
+    enabled_skills = enabled_skills or []
+    tools_desc = _format_tools_description(tools)
+
+    template = get_agent_system_template()
+    full_system_prompt = ""
+    if template:
+        adjusted = _adjust_system_template_text(template, enabled_skills)
+        full_system_prompt = adjusted.format(name=name, description=description, tools_desc=tools_desc)
     
     # 注入用户自定义系统提示词
     if system_prompt:

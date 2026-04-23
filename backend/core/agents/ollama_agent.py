@@ -10,6 +10,8 @@ from config.settings import settings
 from core.agents.base import ModelAgent
 from core.types import ChatCompletionRequest
 
+OLLAMA_MODEL_PREFIX = "ollama:"
+
 
 class OllamaAgent(ModelAgent):
     """
@@ -32,19 +34,21 @@ class OllamaAgent(ModelAgent):
         2. 如果请求的是通用 'ollama' 且 settings 有默认值，使用默认值
         3. 如果请求的是通用 'ollama' 且 settings 为空，自动获取本地第一个模型
         """
-        if requested_model.startswith("ollama:"):
-            return requested_model.replace("ollama:", "", 1)
+        if requested_model.startswith(OLLAMA_MODEL_PREFIX):
+            return requested_model.replace(OLLAMA_MODEL_PREFIX, "", 1)
         
         if requested_model == "ollama":
             # 优先使用配置的默认模型
-            if settings.ollama_default_model:
-                return settings.ollama_default_model
+            default_model = settings.ollama_default_model
+            if isinstance(default_model, str) and default_model:
+                return default_model
             
             # 否则，尝试从本地发现
             local_models = await self.list_local_models()
             if local_models:
                 # 提取 id 中的名称 (ollama:name -> name)
-                first_model = local_models[0]["id"].replace("ollama:", "", 1)
+                first_id = local_models[0].get("id")
+                first_model = str(first_id).replace(OLLAMA_MODEL_PREFIX, "", 1)
                 logger.info(f"[OllamaAgent] No default model configured, auto-selected: {first_model}")
                 return first_model
             
@@ -83,7 +87,7 @@ class OllamaAgent(ModelAgent):
             content = msg.get("content", "")
             if not content and "thinking" in msg:
                 content = msg.get("thinking", "")
-            return content
+            return str(content)
     
     async def stream_chat(self, req: ChatCompletionRequest) -> AsyncIterator[str]:
         """

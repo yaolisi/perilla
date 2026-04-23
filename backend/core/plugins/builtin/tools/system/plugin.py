@@ -4,7 +4,7 @@ from .memory import SystemMemoryTool
 from .disk import SystemDiskTool
 from .env import SystemEnvTool
 
-def register():
+def register() -> None:
     ToolRegistry.register(SystemCpuTool())
     ToolRegistry.register(SystemMemoryTool())
     ToolRegistry.register(SystemDiskTool())

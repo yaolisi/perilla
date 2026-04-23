@@ -152,7 +152,8 @@ def extract_path_from_text(
     # 从配置获取默认路径关键词，未配置则使用默认值
     default_keywords = config.get("default_keywords", ["tree", "项目结构", "目录树", "project structure"])
     if any(k in text.lower() for k in default_keywords):
-        return config.get("default_path", ".")
+        default_path = config.get("default_path", ".")
+        return default_path if isinstance(default_path, str) else "."
 
     return None
 
@@ -344,7 +345,7 @@ def match_configured_intent_rules(
     return None
 
 
-def get_replan_direct_skill_config(agent) -> Dict[str, Any]:
+def get_replan_direct_skill_config(agent: Any) -> Dict[str, Any]:
     """获取 RePlan 直接技能配置"""
     model_params = getattr(agent, "model_params", {}) or {}
     cfg = model_params.get("replan_direct_skill")

@@ -9,8 +9,9 @@ any execution logic. They are:
 - Independent from Agent implementation
 """
 
-from pydantic import BaseModel, Field, field_validator, ConfigDict
-from typing import List, Dict, Optional, Any
+from typing import Any, Dict, List, Optional, cast
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class PlanMetadata(BaseModel):
@@ -166,7 +167,7 @@ class Plan(BaseModel):
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        return self.model_dump(mode="json")
+        return cast(Dict[str, Any], self.model_dump(mode="json"))
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Plan":
@@ -180,7 +181,7 @@ class Plan(BaseModel):
             plan = Plan.from_dict(data)
             validate_plan(plan)  # Required for dependency validation
         """
-        return cls.model_validate(data)
+        return cast("Plan", cls.model_validate(data))
     
     model_config = ConfigDict(
         extra="forbid",  # Strict contract enforcement

@@ -7,8 +7,8 @@ WorkflowExecution 表示工作流的一次执行实例。
 
 from enum import Enum
 from typing import Dict, Any, Optional, List
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import UTC, datetime
+from pydantic import BaseModel, ConfigDict, Field
 import uuid
 
 
@@ -75,8 +75,7 @@ class WorkflowExecutionNode(BaseModel):
         description="重试次数"
     )
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WorkflowExecution(BaseModel):
@@ -160,7 +159,7 @@ class WorkflowExecution(BaseModel):
     
     # 时间戳
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(UTC),
         description="创建时间"
     )
     started_at: Optional[datetime] = Field(
@@ -190,8 +189,7 @@ class WorkflowExecution(BaseModel):
         description="排队等待时长（毫秒）"
     )
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
     
     def is_terminal(self) -> bool:
         """检查是否处于终态"""

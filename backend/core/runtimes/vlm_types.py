@@ -5,7 +5,7 @@ VLM 统一请求/响应类型
 """
 
 from typing import List, Optional, Union, Literal, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 try:
     from PIL import Image
@@ -20,8 +20,7 @@ class ImageInput(BaseModel):
     bytes_data: Optional[bytes] = None
     pil_image: Optional[Any] = None  # PIL.Image.Image
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class VLMGenerationConfig(BaseModel):
@@ -46,8 +45,7 @@ class VLMRequest(BaseModel):
     images: Optional[List[Any]] = Field(default=None, description="图像列表：路径 / bytes / PIL.Image")
     generation_config: Optional[VLMGenerationConfig] = Field(default_factory=VLMGenerationConfig)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class VLMResponse(BaseModel):

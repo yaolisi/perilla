@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Any, Dict, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -16,16 +16,19 @@ class FileListTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "path": {"type": "string", "description": "The relative path to the directory from the workspace root."}
-        }, required=["path"])
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "path": {"type": "string", "description": "The relative path to the directory from the workspace root."}
+            }, required=["path"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
         return {"type": "array", "items": {"type": "string"}}
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["file.list"]
 
     @property

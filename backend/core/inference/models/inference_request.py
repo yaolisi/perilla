@@ -4,8 +4,9 @@ V2.8 Inference Gateway Layer - Inference Request Model
 Unified inference request - simpler than ChatCompletionRequest.
 Designed for Skill/Agent → Gateway communication.
 """
-from pydantic import BaseModel, Field, model_validator
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional, Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from core.types import Message
 
@@ -70,7 +71,7 @@ class InferenceRequest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_input_mode(self):
+    def validate_input_mode(self) -> Self:
         """
         Deterministic input contract:
         - Prefer messages (message-first).
@@ -88,5 +89,4 @@ class InferenceRequest(BaseModel):
             raise ValueError("'system_prompt' is only valid when 'prompt' is provided.")
         return self
 
-    class Config:
-        extra = "forbid"  # Strict validation
+    model_config = ConfigDict(extra="forbid")

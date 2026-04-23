@@ -4,8 +4,8 @@ Workflow Version Repository
 WorkflowVersion 和 WorkflowDefinition 的 CRUD 操作。
 """
 
-from typing import List, Optional, Dict, Any
-from datetime import datetime
+from typing import List, Optional, Dict, Any, cast
+from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from core.workflows.models import (
@@ -26,22 +26,23 @@ class WorkflowVersionRepository:
     
     def _deserialize_version_from_orm(self, row: WorkflowVersionORM) -> WorkflowVersion:
         """从 ORM 对象反序列化为 WorkflowVersion"""
+        row_any = cast(Any, row)
         data: Dict[str, Any] = {
-            "version_id": row.version_id,
-            "workflow_id": row.workflow_id,
-            "definition_id": row.definition_id,
-            "version_number": row.version_number,
-            "checksum": row.checksum,
-            "state": WorkflowVersionState(row.state),
-            "description": row.description,
-            "change_notes": row.change_notes,
-            "created_at": row.created_at,
-            "created_by": row.created_by,
-            "published_at": row.published_at,
-            "published_by": row.published_by,
+            "version_id": cast(str, row_any.version_id),
+            "workflow_id": cast(str, row_any.workflow_id),
+            "definition_id": cast(str, row_any.definition_id),
+            "version_number": cast(str, row_any.version_number),
+            "checksum": cast(str, row_any.checksum),
+            "state": WorkflowVersionState(cast(str, row_any.state)),
+            "description": cast(Optional[str], row_any.description),
+            "change_notes": cast(Optional[str], row_any.change_notes),
+            "created_at": cast(datetime, row_any.created_at),
+            "created_by": cast(Optional[str], row_any.created_by),
+            "published_at": cast(Optional[datetime], row_any.published_at),
+            "published_by": cast(Optional[str], row_any.published_by),
         }
         # 反序列化 DAG
-        data["dag"] = WorkflowDAG.model_validate_json(row.dag_json)
+        data["dag"] = WorkflowDAG.model_validate_json(cast(str, row_any.dag_json))
         return WorkflowVersion(**data)
     
     # ==================== Definition Operations ====================
@@ -72,14 +73,15 @@ class WorkflowVersionRepository:
         )
         if not row:
             return None
+        row_any = cast(Any, row)
         return WorkflowDefinition(
-            definition_id=row.definition_id,
-            workflow_id=row.workflow_id,
-            description=row.description,
-            change_log=row.change_log,
-            created_at=row.created_at,
-            created_by=row.created_by,
-            source_version_id=row.source_version_id,
+            definition_id=cast(str, row_any.definition_id),
+            workflow_id=cast(str, row_any.workflow_id),
+            description=cast(Optional[str], row_any.description),
+            change_log=cast(Optional[str], row_any.change_log),
+            created_at=cast(datetime, row_any.created_at),
+            created_by=cast(Optional[str], row_any.created_by),
+            source_version_id=cast(Optional[str], row_any.source_version_id),
         )
     
     def list_definitions_by_workflow(
@@ -95,18 +97,21 @@ class WorkflowVersionRepository:
             .limit(limit)
             .all()
         )
-        return [
-            WorkflowDefinition(
-                definition_id=r.definition_id,
-                workflow_id=r.workflow_id,
-                description=r.description,
-                change_log=r.change_log,
-                created_at=r.created_at,
-                created_by=r.created_by,
-                source_version_id=r.source_version_id,
+        out: List[WorkflowDefinition] = []
+        for r in rows:
+            row_any = cast(Any, r)
+            out.append(
+                WorkflowDefinition(
+                    definition_id=cast(str, row_any.definition_id),
+                    workflow_id=cast(str, row_any.workflow_id),
+                    description=cast(Optional[str], row_any.description),
+                    change_log=cast(Optional[str], row_any.change_log),
+                    created_at=cast(datetime, row_any.created_at),
+                    created_by=cast(Optional[str], row_any.created_by),
+                    source_version_id=cast(Optional[str], row_any.source_version_id),
+                )
             )
-            for r in rows
-        ]
+        return out
     
     # ==================== Version Operations ====================
     
@@ -189,7 +194,7 @@ class WorkflowVersionRepository:
         q = self.db.query(WorkflowVersionORM).filter(WorkflowVersionORM.workflow_id == workflow_id)
         if state:
             q = q.filter(WorkflowVersionORM.state == state.value)
-        return q.count()
+        return cast(int, q.count())
     
     def publish_version(
         self,
@@ -204,9 +209,9 @@ class WorkflowVersionRepository:
         )
         if not row:
             return None
-        row.state = WorkflowVersionState.PUBLISHED.value
-        row.published_at = datetime.utcnow()
-        row.published_by = published_by
+        setattr(row, "state", WorkflowVersionState.PUBLISHED.value)
+        setattr(row, "published_at", datetime.now(UTC))
+        setattr(row, "published_by", published_by)
         self.db.commit()
         
         logger.info(f"[WorkflowVersionRepository] Published version: {version_id}")
@@ -215,7 +220,7 @@ class WorkflowVersionRepository:
     def deprecate_version(
         self,
         version_id: str,
-        deprecated_by: Optional[str] = None
+        _deprecated_by: Optional[str] = None
     ) -> Optional[WorkflowVersion]:
         """弃用版本"""
         row = (
@@ -225,7 +230,7 @@ class WorkflowVersionRepository:
         )
         if not row:
             return None
-        row.state = WorkflowVersionState.DEPRECATED.value
+        setattr(row, "state", WorkflowVersionState.DEPRECATED.value)
         self.db.commit()
         
         logger.info(f"[WorkflowVersionRepository] Deprecated version: {version_id}")
@@ -276,5 +281,6 @@ class WorkflowVersionRepository:
         if not row:
             return False
         import hashlib
-        computed = hashlib.sha256(row.dag_json.encode()).hexdigest()
-        return computed == row.checksum
+        row_any = cast(Any, row)
+        computed = hashlib.sha256(cast(str, row_any.dag_json).encode()).hexdigest()
+        return cast(bool, computed == cast(str, row_any.checksum))

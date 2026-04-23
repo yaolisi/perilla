@@ -6,9 +6,13 @@ V2.7: Optimization Layer - Optimization Dataset
 
 from typing import Any, Dict, Optional
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 from execution_kernel.optimization.statistics.models import NodeStatistics, SkillStatistics
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -29,7 +33,7 @@ class OptimizationDataset:
     """
     node_stats: Dict[str, NodeStatistics] = field(default_factory=dict)
     skill_stats: Dict[str, SkillStatistics] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_utc_now)
     event_count: int = 0
     instance_count: int = 0
     metrics_summary: Optional[Dict[str, Any]] = None
@@ -60,43 +64,43 @@ class OptimizationDataset:
         merged_skill_stats = dict(self.skill_stats)
         
         # 合并节点统计
-        for node_id, stat in other.node_stats.items():
+        for node_id, node_stat in other.node_stats.items():
             if node_id in merged_node_stats:
                 existing = merged_node_stats[node_id]
                 merged_node_stats[node_id] = NodeStatistics(
                     node_id=node_id,
-                    skill_name=stat.skill_name or existing.skill_name,
-                    execution_count=existing.execution_count + stat.execution_count,
-                    success_count=existing.success_count + stat.success_count,
-                    failure_count=existing.failure_count + stat.failure_count,
-                    total_latency_ms=existing.total_latency_ms + stat.total_latency_ms,
-                    retry_success_count=existing.retry_success_count + stat.retry_success_count,
-                    last_updated=datetime.utcnow(),
+                    skill_name=node_stat.skill_name or existing.skill_name,
+                    execution_count=existing.execution_count + node_stat.execution_count,
+                    success_count=existing.success_count + node_stat.success_count,
+                    failure_count=existing.failure_count + node_stat.failure_count,
+                    total_latency_ms=existing.total_latency_ms + node_stat.total_latency_ms,
+                    retry_success_count=existing.retry_success_count + node_stat.retry_success_count,
+                    last_updated=_utc_now(),
                 )
             else:
-                merged_node_stats[node_id] = stat
+                merged_node_stats[node_id] = node_stat
         
         # 合并 Skill 统计
-        for skill_name, stat in other.skill_stats.items():
+        for skill_name, skill_stat in other.skill_stats.items():
             if skill_name in merged_skill_stats:
-                existing = merged_skill_stats[skill_name]
+                existing_skill = merged_skill_stats[skill_name]
                 merged_skill_stats[skill_name] = SkillStatistics(
                     skill_name=skill_name,
-                    execution_count=existing.execution_count + stat.execution_count,
-                    success_count=existing.success_count + stat.success_count,
-                    failure_count=existing.failure_count + stat.failure_count,
-                    total_latency_ms=existing.total_latency_ms + stat.total_latency_ms,
-                    retry_success_count=existing.retry_success_count + stat.retry_success_count,
-                    node_count=max(existing.node_count, stat.node_count),
-                    last_updated=datetime.utcnow(),
+                    execution_count=existing_skill.execution_count + skill_stat.execution_count,
+                    success_count=existing_skill.success_count + skill_stat.success_count,
+                    failure_count=existing_skill.failure_count + skill_stat.failure_count,
+                    total_latency_ms=existing_skill.total_latency_ms + skill_stat.total_latency_ms,
+                    retry_success_count=existing_skill.retry_success_count + skill_stat.retry_success_count,
+                    node_count=max(existing_skill.node_count, skill_stat.node_count),
+                    last_updated=_utc_now(),
                 )
             else:
-                merged_skill_stats[skill_name] = stat
+                merged_skill_stats[skill_name] = skill_stat
         
         return OptimizationDataset(
             node_stats=merged_node_stats,
             skill_stats=merged_skill_stats,
-            created_at=datetime.utcnow(),
+            created_at=_utc_now(),
             event_count=self.event_count + other.event_count,
             instance_count=self.instance_count + other.instance_count,
             metrics_summary=None,  # 合并后不保留单次收集的 metrics_summary

@@ -36,7 +36,7 @@ class InferenceGateway:
         response = await gateway.generate(request)
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.router = ModelRouter()
         self.adapter = ProviderRuntimeAdapter()
 
@@ -222,13 +222,13 @@ class InferenceGateway:
         """
         return self.router.resolve(model_alias)
     
-    def list_available_models(self) -> list:
+    def list_available_models(self) -> list[str]:
         """List all available model aliases"""
         return self.router.list_available_models()
 
 
 # Singleton
-_gateway = None
+_gateway: Optional[InferenceGateway] = None
 
 
 def get_inference_gateway() -> InferenceGateway:

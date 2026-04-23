@@ -4,7 +4,7 @@ V2.8 Inference Gateway Layer - Inference Client
 Primary entry point for Skills and Agents to make inference calls.
 Provides a simple, clean API that hides the complexity of routing and providers.
 """
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 from core.inference.gateway.inference_gateway import (
     InferenceGateway,
@@ -16,6 +16,9 @@ from core.inference.models.embedding_request import EmbeddingRequest
 from core.inference.models.embedding_response import EmbeddingResponse
 from core.inference.models.asr_request import ASRRequest
 from core.inference.models.asr_response import ASRResponse
+from core.inference.router.model_router import RoutingResult
+from core.inference.providers.provider_runtime_adapter import RuntimeCapabilities
+from core.types import Message
 
 
 class InferenceClient:
@@ -61,7 +64,7 @@ class InferenceClient:
         RuntimeFactory → Model Runtime
     """
     
-    def __init__(self, gateway: Optional[InferenceGateway] = None):
+    def __init__(self, gateway: Optional[InferenceGateway] = None) -> None:
         """
         Initialize the client.
         
@@ -74,12 +77,12 @@ class InferenceClient:
         self,
         model: str,
         prompt: Optional[str] = None,
-        messages: Optional[list] = None,
+        messages: Optional[List[Message]] = None,
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        stop: Optional[list] = None,
-        metadata: Optional[dict] = None
+        stop: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None
     ) -> InferenceResponse:
         """
         Execute non-streaming inference.
@@ -113,11 +116,11 @@ class InferenceClient:
         self,
         model: str,
         prompt: Optional[str] = None,
-        messages: Optional[list] = None,
+        messages: Optional[List[Message]] = None,
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        stop: Optional[list] = None
+        stop: Optional[List[str]] = None
     ) -> AsyncIterator[str]:
         """
         Execute streaming inference.
@@ -149,8 +152,8 @@ class InferenceClient:
     async def embed(
         self,
         model: str,
-        input_text,
-        metadata: Optional[dict] = None,
+        input_text: Union[str, List[str]],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> EmbeddingResponse:
         req = EmbeddingRequest(
             model_alias=model,
@@ -165,8 +168,8 @@ class InferenceClient:
         audio: str,
         *,
         workspace: Optional[str] = None,
-        options: Optional[dict] = None,
-        metadata: Optional[dict] = None,
+        options: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> ASRResponse:
         req = ASRRequest(
             model_alias=model,
@@ -177,7 +180,7 @@ class InferenceClient:
         )
         return await self._gateway.transcribe(req)
     
-    def get_routing_info(self, model: str):
+    def get_routing_info(self, model: str) -> RoutingResult:
         """
         Get routing information for a model alias.
         
@@ -189,7 +192,7 @@ class InferenceClient:
         """
         return self._gateway.get_routing_info(model)
     
-    def list_available_models(self) -> list:
+    def list_available_models(self) -> List[str]:
         """
         List all available model aliases.
         
@@ -198,7 +201,7 @@ class InferenceClient:
         """
         return self._gateway.list_available_models()
     
-    def get_streaming_capabilities(self, model: str):
+    def get_streaming_capabilities(self, model: str) -> RuntimeCapabilities:
         """
         Get streaming capabilities for a model.
         
@@ -229,7 +232,9 @@ class InferenceClient:
     # These methods help migrate from legacy code patterns
     
     @classmethod
-    def from_executor_llm_call(cls, model_id: str, messages: list, temperature: float = 0.7) -> "InferenceClient":
+    def from_executor_llm_call(
+        cls, model_id: str, messages: List[Message], temperature: float = 0.7
+    ) -> "InferenceClient":
         """
         Migration helper: Create client configured like AgentExecutor.llm_call.
         
@@ -259,7 +264,9 @@ class InferenceClient:
         )
         return cls()
     
-    async def legacy_llm_call(self, model_id: str, messages: list, temperature: float = 0.7) -> str:
+    async def legacy_llm_call(
+        self, model_id: str, messages: List[Union[Message, Dict[str, Any]]], temperature: float = 0.7
+    ) -> str:
         """
         Migration helper: Mimic AgentExecutor.llm_call behavior.
         

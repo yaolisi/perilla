@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -17,7 +17,7 @@ class TextRegexExtractTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
+        return cast(Dict[str, Any], create_input_schema({
             "text": {
                 "type": "string",
                 "description": "The text to search."
@@ -41,7 +41,7 @@ class TextRegexExtractTool(Tool):
                 "description": "Whether to return captured groups as arrays (default: false, returns full match).",
                 "default": False
             }
-        }, required=["text", "pattern"])
+        }, required=["text", "pattern"]))
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -51,7 +51,7 @@ class TextRegexExtractTool(Tool):
         }
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return []
 
     @property

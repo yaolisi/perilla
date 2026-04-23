@@ -109,7 +109,7 @@ def _extract_images_from_messages(
     return pil_list, processed
 
 
-def _try_fix_mistral_regex(tokenizer: Any, model_name: str):
+def _try_fix_mistral_regex(tokenizer: Any, model_name: str) -> Any:
     """
     兼容 transformers 对 mistral regex 的修复入口差异。
     某些版本传 fix_mistral_regex 参数会报 duplicated kwargs，这里改为后置补丁调用。
@@ -138,14 +138,14 @@ class InternVLAdapter(ModelAdapter):
     使用 transformers 的 AutoModel + AutoProcessor。
     """
 
-    def __init__(self):
-        self._model = None
-        self._processor = None
-        self._tokenizer = None
-        self._image_processor = None
+    def __init__(self) -> None:
+        self._model: Any = None
+        self._processor: Any = None
+        self._tokenizer: Any = None
+        self._image_processor: Any = None
         self._model_name: Optional[str] = None
         self._device: str = "auto"
-        self._torch_dtype = None
+        self._torch_dtype: Any = None
 
     def load(self, model_dir: Path, options: Dict[str, Any]) -> None:
         import torch
@@ -208,12 +208,18 @@ class InternVLAdapter(ModelAdapter):
                 model_cls = get_class_from_dynamic_module(auto_model_ref, model_name)
                 orig_init = model_cls.__init__
 
-                def _patched_init(this, *args, **kwargs):
+                def _patched_init(this: Any, *args: Any, **kwargs: Any) -> Any:
                     orig_init(this, *args, **kwargs)
                     if not hasattr(this, "all_tied_weights_keys"):
                         this.all_tied_weights_keys = {}
 
-                def _compat_init_context(cls_, dtype, is_quantized, _is_ds_init_called, allow_all_kernels=False):
+                def _compat_init_context(
+                    cls_: Any,
+                    dtype: Any,
+                    is_quantized: Any,
+                    _is_ds_init_called: Any,
+                    allow_all_kernels: bool = False,
+                ) -> List[Any]:
                     # 去掉 meta 初始化，同时保留 no_init_weights，避免先随机初始化再覆盖导致的潜在数值漂移。
                     # allow_all_kernels: transformers 新版本 get_init_context 第 5 个参数，此处兼容签名即可。
                     return [local_torch_dtype(dtype, cls_.__name__), init.no_tie_weights(), init.no_init_weights()]
@@ -251,15 +257,20 @@ class InternVLAdapter(ModelAdapter):
         temperature: float = 0.7,
         top_p: float = 1.0,
         stop: Optional[List[str]] = None,
-        **kwargs
+        **kwargs: Any
     ) -> str:
         if not self.is_loaded:
             raise RuntimeError("Model not loaded")
+        if self._model is None or self._processor is None:
+            raise RuntimeError("InternVL model/processor not initialized")
+
+        model = self._model
+        processor = self._processor
 
         pil_images, processed_messages = _extract_images_from_messages(messages, images)
 
         # --- 优先走 InternVL 官方 chat() 路径（最稳，避免 tokenizer(images=...) / IMG_CONTEXT 拼接问题） ---
-        tokenizer = self._tokenizer or getattr(self._processor, "tokenizer", self._processor)
+        tokenizer = self._tokenizer or getattr(processor, "tokenizer", processor)
         question_parts: List[str] = []
         system_parts: List[str] = []
         for m in processed_messages:
@@ -293,8 +304,8 @@ class InternVLAdapter(ModelAdapter):
         pixel_values = None
         if pil_images:
             img_proc = (
-                getattr(self._processor, "image_processor", None)
-                or getattr(self._processor, "vision_processor", None)
+                getattr(processor, "image_processor", None)
+                or getattr(processor, "vision_processor", None)
                 or self._image_processor
             )
             if not img_proc:
@@ -308,10 +319,10 @@ class InternVLAdapter(ModelAdapter):
 
             # dtype/device 对齐
             try:
-                model_dtype = next(self._model.parameters()).dtype
+                model_dtype = next(model.parameters()).dtype
             except StopIteration:
                 model_dtype = self._torch_dtype
-            pixel_values = pixel_values.to(device=self._model.device, dtype=model_dtype)
+            pixel_values = pixel_values.to(device=model.device, dtype=model_dtype)
 
         do_sample = float(temperature) > 0 and self._device != "cpu"
         generation_config = {
@@ -321,18 +332,18 @@ class InternVLAdapter(ModelAdapter):
             "do_sample": do_sample,
         }
 
-        if hasattr(self._model, "chat"):
+        if hasattr(model, "chat"):
             import torch
             with torch.no_grad():
                 # 兼容不同 InternVL 版本的 chat() 签名
-                for args, kwargs in [
+                for call_args, call_kwargs in [
                     ((tokenizer, pixel_values, question, generation_config), {}),
                     ((tokenizer, pixel_values, question, generation_config), {"history": None}),
                     ((tokenizer, pixel_values, question, generation_config), {"history": None, "return_history": False}),
                     ((tokenizer, pixel_values, question, generation_config), {"history": None, "return_history": True}),
                 ]:
                     try:
-                        out = self._model.chat(*args, **kwargs)
+                        out = model.chat(*call_args, **call_kwargs)
                         if isinstance(out, tuple):
                             return (out[0] or "").strip()
                         return (out or "").strip()
@@ -342,9 +353,9 @@ class InternVLAdapter(ModelAdapter):
 
         # --- 旧路径保留：用于极少数没有 chat() 的权重 ---
         prompt = None
-        if hasattr(self._processor, "apply_chat_template"):
+        if hasattr(processor, "apply_chat_template"):
             try:
-                prompt = self._processor.apply_chat_template(
+                prompt = processor.apply_chat_template(
                     processed_messages,
                     tokenize=False,
                     add_generation_prompt=True,
@@ -357,39 +368,39 @@ class InternVLAdapter(ModelAdapter):
         if pil_images:
             image_input = pil_images[0] if len(pil_images) == 1 else pil_images
             try:
-                inputs = self._processor(text=prompt, images=image_input, return_tensors="pt").to(self._model.device)
+                inputs = processor(text=prompt, images=image_input, return_tensors="pt").to(model.device)
             except (TypeError, AttributeError) as e:
                 if "images" in str(e).lower() or "tokenizer" in str(e).lower():
                     inputs = self._processor_with_images_fallback(prompt, image_input)
                 else:
                     raise
         else:
-            inputs = self._processor(text=prompt, return_tensors="pt").to(self._model.device)
+            inputs = processor(text=prompt, return_tensors="pt").to(model.device)
 
         # 兼容 processor.tokenizer 与 processor 即 tokenizer 两种结构（InternVL3 等）
-        tok = getattr(self._processor, "tokenizer", self._processor)
+        tok = getattr(processor, "tokenizer", processor)
         pad_token_id = getattr(tok, "pad_token_id", None) or getattr(tok, "eos_token_id", None)
         # 避免 transformers 内部打印 "Setting pad_token_id to eos_token_id for open-end generation"
         if getattr(tok, "pad_token_id", None) is None and pad_token_id is not None:
             tok.pad_token_id = pad_token_id
-        if getattr(self._model, "generation_config", None) is not None and self._model.generation_config.pad_token_id is None:
-            self._model.generation_config.pad_token_id = pad_token_id
+        if getattr(model, "generation_config", None) is not None and model.generation_config.pad_token_id is None:
+            model.generation_config.pad_token_id = pad_token_id
 
         # InternVL3 generate() 需要 img_context_token_id，若未设置则从 tokenizer 获取
-        if hasattr(self._model, "img_context_token_id") and self._model.img_context_token_id is None:
+        if hasattr(model, "img_context_token_id") and model.img_context_token_id is None:
             unk_id = getattr(tok, "unk_token_id", None)
             for placeholder in ("<<IMG_CONTEXT>>", "<img>", "<|im_pixel|>"):
                 ids = tok.encode(placeholder, add_special_tokens=False)
                 if ids and (unk_id is None or ids[0] != unk_id):
-                    self._model.img_context_token_id = ids[0]
+                    model.img_context_token_id = ids[0]
                     break
-            if self._model.img_context_token_id is None and hasattr(self._model.config, "img_context_token_id"):
-                self._model.img_context_token_id = self._model.config.img_context_token_id
+            if model.img_context_token_id is None and hasattr(model.config, "img_context_token_id"):
+                model.img_context_token_id = model.config.img_context_token_id
 
         # 确保 pixel_values 与模型 dtype 一致（vision 期望 bfloat16/float16）
         if "pixel_values" in inputs:
             try:
-                model_dtype = next(self._model.parameters()).dtype
+                model_dtype = next(model.parameters()).dtype
             except StopIteration:
                 model_dtype = self._torch_dtype
             if inputs["pixel_values"].dtype != model_dtype:
@@ -397,7 +408,7 @@ class InternVLAdapter(ModelAdapter):
                 inputs["pixel_values"] = inputs["pixel_values"].to(model_dtype)
 
         with __import__("torch").no_grad():
-            output_ids = self._model.generate(
+            output_ids = model.generate(
                 **inputs,
                 max_new_tokens=max_tokens,
                 temperature=temperature,
@@ -409,7 +420,7 @@ class InternVLAdapter(ModelAdapter):
         # 只解码新生成部分
         input_len = inputs["input_ids"].shape[1]
         generated = output_ids[:, input_len:]
-        text = self._processor.decode(generated[0], skip_special_tokens=True)
+        text = processor.decode(generated[0], skip_special_tokens=True)
 
         if stop:
             for s in stop:
@@ -419,9 +430,14 @@ class InternVLAdapter(ModelAdapter):
 
     def _processor_with_images_fallback(self, prompt: str, image_input: Union["Image.Image", List["Image.Image"]]) -> Dict[str, Any]:
         """当 processor(text, images=...) 触发 tokenizer 的 images 参数错误时，分离调用 image_processor 与 tokenizer"""
+        if self._model is None or self._processor is None:
+            raise RuntimeError("InternVL model/processor not initialized")
+        model = self._model
+        processor = self._processor
+
         img_proc = (
-            getattr(self._processor, "image_processor", None)
-            or getattr(self._processor, "vision_processor", None)
+            getattr(processor, "image_processor", None)
+            or getattr(processor, "vision_processor", None)
         )
         if not img_proc:
             if self._image_processor is None:
@@ -431,15 +447,15 @@ class InternVLAdapter(ModelAdapter):
                 except Exception as e:
                     raise RuntimeError(f"processor has no image_processor and AutoImageProcessor.from_pretrained failed: {e}")
             img_proc = self._image_processor
-        tok = getattr(self._processor, "tokenizer", self._processor)
+        tok = getattr(processor, "tokenizer", processor)
         pixel_values = None
-        for args, kwargs in [
+        for call_args, call_kwargs in [
             ((), {"images": image_input, "return_tensors": "pt"}),
             ((), {"image": image_input, "return_tensors": "pt"}),
             ((image_input,), {"return_tensors": "pt"}),
         ]:
             try:
-                out = img_proc(*args, **kwargs)
+                out = img_proc(*call_args, **call_kwargs)
             except (TypeError, ValueError):
                 continue
             pixel_values = out.get("pixel_values") if hasattr(out, "get") else getattr(out, "pixel_values", None)
@@ -451,12 +467,12 @@ class InternVLAdapter(ModelAdapter):
         # 先跑一次 vision 获取 num_vision_tokens，再构建含正确数量占位符的 input_ids
         import torch
         try:
-            model_dtype = next(self._model.parameters()).dtype
+            model_dtype = next(model.parameters()).dtype
         except StopIteration:
             model_dtype = self._torch_dtype
         with torch.no_grad():
-            pv = pixel_values.to(device=self._model.device, dtype=model_dtype)
-            vit_embeds = self._model.extract_feature(pv)
+            pv = pixel_values.to(device=model.device, dtype=model_dtype)
+            vit_embeds = model.extract_feature(pv)
             num_vision_tokens = vit_embeds.shape[1] if vit_embeds.dim() > 1 else vit_embeds.shape[0]
         ctx_id = None
         for ph in ("<<IMG_CONTEXT>>", "<img>", "<|im_pixel|>"):
@@ -465,19 +481,19 @@ class InternVLAdapter(ModelAdapter):
                 ctx_id = ids[0]
                 break
         if ctx_id is None:
-            ctx_id = getattr(self._model, "img_context_token_id", None) or getattr(self._model.config, "img_context_token_id", None)
+            ctx_id = getattr(model, "img_context_token_id", None) or getattr(model.config, "img_context_token_id", None)
         if ctx_id is None:
             raise RuntimeError("Cannot determine img_context_token_id for InternVL")
         placeholder_ids = [ctx_id] * num_vision_tokens
         prompt_ids = tok.encode(prompt, add_special_tokens=False)
         # 过滤掉 prompt 中已有的 img_context_token，确保仅保留我们添加的 num_vision_tokens 个
         prompt_ids = [t for t in prompt_ids if t != ctx_id]
-        input_ids = torch.tensor([placeholder_ids + prompt_ids], dtype=torch.long, device=self._model.device)
+        input_ids = torch.tensor([placeholder_ids + prompt_ids], dtype=torch.long, device=model.device)
         inputs = {"input_ids": input_ids, "pixel_values": pixel_values}
-        inputs["attention_mask"] = torch.ones_like(input_ids, device=self._model.device)
-        device = self._model.device
+        inputs["attention_mask"] = torch.ones_like(input_ids, device=model.device)
+        device = model.device
         try:
-            model_dtype = next(self._model.parameters()).dtype
+            model_dtype = next(model.parameters()).dtype
         except StopIteration:
             model_dtype = self._torch_dtype
         # pixel_values 需与模型 dtype 一致（vision 期望 bfloat16/float16，image_processor 默认 float32）

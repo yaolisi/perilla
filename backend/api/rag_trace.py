@@ -2,9 +2,11 @@
 RAG Trace API
 提供 RAG Trace 的内部和外部 API
 """
-from fastapi import APIRouter, HTTPException, Request
-from typing import List, Dict, Any
+from fastapi import APIRouter, Request
+from typing import List, Dict, Any, Optional
 from log import logger
+
+from api.errors import raise_api_error
 from core.rag.trace_store import RAGTraceStore, RAGTraceStoreConfig
 from core.types import RAGTraceResponse, RAGTraceChunk
 from pathlib import Path
@@ -32,8 +34,8 @@ async def start_trace(
     embedding_model: str = "",
     vector_store: str = "sqlite-vec",
     top_k: int = 5,
-    request: Request = None,
-):
+    request: Optional[Request] = None,
+) -> Dict[str, Any]:
     """
     创建 RAG Trace（内部调用）
     
@@ -55,14 +57,15 @@ async def start_trace(
         return {"trace_id": trace_id}
     except Exception as e:
         logger.error(f"Failed to create trace: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="rag_trace_internal_error", message=str(e))
+        raise AssertionError("unreachable")
 
 
 @router.post("/internal/trace/{trace_id}/chunks")
 async def add_trace_chunks(
     trace_id: str,
     chunks: List[Dict[str, Any]],
-):
+) -> Dict[str, Any]:
     """
     追加检索结果 chunks（内部调用）
     
@@ -72,17 +75,19 @@ async def add_trace_chunks(
         _trace_store.add_chunks(trace_id, chunks)
         return {"success": True}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise_api_error(status_code=400, code="rag_trace_invalid_chunks", message=str(e), details={"trace_id": trace_id})
+        raise AssertionError("unreachable")
     except Exception as e:
         logger.error(f"Failed to add chunks to trace {trace_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="rag_trace_internal_error", message=str(e), details={"trace_id": trace_id})
+        raise AssertionError("unreachable")
 
 
 @router.post("/internal/trace/{trace_id}/finalize")
 async def finalize_trace(
     trace_id: str,
     injected_token_count: int,
-):
+) -> Dict[str, Any]:
     """
     完成 Trace（推理结束后调用，内部调用）
     
@@ -92,18 +97,20 @@ async def finalize_trace(
         _trace_store.finalize_trace(trace_id, injected_token_count)
         return {"success": True}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise_api_error(status_code=400, code="rag_trace_finalize_invalid", message=str(e), details={"trace_id": trace_id})
+        raise AssertionError("unreachable")
     except Exception as e:
         logger.error(f"Failed to finalize trace {trace_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="rag_trace_internal_error", message=str(e), details={"trace_id": trace_id})
+        raise AssertionError("unreachable")
 
 
 # =========================
 # 外部 API（供前端调用）
 # =========================
 
-@router.get("/trace/by-message/{message_id}", response_model=RAGTraceResponse)
-async def get_trace_by_message(message_id: str):
+@router.get("/trace/by-message/{message_id}")
+async def get_trace_by_message(message_id: str) -> RAGTraceResponse:
     """
     通过 message_id 获取 RAG Trace（前端调用）
     
@@ -126,11 +133,12 @@ async def get_trace_by_message(message_id: str):
         return RAGTraceResponse(rag_used=True, trace=trace)
     except Exception as e:
         logger.error(f"Failed to get trace for message {message_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="rag_trace_internal_error", message=str(e), details={"message_id": message_id})
+        raise AssertionError("unreachable")
 
 
-@router.get("/trace/{trace_id}", response_model=RAGTraceResponse)
-async def get_trace_by_id(trace_id: str):
+@router.get("/trace/{trace_id}")
+async def get_trace_by_id(trace_id: str) -> RAGTraceResponse:
     """
     通过 trace_id 获取 RAG Trace（前端兜底：当 by-message 查不到时可用 meta.rag.trace_id 查询）
     """
@@ -143,4 +151,5 @@ async def get_trace_by_id(trace_id: str):
         return RAGTraceResponse(rag_used=True, trace=trace)
     except Exception as e:
         logger.error(f"Failed to get trace by id {trace_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="rag_trace_internal_error", message=str(e), details={"trace_id": trace_id})
+        raise AssertionError("unreachable")

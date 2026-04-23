@@ -1,11 +1,12 @@
 """
 model.json 备份 API。前缀 /api/model-backups，与 /api/backup（数据库备份）区分。
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from api.errors import raise_api_error
 from core.backup.model_json import (
     create_backup,
     create_all_backups,
@@ -59,7 +60,7 @@ class CleanupRequest(BaseModel):
 
 
 @router.get("/status")
-async def api_backup_status():
+async def api_backup_status() -> Dict[str, Any]:
     """备份状态（阶段 2）：每日清单日期、最近全量等。"""
     manifests = list_daily_manifests()
     last_daily = manifests[0] if manifests else None
@@ -70,7 +71,7 @@ async def api_backup_status():
 
 
 @router.post("/create")
-async def api_create_backup(body: CreateBackupRequest):
+async def api_create_backup(body: CreateBackupRequest) -> Dict[str, Any]:
     """创建单模型备份（§13.1）。"""
     result = create_backup(
         body.model_id,
@@ -79,36 +80,46 @@ async def api_create_backup(body: CreateBackupRequest):
         source="api",
     )
     if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "backup failed"))
-    return result
+        raise_api_error(
+            status_code=400,
+            code="model_json_backup_failed",
+            message=str(result.get("error", "backup failed")),
+            details={"model_id": body.model_id},
+        )
+    return cast(Dict[str, Any], result)
 
 
 @router.post("/create-all")
-async def api_create_all_backups(body: CreateAllBackupRequest):
+async def api_create_all_backups(body: CreateAllBackupRequest) -> Dict[str, Any]:
     """创建全量快照（§13.2）。"""
     result = create_all_backups(reason=body.reason, source="api")
-    return result
+    return cast(Dict[str, Any], result)
 
 
 @router.get("")
-async def api_list_backups(model_id: Optional[str] = None, limit: int = 50):
+async def api_list_backups(model_id: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
     """查询备份记录（§13.3）。支持按 model_id 过滤。"""
     if limit < 1 or limit > 500:
         limit = 50
-    return list_backups(model_id=model_id, limit=limit)
+    return cast(Dict[str, Any], list_backups(model_id=model_id, limit=limit))
 
 
 @router.post("/delete")
-async def api_delete_backup(body: DeleteBackupRequest):
+async def api_delete_backup(body: DeleteBackupRequest) -> Dict[str, Any]:
     """删除指定备份的快照文件；索引追加 delete 事件用于审计。"""
     result = delete_backup(body.backup_id, source="api")
     if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "delete failed"))
-    return result
+        raise_api_error(
+            status_code=400,
+            code="model_json_backup_delete_failed",
+            message=str(result.get("error", "delete failed")),
+            details={"backup_id": body.backup_id},
+        )
+    return cast(Dict[str, Any], result)
 
 
 @router.post("/restore")
-async def api_restore_backup(body: RestoreBackupRequest):
+async def api_restore_backup(body: RestoreBackupRequest) -> Dict[str, Any]:
     """恢复备份（§13.4）。dry_run=true 仅校验不写入；恢复前会对当前版本做保护性备份。"""
     result = restore_backup(
         body.backup_id,
@@ -116,12 +127,17 @@ async def api_restore_backup(body: RestoreBackupRequest):
         source="api",
     )
     if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "restore failed"))
-    return result
+        raise_api_error(
+            status_code=400,
+            code="model_json_backup_restore_failed",
+            message=str(result.get("error", "restore failed")),
+            details={"backup_id": body.backup_id},
+        )
+    return cast(Dict[str, Any], result)
 
 
 @router.post("/restore-batch")
-async def api_restore_batch(body: RestoreBatchRequest):
+async def api_restore_batch(body: RestoreBatchRequest) -> Dict[str, Any]:
     """批量回滚（阶段 2）：将指定模型恢复到目标时间点前最近一次备份。"""
     result = restore_batch(
         body.target_timestamp_utc,
@@ -130,28 +146,45 @@ async def api_restore_batch(body: RestoreBatchRequest):
         source="api",
     )
     if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "batch restore failed"))
-    return result
+        raise_api_error(
+            status_code=400,
+            code="model_json_backup_batch_restore_failed",
+            message=str(result.get("error", "batch restore failed")),
+        )
+    return cast(Dict[str, Any], result)
 
 
 @router.get("/retention-dry-run")
-async def api_retention_dry_run(model_id: Optional[str] = None):
+async def api_retention_dry_run(model_id: Optional[str] = None) -> Dict[str, Any]:
     """保留策略 dry-run（阶段 2）：返回将被删除的快照列表，不实际删除。"""
-    return retention_dry_run(model_id=model_id)
+    return cast(Dict[str, Any], retention_dry_run(model_id=model_id))
 
 
 @router.post("/cleanup")
-async def api_cleanup(body: CleanupRequest):
+async def api_cleanup(body: CleanupRequest) -> Dict[str, Any]:
     """按保留策略清理快照（阶段 2）。dry_run 时仅返回报告。"""
-    return cleanup_retention(dry_run=body.dry_run, model_id=body.model_id)
+    return cast(
+        Dict[str, Any],
+        cleanup_retention(dry_run=body.dry_run, model_id=body.model_id),
+    )
 
 
 @router.get("/daily-manifests/{date_yyyymmdd}")
-async def api_get_daily_manifest(date_yyyymmdd: str):
+async def api_get_daily_manifest(date_yyyymmdd: str) -> Dict[str, Any]:
     """获取指定日期的每日快照清单（阶段 2）。date 格式 yyyyMMdd（8 位数字）。"""
     if len(date_yyyymmdd) != 8 or not date_yyyymmdd.isdigit():
-        raise HTTPException(status_code=400, detail="date_yyyymmdd must be 8 digits (yyyyMMdd)")
+        raise_api_error(
+            status_code=400,
+            code="model_json_manifest_invalid_date",
+            message="date_yyyymmdd must be 8 digits (yyyyMMdd)",
+            details={"date_yyyymmdd": date_yyyymmdd},
+        )
     manifest = read_daily_manifest(date_yyyymmdd)
     if manifest is None:
-        raise HTTPException(status_code=404, detail="manifest not found")
-    return manifest
+        raise_api_error(
+            status_code=404,
+            code="model_json_manifest_not_found",
+            message="manifest not found",
+            details={"date_yyyymmdd": date_yyyymmdd},
+        )
+    return cast(Dict[str, Any], manifest)

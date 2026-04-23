@@ -1,9 +1,6 @@
-"""
-统一的数据类型定义
-所有模型后端都基于这些类型进行交互
-"""
+from typing import AsyncIterator, List, Literal, Optional, Self, Union
+
 from pydantic import BaseModel, Field, model_validator
-from typing import List, Literal, Optional, AsyncIterator, Union
 
 # 消息角色（含 tool：用于 tool/skill 输出，表示环境观察而非用户意图）
 Role = Literal["system", "user", "assistant", "tool"]
@@ -16,7 +13,7 @@ class MessageContentItem(BaseModel):
     image_url: Optional[dict] = None
     
     @model_validator(mode='after')
-    def validate_content_item(self):
+    def validate_content_item(self) -> Self:
         if self.type == "text" and not self.text:
             raise ValueError("Text content item must have 'text' field")
         if self.type == "image_url" and not self.image_url:
@@ -41,7 +38,7 @@ class RAGConfig(BaseModel):
     max_context_tokens: int = Field(default=2000, ge=100, le=10000, description="RAG 上下文最大 token 数（用于截断）")
     
     @model_validator(mode='after')
-    def validate_knowledge_base(self):
+    def validate_knowledge_base(self) -> Self:
         """验证至少提供一个知识库 ID"""
         if not self.knowledge_base_id and not self.knowledge_base_ids:
             raise ValueError("Either knowledge_base_id or knowledge_base_ids must be provided")
@@ -108,7 +105,7 @@ class RAGTrace(BaseModel):
     injected_token_count: Optional[int] = None
     finalized: bool = False
     created_at: str
-    chunks: List[RAGTraceChunk] = []
+    chunks: List[RAGTraceChunk] = Field(default_factory=list)
 
 
 class RAGTraceResponse(BaseModel):

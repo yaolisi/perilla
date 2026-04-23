@@ -4,11 +4,15 @@ V2.7: Optimization Layer - Optimization Snapshot
 Kernel 可读的唯一优化数据源
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 import hashlib
 import json
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -38,7 +42,7 @@ class OptimizationSnapshot:
     skill_weights: Dict[str, float] = field(default_factory=dict)
     latency_estimates: Dict[str, float] = field(default_factory=dict)
     source_dataset_hash: str = ""
-    metadata: Dict[str, any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     def get_node_weight(self, node_id: str) -> float:
         """
@@ -115,7 +119,7 @@ class OptimizationSnapshot:
         """创建空快照"""
         return cls(
             version="empty_00000000",
-            created_at=datetime.utcnow(),
+            created_at=_utc_now(),
             node_weights={},
             skill_weights={},
             latency_estimates={},

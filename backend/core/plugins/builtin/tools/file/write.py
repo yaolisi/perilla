@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -32,28 +32,31 @@ class FileWriteTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "path": {
-                "type": "string",
-                "description": "File path: relative to workspace root, or absolute path under allowed roots."
-            },
-            "content": {
-                "type": "string",
-                "description": "Content to write to the file."
-            },
-            "encoding": {
-                "type": "string",
-                "description": "File encoding (default: utf-8).",
-                "default": "utf-8"
-            }
-        }, required=["path", "content"])
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "path": {
+                    "type": "string",
+                    "description": "File path: relative to workspace root, or absolute path under allowed roots."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Content to write to the file."
+                },
+                "encoding": {
+                    "type": "string",
+                    "description": "File encoding (default: utf-8).",
+                    "default": "utf-8"
+                }
+            }, required=["path", "content"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
         return {"type": "object", "properties": {"path": {"type": "string"}, "bytes_written": {"type": "integer"}}}
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["file.write"]
 
     @property

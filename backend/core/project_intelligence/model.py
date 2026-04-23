@@ -490,10 +490,10 @@ class ProjectModel:
         Useful for understanding which modules to process first.
         """
         # Simple topological sort
-        visited = set()
-        order = []
+        visited: set[str] = set()
+        order: List[str] = []
         
-        def visit(module_name: str):
+        def visit(module_name: str) -> None:
             if module_name in visited:
                 return
             visited.add(module_name)

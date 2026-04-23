@@ -6,10 +6,13 @@ YoloObjectDetectionAdapter: YOLOv8 目标检测适配器
 
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import TYPE_CHECKING, Any, List, Literal, Optional
 
-from ..models.detection_result import DetectedObject
 from log import logger
+from ..models.detection_result import DetectedObject
+
+if TYPE_CHECKING:
+    import torch
 
 
 DeviceType = Literal["cpu", "cuda", "mps"]
@@ -18,10 +21,10 @@ DeviceType = Literal["cpu", "cuda", "mps"]
 class YoloObjectDetectionAdapter:
     """YOLOv8 目标检测适配器"""
 
-    def __init__(self, model_path: str, device: str = "cpu"):
+    def __init__(self, model_path: str, device: str = "cpu") -> None:
         self._model_path = model_path
         self._device = self._resolve_device(device)
-        self._model = None
+        self._model: Optional[Any] = None
 
     def _resolve_device(self, device: str) -> str:
         import torch
@@ -37,7 +40,7 @@ class YoloObjectDetectionAdapter:
         if self._model is not None:
             return
         try:
-            from ultralytics import YOLO
+            from ultralytics import YOLO  # type: ignore[import-untyped]
         except ImportError:
             raise ImportError("ultralytics 未安装，请执行: pip install ultralytics")
         self._model = YOLO(self._model_path)
@@ -76,7 +79,6 @@ class YoloObjectDetectionAdapter:
         """
         self.load()
         _, _, h, w = image_tensor.shape
-        img_size = (w, h)
 
         # ultralytics 接受 numpy (H,W,C) 或 tensor，此处转为 numpy 便于兼容
         # 格式: (1,C,H,W) float 0~1 -> (H,W,C) uint8 0~255

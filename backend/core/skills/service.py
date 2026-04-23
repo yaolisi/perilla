@@ -3,14 +3,15 @@ Skill v1 业务逻辑：创建、列表、获取。
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from log import logger
 from core.skills.models import Skill, SkillType
+from core.skills.store import SkillStore
 from core.skills.store import get_skill_store as _get_skill_store
 
 
-def get_skill_store():
+def get_skill_store() -> SkillStore:
     """获取 Skill 存储单例（使用 store.py 中的实现）"""
     return _get_skill_store()
 
@@ -25,7 +26,9 @@ def create_skill(
     enabled: bool = True,
 ) -> Skill:
     store = get_skill_store()
-    return store.create(
+    return cast(
+        Skill,
+        store.create(
         name=name,
         description=description,
         category=category,
@@ -33,15 +36,16 @@ def create_skill(
         definition=definition,
         input_schema=input_schema,
         enabled=enabled,
+        ),
     )
 
 
 def list_skills(enabled_only: bool = False) -> List[Skill]:
-    return get_skill_store().list_all(enabled_only=enabled_only)
+    return cast(List[Skill], get_skill_store().list_all(enabled_only=enabled_only))
 
 
 def get_skill(skill_id: str) -> Optional[Skill]:
-    return get_skill_store().get(skill_id)
+    return cast(Optional[Skill], get_skill_store().get(skill_id))
 
 
 def update_skill(
@@ -73,7 +77,7 @@ def update_skill(
     if updated:
         from core.skills.registry import SkillRegistry
         SkillRegistry.register(updated)
-    return updated
+    return cast(Optional[Skill], updated)
 
 
 def delete_skill(skill_id: str) -> bool:
@@ -85,7 +89,7 @@ def delete_skill(skill_id: str) -> bool:
     if ok:
         from core.skills.registry import SkillRegistry
         SkillRegistry.unregister(skill_id)
-    return ok
+    return cast(bool, ok)
 
 
 def bootstrap_builtin_skills() -> int:

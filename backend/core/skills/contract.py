@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 
 @dataclass
@@ -67,7 +66,7 @@ class SkillExecutionResponse:
     trace_id: str = ""
     
     @classmethod
-    def success(cls, output: Dict[str, Any], **kwargs) -> "SkillExecutionResponse":
+    def success(cls, output: Dict[str, Any], **kwargs: Any) -> "SkillExecutionResponse":
         return cls(
             status="success",
             output=output,
@@ -79,7 +78,7 @@ class SkillExecutionResponse:
         )
     
     @classmethod
-    def error(cls, error_code: str, error_message: str, **kwargs) -> "SkillExecutionResponse":
+    def failure(cls, error_code: str, error_message: str, **kwargs: Any) -> "SkillExecutionResponse":
         return cls(
             status="error",
             output=None,
@@ -94,7 +93,7 @@ class SkillExecutionResponse:
         )
     
     @classmethod
-    def timeout(cls, timeout_ms: int, **kwargs) -> "SkillExecutionResponse":
+    def timeout(cls, timeout_ms: int, **kwargs: Any) -> "SkillExecutionResponse":
         return cls(
             status="timeout",
             output=None,
@@ -142,7 +141,7 @@ class ExecutionMetrics:
     # 成本估算（为未来计费功能预留）
     cost_usd: float = 0.0
     
-    def finalize(self):
+    def finalize(self) -> None:
         """完成指标收集"""
         self.end_time = time.perf_counter()
         self.latency_ms = (self.end_time - self.start_time) * 1000

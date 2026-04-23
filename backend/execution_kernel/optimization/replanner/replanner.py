@@ -11,7 +11,7 @@ V2.7: Optimization Layer - Replanner
 
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,10 @@ from execution_kernel.models.graph_instance import GraphInstanceStateDB
 
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -50,7 +54,7 @@ class ReplanRecord:
     new_instance_id: str
     reason: str
     planner_version: str
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utc_now)
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> dict:
@@ -204,7 +208,7 @@ class Replanner:
             "failed_instance_id": failed_instance_id,
             "reason": reason,
             "planner_version": planner_version,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": _utc_now().isoformat(),
         }
         
         # 获取失败实例的节点输出（用于 preserve）

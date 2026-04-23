@@ -5,12 +5,16 @@ Concurrency Limiter
 """
 
 import asyncio
-from typing import Dict, Optional, Set
+from typing import Any, Dict, Optional, Set
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 import threading
 
 from log import logger
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass
@@ -18,7 +22,7 @@ class ConcurrencySlot:
     """并发槽位"""
     execution_id: str
     workflow_id: str
-    acquired_at: datetime = field(default_factory=datetime.utcnow)
+    acquired_at: datetime = field(default_factory=_utc_now)
 
 
 class ConcurrencyLimiter:
@@ -187,7 +191,7 @@ class ConcurrencyLimiter:
         )
         return True
     
-    def get_status(self) -> Dict[str, any]:
+    def get_status(self) -> Dict[str, Any]:
         """获取并发状态"""
         with self._slots_lock:
             active_count = len(self._slots)

@@ -4,7 +4,7 @@ V2.7: Optimization Layer - Default Scheduler Policy
 默认调度策略，保持与 V2.6 完全一致的行为
 """
 
-from typing import Optional
+from typing import List, Optional
 
 from execution_kernel.models.graph_definition import NodeDefinition
 from execution_kernel.optimization.scheduler.policy_base import SchedulerPolicy, PolicyContext
@@ -59,10 +59,10 @@ class DefaultPolicy(SchedulerPolicy):
     
     def sort_nodes(
         self,
-        nodes,
+        nodes: List[NodeDefinition],
         context: PolicyContext,
         snapshot: Optional[OptimizationSnapshot] = None,
-    ):
+    ) -> List[NodeDefinition]:
         """
         对节点列表进行排序
         

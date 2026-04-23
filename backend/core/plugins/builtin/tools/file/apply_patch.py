@@ -10,7 +10,7 @@ Safety controls:
 """
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from core.tools.base import Tool
 from core.tools.context import ToolContext
@@ -37,7 +37,7 @@ def _get_allowed_absolute_roots() -> list:
         return [str(Path.home())]
 
 
-def _parse_unified_diff(patch_content: str) -> Tuple[List[Dict], Optional[str]]:
+def _parse_unified_diff(patch_content: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
     Parse unified diff format and return list of file patches.
     
@@ -46,10 +46,10 @@ def _parse_unified_diff(patch_content: str) -> Tuple[List[Dict], Optional[str]]:
         file_patches: [{"filename": str, "hunks": [hunk dicts]}]
     """
     lines = patch_content.splitlines(keepends=True)
-    file_patches = []
+    file_patches: List[Dict[str, Any]] = []
     current_file = None
-    current_hunks = []
-    current_hunk = None
+    current_hunks: List[Dict[str, Any]] = []
+    current_hunk: Optional[Dict[str, Any]] = None
     
     for i, line in enumerate(lines):
         # File header: --- a/filename
@@ -92,17 +92,17 @@ def _parse_unified_diff(patch_content: str) -> Tuple[List[Dict], Optional[str]]:
         elif current_hunk is not None:
             # Hunk content
             if line.startswith(' '):
-                current_hunk["lines"].append((' ', line[1:]))
+                cast(List[Tuple[str, str]], current_hunk["lines"]).append((' ', line[1:]))
             elif line.startswith('-'):
-                current_hunk["lines"].append(('-', line[1:]))
+                cast(List[Tuple[str, str]], current_hunk["lines"]).append(('-', line[1:]))
             elif line.startswith('+'):
-                current_hunk["lines"].append(('+', line[1:]))
+                cast(List[Tuple[str, str]], current_hunk["lines"]).append(('+', line[1:]))
             elif line.startswith('\\'):
                 # "\ No newline at end of file" - ignore
                 pass
             elif line.strip() == '':
                 # Empty line might be context with trailing newline
-                current_hunk["lines"].append((' ', '\n'))
+                cast(List[Tuple[str, str]], current_hunk["lines"]).append((' ', '\n'))
     
     # Add last hunk and file
     if current_hunk:
@@ -116,7 +116,7 @@ def _parse_unified_diff(patch_content: str) -> Tuple[List[Dict], Optional[str]]:
     return file_patches, None
 
 
-def _count_patch_lines(file_patches: List[Dict]) -> Tuple[int, int]:
+def _count_patch_lines(file_patches: List[Dict[str, Any]]) -> Tuple[int, int]:
     """Count lines added and removed in patch."""
     lines_added = 0
     lines_removed = 0
@@ -132,7 +132,9 @@ def _count_patch_lines(file_patches: List[Dict]) -> Tuple[int, int]:
     return lines_added, lines_removed
 
 
-def _apply_patch_to_content(original_lines: List[str], hunks: List[Dict]) -> Tuple[List[str], Optional[str]]:
+def _apply_patch_to_content(
+    original_lines: List[str], hunks: List[Dict[str, Any]]
+) -> Tuple[List[str], Optional[str]]:
     """
     Apply hunks to original content.
     
@@ -195,12 +197,15 @@ class FileApplyPatchTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "patch": {
-                "type": "string",
-                "description": "Unified diff format string (can patch multiple files).",
-            },
-        }, required=["patch"])
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "patch": {
+                    "type": "string",
+                    "description": "Unified diff format string (can patch multiple files).",
+                },
+            }, required=["patch"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -222,7 +227,7 @@ class FileApplyPatchTool(Tool):
         }
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["file.write"]
 
     @property

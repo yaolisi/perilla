@@ -9,7 +9,7 @@ from .apply_patch import FileApplyPatchTool
 from .search import FileSearchTool
 from .tree import FileTreeTool
 
-def register():
+def register() -> None:
     ToolRegistry.register(FileReadTool())
     ToolRegistry.register(FileListTool())
     ToolRegistry.register(FileWriteTool())

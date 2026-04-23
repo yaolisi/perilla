@@ -5,8 +5,12 @@ Graph Patch Protocol (Phase B)
 
 from enum import Enum
 from typing import Dict, List, Optional, Any, Union
-from pydantic import BaseModel, Field
-from datetime import datetime
+from pydantic import BaseModel, ConfigDict, Field
+from datetime import UTC, datetime
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class PatchOperationType(str, Enum):
@@ -73,12 +77,11 @@ class GraphPatch(BaseModel):
     base_version: str = Field(..., description="基于的图版本")
     target_version: str = Field(..., description="目标图版本")
     operations: List[PatchOperation] = Field(default_factory=list, description="操作列表")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="创建时间")
+    created_at: datetime = Field(default_factory=_utc_now, description="创建时间")
     created_by: Optional[str] = Field(default=None, description="创建者")
     reason: Optional[str] = Field(default=None, description="Patch 原因（如 RePlan）")
     
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
 
 class GraphPatchResult(BaseModel):
@@ -90,7 +93,7 @@ class GraphPatchResult(BaseModel):
     applied_operations: int = Field(default=0, description="成功应用的操作数")
     failed_operations: int = Field(default=0, description="失败的操作数")
     errors: List[str] = Field(default_factory=list, description="错误信息")
-    applied_at: datetime = Field(default_factory=datetime.utcnow, description="应用时间")
+    applied_at: datetime = Field(default_factory=_utc_now, description="应用时间")
 
 
 class GraphVersionInfo(BaseModel):
@@ -114,7 +117,7 @@ class ExecutionPointer(BaseModel):
     running_nodes: List[str] = Field(default_factory=list, description="运行中节点")
     failed_nodes: List[str] = Field(default_factory=list, description="失败节点")
     graph_version: str = Field(..., description="当前图版本")
-    updated_at: datetime = Field(default_factory=datetime.utcnow, description="更新时间")
+    updated_at: datetime = Field(default_factory=_utc_now, description="更新时间")
 
 
 class PatchMigrationStrategy(str, Enum):

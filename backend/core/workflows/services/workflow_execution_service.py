@@ -4,14 +4,15 @@ Workflow Execution Service
 WorkflowExecution 的业务逻辑层。
 """
 
-from typing import List, Optional, Dict, Any
-from datetime import datetime
+from typing import List, Optional, Dict, Any, cast
+from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from core.workflows.models import (
     WorkflowExecution,
     WorkflowExecutionState,
     WorkflowExecutionNode,
+    WorkflowExecutionNodeState,
     WorkflowExecutionCreateRequest
 )
 from core.workflows.repository import WorkflowExecutionRepository, WorkflowVersionRepository
@@ -50,55 +51,16 @@ class WorkflowExecutionService:
         triggered_by: Optional[str] = None
     ) -> WorkflowExecution:
         """创建执行"""
-        # 获取版本
-        if request.version_id:
-            version = self.version_repository.get_version_by_id(request.version_id)
-        else:
-            # 使用已发布版本
-            version = self.version_repository.get_published_version(request.workflow_id)
-            # 编辑联调场景：若尚未发布版本，回退到最新版本（通常是 draft）
-            if not version:
-                if not self._allow_draft_execution():
-                    raise ValueError(
-                        f"No published version for workflow {request.workflow_id}. "
-                        "Draft execution is disabled by config."
-                    )
-                latest_versions = self.version_repository.list_versions_by_workflow(
-                    workflow_id=request.workflow_id,
-                    limit=1,
-                    offset=0,
-                )
-                version = latest_versions[0] if latest_versions else None
-                if version:
-                    now_ts = datetime.utcnow().timestamp()
-                    last_ts = float(self._draft_fallback_warn_ts_by_workflow.get(request.workflow_id, 0.0) or 0.0)
-                    warn_interval_s = float(getattr(settings, "workflow_draft_fallback_warn_interval_seconds", 60.0) or 60.0)
-                    if now_ts - last_ts >= max(1.0, warn_interval_s):
-                        logger.warning(
-                            "[WorkflowExecutionService] No published version for workflow %s, fallback to latest version %s (state=%s)",
-                            request.workflow_id,
-                            version.version_id,
-                            version.state.value,
-                        )
-                        self._draft_fallback_warn_ts_by_workflow[request.workflow_id] = now_ts
+        version = self._resolve_execution_version(request)
         
         if not version:
             raise ValueError(f"No executable version found for workflow {request.workflow_id}")
         
-        # 检查版本是否可执行
-        trigger_type = (request.trigger_type or "manual").lower()
-        allow_draft_for_manual_run = self._allow_draft_execution() and (
-            trigger_type in {"manual", "api", "debug"}
-        )
-        if not version.can_execute():
-            if not (version.state.value == "draft" and allow_draft_for_manual_run):
-                raise ValueError(
-                    f"Version {version.version_id} is not executable (state: {version.state.value})"
-                )
+        self._validate_version_executable(version, request.trigger_type)
 
         # 执行前兜底校验：Condition 节点必须具备 true/false 双分支
         # 防止前端边触发配置缺失导致两个分支都被调度。
-        preflight_errors = version.dag.validate(
+        preflight_errors = version.dag.validate_dag(
             require_condition_branches=True,
             require_loop_branches=True,
         )
@@ -129,6 +91,60 @@ class WorkflowExecutionService:
         created = self.repository.create(execution)
         logger.info(f"[WorkflowExecutionService] Created execution: {created.execution_id}")
         return created
+
+    def _resolve_execution_version(
+        self, request: WorkflowExecutionCreateRequest
+    ) -> Optional[Any]:
+        if request.version_id:
+            return self.version_repository.get_version_by_id(request.version_id)
+
+        version = self.version_repository.get_published_version(request.workflow_id)
+        if version:
+            return version
+
+        if not self._allow_draft_execution():
+            raise ValueError(
+                f"No published version for workflow {request.workflow_id}. "
+                "Draft execution is disabled by config."
+            )
+        latest_versions = self.version_repository.list_versions_by_workflow(
+            workflow_id=request.workflow_id,
+            limit=1,
+            offset=0,
+        )
+        fallback = latest_versions[0] if latest_versions else None
+        if fallback:
+            self._maybe_warn_draft_fallback(request.workflow_id, fallback.version_id, fallback.state.value)
+        return fallback
+
+    def _maybe_warn_draft_fallback(self, workflow_id: str, version_id: str, version_state: str) -> None:
+        now_ts = datetime.now(UTC).timestamp()
+        last_ts = float(self._draft_fallback_warn_ts_by_workflow.get(workflow_id, 0.0) or 0.0)
+        warn_interval_s = float(
+            getattr(settings, "workflow_draft_fallback_warn_interval_seconds", 60.0) or 60.0
+        )
+        if now_ts - last_ts < max(1.0, warn_interval_s):
+            return
+        logger.warning(
+            "[WorkflowExecutionService] No published version for workflow %s, fallback to latest version %s (state=%s)",
+            workflow_id,
+            version_id,
+            version_state,
+        )
+        self._draft_fallback_warn_ts_by_workflow[workflow_id] = now_ts
+
+    def _validate_version_executable(self, version: Any, trigger_type: Optional[str]) -> None:
+        normalized_trigger_type = (trigger_type or "manual").lower()
+        allow_draft_for_manual_run = self._allow_draft_execution() and (
+            normalized_trigger_type in {"manual", "api", "debug"}
+        )
+        if version.can_execute():
+            return
+        if version.state.value == "draft" and allow_draft_for_manual_run:
+            return
+        raise ValueError(
+            f"Version {version.version_id} is not executable (state: {version.state.value})"
+        )
     
     def get_execution(self, execution_id: str) -> Optional[WorkflowExecution]:
         """获取执行"""
@@ -143,13 +159,13 @@ class WorkflowExecutionService:
         offset: int = 0
     ) -> List[WorkflowExecution]:
         """列出执行"""
-        return self.repository.list_executions(
+        return cast(List[WorkflowExecution], self.repository.list_executions(
             workflow_id=workflow_id,
             version_id=version_id,
             state=state,
             limit=limit,
             offset=offset
-        )
+        ))
 
     def count_executions(
         self,
@@ -158,12 +174,12 @@ class WorkflowExecutionService:
         state: Optional[WorkflowExecutionState] = None,
         trigger_type: Optional[str] = None,
     ) -> int:
-        return self.repository.count_executions(
+        return cast(int, self.repository.count_executions(
             workflow_id=workflow_id,
             version_id=version_id,
             state=state,
             trigger_type=trigger_type,
-        )
+        ))
     
     def start_execution(
         self,
@@ -262,7 +278,7 @@ class WorkflowExecutionService:
         self,
         execution_id: str,
         node_id: str,
-        state: WorkflowExecutionState,
+        state: WorkflowExecutionNodeState,
         output_data: Optional[Dict[str, Any]] = None,
         error_message: Optional[str] = None
     ) -> Optional[WorkflowExecution]:
@@ -271,33 +287,53 @@ class WorkflowExecutionService:
         if not execution:
             return None
         
-        # 更新节点状态
-        for node in execution.node_states:
-            if node.node_id == node_id:
-                node.state = state
-                if output_data:
-                    node.output_data = output_data
-                if error_message:
-                    node.error_message = error_message
-                if state == WorkflowExecutionState.RUNNING and not node.started_at:
-                    node.started_at = datetime.utcnow()
-                if state in [
-                    WorkflowExecutionState.COMPLETED,
-                    WorkflowExecutionState.FAILED,
-                    WorkflowExecutionState.CANCELLED
-                ]:
-                    node.finished_at = datetime.utcnow()
-                break
+        self._apply_node_state_update(
+            execution=execution,
+            node_id=node_id,
+            state=state,
+            output_data=output_data,
+            error_message=error_message,
+        )
         
         updated = self.repository.update_node_states(execution_id, execution.node_states)
         return updated
+
+    def _apply_node_state_update(
+        self,
+        *,
+        execution: WorkflowExecution,
+        node_id: str,
+        state: WorkflowExecutionNodeState,
+        output_data: Optional[Dict[str, Any]],
+        error_message: Optional[str],
+    ) -> None:
+        terminal_states = {
+            WorkflowExecutionNodeState.SUCCESS,
+            WorkflowExecutionNodeState.FAILED,
+            WorkflowExecutionNodeState.CANCELLED,
+            WorkflowExecutionNodeState.TIMEOUT,
+            WorkflowExecutionNodeState.SKIPPED,
+        }
+        for node in execution.node_states:
+            if node.node_id != node_id:
+                continue
+            node.state = state
+            if output_data:
+                node.output_data = output_data
+            if error_message:
+                node.error_message = error_message
+            if state == WorkflowExecutionNodeState.RUNNING and not node.started_at:
+                node.started_at = datetime.now(UTC)
+            if state in terminal_states:
+                node.finished_at = datetime.now(UTC)
+            return
     
     def get_running_executions(
         self,
         workflow_id: Optional[str] = None
     ) -> List[WorkflowExecution]:
         """获取正在执行的记录"""
-        return self.repository.get_running_executions(workflow_id)
+        return cast(List[WorkflowExecution], self.repository.get_running_executions(workflow_id))
     
     def get_execution_stats(
         self,
@@ -326,7 +362,7 @@ class WorkflowExecutionService:
         """清理旧执行记录"""
         deleted = self.repository.delete_old_executions(workflow_id, keep_count)
         logger.info(f"[WorkflowExecutionService] Cleaned up {deleted} old executions for {workflow_id}")
-        return deleted
+        return cast(int, deleted)
 
     def delete_execution(self, execution_id: str) -> bool:
         """删除单条执行记录（仅允许终态）"""
@@ -337,4 +373,4 @@ class WorkflowExecutionService:
             raise ValueError(
                 f"Cannot delete execution in state {execution.state.value}; cancel or wait for completion first"
             )
-        return self.repository.delete_by_id(execution_id)
+        return cast(bool, self.repository.delete_by_id(execution_id))

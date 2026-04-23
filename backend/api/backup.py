@@ -2,11 +2,12 @@
 数据库备份 API
 """
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from api.errors import APIException, raise_api_error
 from config.settings import settings
 from core.backup import (
     BackupConfig,
@@ -101,7 +102,7 @@ class DatabaseStatusResponse(BaseModel):
 
 
 @router.get("/status")
-async def get_database_status():
+async def get_database_status() -> DatabaseStatusResponse:
     """获取数据库状态"""
     try:
         manager = get_backup_manager()
@@ -131,11 +132,12 @@ async def get_database_status():
         )
     except Exception as e:
         logger.error(f"[BackupAPI] Failed to get database status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="backup_internal_error", message=str(e))
+        raise AssertionError("unreachable")
 
 
 @router.get("/config")
-async def get_backup_config():
+async def get_backup_config() -> Dict[str, Any]:
     """获取备份配置"""
     try:
         manager = get_backup_manager()
@@ -152,11 +154,12 @@ async def get_backup_config():
         }
     except Exception as e:
         logger.error(f"[BackupAPI] Failed to get backup config: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="backup_internal_error", message=str(e))
+        raise AssertionError("unreachable")
 
 
 @router.post("/config")
-async def update_backup_config(config_data: BackupConfigRequest):
+async def update_backup_config(config_data: BackupConfigRequest) -> Dict[str, Any]:
     """更新备份配置"""
     try:
         manager = get_backup_manager()
@@ -187,11 +190,12 @@ async def update_backup_config(config_data: BackupConfigRequest):
         logger.error(
             f"[BackupAPI] Failed to update backup config: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="backup_internal_error", message=str(e))
+        raise AssertionError("unreachable")
 
 
 @router.post("/create")
-async def create_backup():
+async def create_backup() -> Dict[str, Any]:
     """手动创建备份"""
     try:
         manager = get_backup_manager()
@@ -207,18 +211,22 @@ async def create_backup():
                 "duration_seconds": result.duration_seconds,
             }
         else:
-            raise HTTPException(
-                status_code=500, detail=result.error_message or "Backup failed"
+            raise_api_error(
+                status_code=500,
+                code="backup_create_failed",
+                message=result.error_message or "Backup failed",
             )
-    except HTTPException:
+            raise AssertionError("unreachable")
+    except APIException:
         raise
     except Exception as e:
         logger.error(f"[BackupAPI] Failed to create backup: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="backup_internal_error", message=str(e))
+        raise AssertionError("unreachable")
 
 
 @router.post("/restore/{backup_id}")
-async def restore_backup(backup_id: str):
+async def restore_backup(backup_id: str) -> Dict[str, Any]:
     """恢复备份"""
     try:
         manager = get_backup_manager()
@@ -231,21 +239,24 @@ async def restore_backup(backup_id: str):
                 "duration_seconds": result.duration_seconds,
             }
         else:
-            raise HTTPException(
+            raise_api_error(
                 status_code=500,
-                detail=result.error_message or "Restore failed",
+                code="backup_restore_failed",
+                message=result.error_message or "Restore failed",
             )
-    except HTTPException:
+            raise AssertionError("unreachable")
+    except APIException:
         raise
     except Exception as e:
         logger.error(
             f"[BackupAPI] Failed to restore backup {backup_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="backup_internal_error", message=str(e))
+        raise AssertionError("unreachable")
 
 
 @router.get("/history")
-async def list_backups():
+async def list_backups() -> List[Dict[str, Any]]:
     """列出备份历史"""
     try:
         manager = get_backup_manager()
@@ -265,11 +276,12 @@ async def list_backups():
         ]
     except Exception as e:
         logger.error(f"[BackupAPI] Failed to list backups: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="backup_internal_error", message=str(e))
+        raise AssertionError("unreachable")
 
 
 @router.delete("/{backup_id}")
-async def delete_backup(backup_id: str):
+async def delete_backup(backup_id: str) -> Dict[str, Any]:
     """删除备份"""
     try:
         manager = get_backup_manager()
@@ -278,18 +290,25 @@ async def delete_backup(backup_id: str):
         if success:
             return {"success": True}
         else:
-            raise HTTPException(status_code=404, detail="Backup not found")
-    except HTTPException:
+            raise_api_error(
+                status_code=404,
+                code="backup_not_found",
+                message="Backup not found",
+                details={"backup_id": backup_id},
+            )
+            raise AssertionError("unreachable")
+    except APIException:
         raise
     except Exception as e:
         logger.error(
             f"[BackupAPI] Failed to delete backup {backup_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(status_code=500, code="backup_internal_error", message=str(e))
+        raise AssertionError("unreachable")
 
 
 @router.post("/browse-directory")
-async def browse_directory():
+async def browse_directory() -> Dict[str, Optional[str]]:
     """浏览备份目录（复用系统 API 的逻辑）"""
     import platform
     import subprocess

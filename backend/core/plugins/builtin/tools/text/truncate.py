@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -16,7 +16,7 @@ class TextTruncateTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
+        return cast(Dict[str, Any], create_input_schema({
             "text": {
                 "type": "string",
                 "description": "The text to truncate."
@@ -36,14 +36,14 @@ class TextTruncateTool(Tool):
                 "enum": ["start", "end", "middle"],
                 "default": "end"
             }
-        }, required=["text", "max_length"])
+        }, required=["text", "max_length"]))
 
     @property
     def output_schema(self) -> Dict[str, Any]:
         return {"type": "string"}
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return []
 
     @property

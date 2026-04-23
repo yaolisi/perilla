@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Dict, Any
+from typing import Dict, Any, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -17,7 +17,7 @@ class TimeNowTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
+        return cast(Dict[str, Any], create_input_schema({
             "format": {
                 "type": "string",
                 "description": "Output format: 'iso' (ISO 8601), 'unix' (Unix timestamp), 'custom' (use format string).",
@@ -33,7 +33,7 @@ class TimeNowTool(Tool):
                 "description": "Timezone name (e.g., 'UTC', 'Asia/Shanghai', 'America/New_York'). Default: UTC.",
                 "default": "UTC"
             }
-        })
+        }))
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -43,7 +43,7 @@ class TimeNowTool(Tool):
         }
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return []
 
     @property
@@ -65,7 +65,7 @@ class TimeNowTool(Tool):
                 tz = timezone.utc
             else:
                 try:
-                    import pytz
+                    import pytz  # type: ignore[import-untyped]
                     tz = pytz.timezone(tz_name)
                 except ImportError:
                     return ToolResult(
@@ -82,6 +82,7 @@ class TimeNowTool(Tool):
 
             now = datetime.now(tz)
 
+            result: Any = now.isoformat()
             if format_type == "iso":
                 result = now.isoformat()
             elif format_type == "unix":

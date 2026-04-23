@@ -27,12 +27,12 @@ class QwenVLAdapter(ModelAdapter):
     支持多图、多轮对话。
     """
 
-    def __init__(self):
-        self._model = None
-        self._processor = None
+    def __init__(self) -> None:
+        self._model: Any = None
+        self._processor: Any = None
         self._model_name: Optional[str] = None
         self._device: str = "auto"
-        self._torch_dtype = None
+        self._torch_dtype: Any = None
         self._max_image_side: int = 1536
         self._max_image_pixels: int = 1_572_864  # ~1.5MP
 
@@ -182,19 +182,24 @@ class QwenVLAdapter(ModelAdapter):
         temperature: float = 0.7,
         top_p: float = 1.0,
         stop: Optional[List[str]] = None,
-        **kwargs
+        **kwargs: Any
     ) -> str:
         if not self.is_loaded:
             raise RuntimeError("Model not loaded")
+        if self._model is None or self._processor is None:
+            raise RuntimeError("Qwen model/processor not initialized")
+
+        model = self._model
+        processor = self._processor
 
         pil_images, processed_messages = _extract_images_from_messages(messages, images)
         if pil_images:
             pil_images = [self._normalize_image(im) for im in pil_images]
 
         # 优先使用 model.chat() 方法（适用于 Qwen3-VL 等）
-        if hasattr(self._model, "chat"):
+        if hasattr(model, "chat"):
             import torch
-            tokenizer = getattr(self._processor, "tokenizer", self._processor)
+            tokenizer = getattr(processor, "tokenizer", processor)
             
             # 提取文本内容
             question_parts: List[str] = []
@@ -230,8 +235,8 @@ class QwenVLAdapter(ModelAdapter):
             pixel_values = None
             if pil_images:
                 img_proc = (
-                    getattr(self._processor, "image_processor", None)
-                    or getattr(self._processor, "vision_processor", None)
+                    getattr(processor, "image_processor", None)
+                    or getattr(processor, "vision_processor", None)
                 )
                 if img_proc:
                     image_input = pil_images[0] if len(pil_images) == 1 else pil_images
@@ -239,10 +244,10 @@ class QwenVLAdapter(ModelAdapter):
                     pixel_values = out.get("pixel_values") if hasattr(out, "get") else getattr(out, "pixel_values", None)
                     if pixel_values is not None:
                         try:
-                            model_dtype = next(self._model.parameters()).dtype
+                            model_dtype = next(model.parameters()).dtype
                         except StopIteration:
                             model_dtype = self._torch_dtype
-                        pixel_values = pixel_values.to(device=self._model.device, dtype=model_dtype)
+                        pixel_values = pixel_values.to(device=model.device, dtype=model_dtype)
             
             generation_config = {
                 "max_new_tokens": int(max_tokens),
@@ -260,7 +265,7 @@ class QwenVLAdapter(ModelAdapter):
                     ((tokenizer, pixel_values, question, generation_config), {"history": None, "return_history": True}),
                 ]:
                     try:
-                        out = self._model.chat(*args, **kwargs_chat)
+                        out = model.chat(*args, **kwargs_chat)
                         if isinstance(out, tuple):
                             result = (out[0] or "").strip()
                         else:
@@ -277,7 +282,7 @@ class QwenVLAdapter(ModelAdapter):
         
         # 回退路径：使用 processor + model.generate()（适用于 Qwen2-VL）
         # Qwen2-VL 使用 processor 的 apply_chat_template 构建多模态输入
-        text = self._processor.apply_chat_template(
+        text = processor.apply_chat_template(
             processed_messages,
             tokenize=False,
             add_generation_prompt=True,
@@ -286,57 +291,57 @@ class QwenVLAdapter(ModelAdapter):
         # 构建 processor 输入
         if pil_images:
             if len(pil_images) == 1:
-                inputs = self._processor(
+                inputs = processor(
                     text=[text],
                     images=[pil_images[0]],
                     padding=True,
                     return_tensors="pt",
                 )
             else:
-                inputs = self._processor(
+                inputs = processor(
                     text=[text],
                     images=[pil_images],
                     padding=True,
                     return_tensors="pt",
                 )
         else:
-            inputs = self._processor(
+            inputs = processor(
                 text=[text],
                 padding=True,
                 return_tensors="pt",
             )
 
-        inputs = {k: v.to(self._model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
 
         # 确保 pixel_values 与模型 dtype 一致
         if "pixel_values" in inputs:
             try:
-                model_dtype = next(self._model.parameters()).dtype
+                model_dtype = next(model.parameters()).dtype
             except StopIteration:
                 model_dtype = self._torch_dtype
             if inputs["pixel_values"].dtype != model_dtype:
                 inputs = dict(inputs)
                 inputs["pixel_values"] = inputs["pixel_values"].to(model_dtype)
 
-        tok = getattr(self._processor, "tokenizer", self._processor)
+        tok = getattr(processor, "tokenizer", processor)
         pad_token_id = getattr(tok, "pad_token_id", None) or getattr(tok, "eos_token_id", None)
         # 避免 transformers 内部打印 "Setting pad_token_id to eos_token_id for open-end generation"
         if getattr(tok, "pad_token_id", None) is None and pad_token_id is not None:
             tok.pad_token_id = pad_token_id
-        if getattr(self._model, "generation_config", None) is not None and self._model.generation_config.pad_token_id is None:
-            self._model.generation_config.pad_token_id = pad_token_id
+        if getattr(model, "generation_config", None) is not None and model.generation_config.pad_token_id is None:
+            model.generation_config.pad_token_id = pad_token_id
 
         # 检查模型是否有 generate 方法
-        if not hasattr(self._model, "generate"):
+        if not hasattr(model, "generate"):
             raise RuntimeError(
-                f"Model {type(self._model).__name__} does not have 'generate' method. "
+                f"Model {type(model).__name__} does not have 'generate' method. "
                 f"Please check if the model supports generation or if 'chat' method should be used instead."
             )
 
         import torch
         try:
             with torch.no_grad():
-                output_ids = self._model.generate(
+                output_ids = model.generate(
                     **inputs,
                     max_new_tokens=max_tokens,
                     temperature=temperature if temperature > 0 else None,
@@ -350,29 +355,29 @@ class QwenVLAdapter(ModelAdapter):
                 raise
             smaller = [self._normalize_image(im, max_side=896, max_pixels=786_432) for im in pil_images]
             if len(smaller) == 1:
-                retry_inputs = self._processor(
+                retry_inputs = processor(
                     text=[text],
                     images=[smaller[0]],
                     padding=True,
                     return_tensors="pt",
                 )
             else:
-                retry_inputs = self._processor(
+                retry_inputs = processor(
                     text=[text],
                     images=[smaller],
                     padding=True,
                     return_tensors="pt",
                 )
-            retry_inputs = {k: v.to(self._model.device) if hasattr(v, "to") else v for k, v in retry_inputs.items()}
+            retry_inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in retry_inputs.items()}
             if "pixel_values" in retry_inputs:
                 try:
-                    model_dtype = next(self._model.parameters()).dtype
+                    model_dtype = next(model.parameters()).dtype
                 except StopIteration:
                     model_dtype = self._torch_dtype
                 retry_inputs = dict(retry_inputs)
                 retry_inputs["pixel_values"] = retry_inputs["pixel_values"].to(model_dtype)
             with torch.no_grad():
-                output_ids = self._model.generate(
+                output_ids = model.generate(
                     **retry_inputs,
                     max_new_tokens=max_tokens,
                     temperature=temperature if temperature > 0 else None,
@@ -384,13 +389,13 @@ class QwenVLAdapter(ModelAdapter):
         # 解码生成部分
         input_len = inputs["input_ids"].shape[1]
         generated = output_ids[:, input_len:]
-        result = self._processor.decode(generated[0], skip_special_tokens=True)
+        result = processor.decode(generated[0], skip_special_tokens=True)
 
         if stop:
             for s in stop:
                 if s in result:
                     result = result.split(s)[0].strip()
-        return result.strip()
+        return str(result).strip()
 
     def unload(self) -> None:
         self._model = None

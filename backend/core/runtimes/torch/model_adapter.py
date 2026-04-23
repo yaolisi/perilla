@@ -45,7 +45,7 @@ class ModelAdapter(ABC):
         temperature: float,
         top_p: float,
         stop: Optional[List[str]] = None,
-        **kwargs
+        **kwargs: Any
     ) -> str:
         """
         执行生成

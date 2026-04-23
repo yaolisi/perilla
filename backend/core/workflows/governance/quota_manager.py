@@ -6,7 +6,7 @@ Quota Manager
 
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import threading
 
 from log import logger
@@ -38,7 +38,7 @@ class QuotaManager:
     管理工作流的资源配额，防止资源滥用。
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         # 配额配置
         self._configs: Dict[str, QuotaConfig] = {}
         
@@ -89,7 +89,7 @@ class QuotaManager:
             
             # 检查每小时限制
             if config.max_executions_per_hour is not None:
-                hour_ago = datetime.utcnow() - timedelta(hours=1)
+                hour_ago = datetime.now(UTC) - timedelta(hours=1)
                 executions_last_hour = sum(
                     1 for ts in history if ts > hour_ago
                 )
@@ -98,7 +98,7 @@ class QuotaManager:
             
             # 检查每天限制
             if config.max_executions_per_day is not None:
-                day_ago = datetime.utcnow() - timedelta(days=1)
+                day_ago = datetime.now(UTC) - timedelta(days=1)
                 executions_last_day = sum(
                     1 for ts in history if ts > day_ago
                 )
@@ -120,7 +120,7 @@ class QuotaManager:
     def record_execution_start(self, workflow_id: str) -> None:
         """记录执行开始"""
         with self._lock:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             
             # 添加到历史记录
             if workflow_id not in self._execution_history:
@@ -163,7 +163,7 @@ class QuotaManager:
             self._cleanup_history(workflow_id)
             
             history = self._execution_history.get(workflow_id, [])
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             
             hour_ago = now - timedelta(hours=1)
             day_ago = now - timedelta(days=1)
@@ -224,7 +224,7 @@ class QuotaManager:
             return
         
         # 保留最近 7 天的记录
-        cutoff = datetime.utcnow() - timedelta(days=7)
+        cutoff = datetime.now(UTC) - timedelta(days=7)
         self._execution_history[workflow_id] = [
             ts for ts in self._execution_history[workflow_id]
             if ts > cutoff

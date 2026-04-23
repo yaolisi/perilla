@@ -1,4 +1,4 @@
-from typing import Optional, List, Union
+from typing import Dict, List, Optional, Tuple, Union
 import time
 from core.models.descriptor import ModelDescriptor
 from core.models.registry import get_model_registry
@@ -12,15 +12,15 @@ PROVIDER_ENDPOINTS = {
 }
 
 # Cache for provider availability (refresh every 30 seconds)
-_provider_cache: dict = {}
+_provider_cache: Dict[str, Tuple[float, bool]] = {}
 _cache_ttl = 30
 
-def invalidate_provider_cache():
+def invalidate_provider_cache() -> None:
     """Invalidate the provider availability cache."""
     global _provider_cache
     _provider_cache = {}
 
-def _check_provider_available(provider: str, base_url: str = None) -> bool:
+def _check_provider_available(provider: str, base_url: Optional[str] = None) -> bool:
     """
     Check if a provider endpoint is available.
 
@@ -37,7 +37,7 @@ def _check_provider_available(provider: str, base_url: str = None) -> bool:
     if cache_key in _provider_cache:
         cached_time, cached_result = _provider_cache[cache_key]
         if now - cached_time < _cache_ttl:
-            return cached_result
+            return bool(cached_result)
     
     # For non-network providers, assume available.
     if provider not in ('ollama', 'lmstudio'):
@@ -60,7 +60,7 @@ class ModelSelector:
     - 自动排除不可用 provider 的模型
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.registry = get_model_registry()
 
     def _has_image_content(self, messages: Optional[List[dict]]) -> bool:
@@ -379,7 +379,7 @@ class ModelSelector:
         return models[0]
 
 # 单例
-_selector = None
+_selector: Optional[ModelSelector] = None
 
 def get_model_selector() -> ModelSelector:
     global _selector

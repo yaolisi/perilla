@@ -11,7 +11,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Union, Optional, Dict, Any
+from typing import Union, Optional, Dict, Any, cast
 
 try:
     from PIL import Image
@@ -25,7 +25,7 @@ from .model_adapter import ModelAdapter
 from .internvl_adapter import InternVLAdapter
 from .qwen_vl_adapter import QwenVLAdapter
 
-_ADAPTER_REGISTRY: Dict[str, type] = {
+_ADAPTER_REGISTRY: Dict[str, type[ModelAdapter]] = {
     "internvl": InternVLAdapter,
     "internvl2": InternVLAdapter,
     "internvl3": InternVLAdapter,
@@ -55,7 +55,7 @@ class TorchVLMRuntime(VLMRuntime):
         if not p.exists():
             raise FileNotFoundError(f"model.json not found in {self._model_dir}")
         with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
+            return cast(Dict[str, Any], json.load(f))
 
     def _get_adapter(self) -> ModelAdapter:
         metadata = self._manifest.get("metadata") or {}
@@ -85,7 +85,7 @@ class TorchVLMRuntime(VLMRuntime):
             raise ValueError(f"Unsupported architecture: {arch}. Supported: {list(_ADAPTER_REGISTRY.keys())}")
         return cls()
 
-    async def initialize(self, model_path: Union[str, Path] = None, **kwargs) -> None:
+    async def initialize(self, model_path: Optional[Union[str, Path]] = None, **kwargs: Any) -> None:
         """加载模型（通过 Adapter）"""
         if self._adapter is not None and self._adapter.is_loaded:
             return
@@ -139,7 +139,7 @@ class TorchVLMRuntime(VLMRuntime):
         prompt: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        **kwargs
+        **kwargs: Any
     ) -> str:
         """
         执行单次多模态推理（兼容现有 VLMRuntime 接口）
@@ -165,7 +165,10 @@ class TorchVLMRuntime(VLMRuntime):
         resp = await self.generate(req)
         if resp.choices:
             msg = resp.choices[0].get("message", {})
-            return msg.get("content", "")
+            if isinstance(msg, dict):
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return content
         return ""
 
     async def generate(self, req: VLMRequest) -> VLMResponse:
@@ -178,15 +181,21 @@ class TorchVLMRuntime(VLMRuntime):
             cfg = req.generation_config or VLMGenerationConfig()
             messages = req.messages
             images = req.images
+            adapter = self._adapter
 
-            def _run():
-                return self._adapter.generate(
+            def _run() -> str:
+                if adapter is None:
+                    raise RuntimeError("Model adapter not available")
+                return cast(
+                    str,
+                    adapter.generate(
                     messages=messages,
                     images=images,
                     max_tokens=cfg.max_tokens,
                     temperature=cfg.temperature,
                     top_p=cfg.top_p,
                     stop=cfg.stop,
+                    ),
                 )
 
             loop = asyncio.get_running_loop()
@@ -236,7 +245,7 @@ class TorchVLMRuntime(VLMRuntime):
 
     def health(self) -> Dict[str, Any]:
         if self._adapter:
-            return self._adapter.health()
+            return cast(Dict[str, Any], self._adapter.health())
         return {"status": "not_loaded"}
 
 

@@ -7,6 +7,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from core.data.base import SessionLocal
+from core.data.models.workflow import WorkflowApprovalTaskORM
 from core.workflows.governance import get_execution_manager
 from core.workflows.models import WorkflowExecutionState
 from core.workflows.repository import WorkflowApprovalTaskRepository
@@ -16,17 +17,17 @@ from core.workflows.services.workflow_execution_service import WorkflowExecution
 
 @dataclass
 class ApprovalDecisionResult:
-    task: object
+    task: Optional[WorkflowApprovalTaskORM]
     expired: bool = False
 
 
 class WorkflowApprovalService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session) -> None:
         self.db = db
         self.repo = WorkflowApprovalTaskRepository(db)
         self.execution_service = WorkflowExecutionService(db)
 
-    def list_for_execution(self, execution_id: str) -> List[object]:
+    def list_for_execution(self, execution_id: str) -> List[WorkflowApprovalTaskORM]:
         self.repo.expire_pending_tasks(execution_id)
         return self.repo.list_by_execution(execution_id)
 
@@ -47,6 +48,8 @@ class WorkflowApprovalService:
             return ApprovalDecisionResult(task=task, expired=True)
 
         task = self.repo.decide(task_id=task_id, decision="approved", decided_by=decided_by)
+        if task is None:
+            return ApprovalDecisionResult(task=None, expired=False)
         execution = self.execution_service.get_execution(execution_id)
         if execution is None:
             return ApprovalDecisionResult(task=task, expired=False)
@@ -93,6 +96,8 @@ class WorkflowApprovalService:
             return ApprovalDecisionResult(task=task, expired=True)
 
         task = self.repo.decide(task_id=task_id, decision="rejected", decided_by=decided_by)
+        if task is None:
+            return ApprovalDecisionResult(task=None, expired=False)
         execution = self.execution_service.get_execution(execution_id)
         if execution is not None:
             global_ctx = dict(execution.global_context or {})

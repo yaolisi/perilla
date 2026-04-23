@@ -6,7 +6,7 @@ Phase C: Control Flow Execution
 import asyncio
 import logging
 import ast
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Dict, Any, Optional, List
 
 from pydantic import BaseModel, Field
@@ -16,6 +16,10 @@ from execution_kernel.models.graph_definition import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class LoopAuditLog(BaseModel):
@@ -30,7 +34,7 @@ class LoopAuditLog(BaseModel):
 class LoopState(BaseModel):
     """Phase C: 循环执行状态"""
     iteration_count: int = 0
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=_utc_now)
     audit_logs: List[LoopAuditLog] = Field(default_factory=list)
     exited: bool = False
     exit_reason: Optional[str] = None  # "condition_false", "max_iterations", "timeout", "error"
@@ -228,7 +232,7 @@ async def execute_loop_node(
     timeout_seconds = config.timeout_seconds
     condition_expr = config.condition_expression or input_data.get("loop_condition")
     
-    start_time = datetime.utcnow()
+    start_time = _utc_now()
     
     while True:
         # 1. 检查最大迭代次数
@@ -241,7 +245,7 @@ async def execute_loop_node(
             break
         
         # 2. 检查超时
-        elapsed = (datetime.utcnow() - start_time).total_seconds()
+        elapsed = (_utc_now() - start_time).total_seconds()
         if elapsed >= timeout_seconds:
             loop_state.exited = True
             loop_state.exit_reason = "timeout"
@@ -265,7 +269,7 @@ async def execute_loop_node(
         
         audit_entry = LoopAuditLog(
             iteration=iteration,
-            started_at=datetime.utcnow(),
+            started_at=_utc_now(),
         )
         
         try:
@@ -278,11 +282,11 @@ async def execute_loop_node(
                 )
                 audit_entry.condition_result = iteration_result.get("condition_result")
             
-            audit_entry.finished_at = datetime.utcnow()
+            audit_entry.finished_at = _utc_now()
             
         except Exception as e:
             audit_entry.error = str(e)
-            audit_entry.finished_at = datetime.utcnow()
+            audit_entry.finished_at = _utc_now()
             loop_state.exit_reason = "error"
             logger.error(f"Loop {node_def.id} iteration {iteration} failed: {e}")
             # 根据配置决定是否继续或退出（LoopConfig 无 exit_on_error 时默认 True）

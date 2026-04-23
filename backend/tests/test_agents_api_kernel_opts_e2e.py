@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.agents import router as agents_router
+from api.errors import register_error_handlers
 from core.agent_runtime.definition import AgentDefinition
 from core.security.deps import require_authenticated_platform_admin
 from core.security.rbac import PlatformRole
@@ -58,6 +59,7 @@ def mem_registry(monkeypatch) -> _MemRegistry:
 def agents_client_auth_only(mem_registry: _MemRegistry) -> TestClient:
     """走真实鉴权依赖（不使用 dependency_overrides），用于 401/403。"""
     app = FastAPI()
+    register_error_handlers(app)
     app.include_router(agents_router)
     return TestClient(app)
 
@@ -65,6 +67,7 @@ def agents_client_auth_only(mem_registry: _MemRegistry) -> TestClient:
 @pytest.fixture()
 def agents_client(mem_registry: _MemRegistry, monkeypatch) -> TestClient:
     app = FastAPI()
+    register_error_handlers(app)
     app.include_router(agents_router)
     app.dependency_overrides[require_authenticated_platform_admin] = lambda: PlatformRole.ADMIN
 
@@ -106,8 +109,10 @@ def _put_payload(**kwargs: Any) -> Dict[str, Any]:
     return base
 
 
+@pytest.mark.no_fallback
 def test_put_agent_returns_400_when_execution_strategy_conflicts(
     agents_client: TestClient,
+    fallback_probe,
 ):
     resp = agents_client.put(
         "/api/agents/agent_kernel_e2e",
@@ -119,6 +124,7 @@ def test_put_agent_returns_400_when_execution_strategy_conflicts(
     )
     assert resp.status_code == 400
     assert "execution_strategy conflicts" in resp.json().get("detail", "")
+    assert fallback_probe == []
 
 
 def test_put_agent_returns_400_when_max_parallel_conflicts(
@@ -208,3 +214,15 @@ def test_put_agent_403_when_role_viewer_via_middleware(
     )
     assert resp.status_code == 403
     assert resp.json().get("detail") == "platform admin access denied"
+
+
+def test_run_agent_not_found_returns_structured_error(agents_client: TestClient):
+    resp = agents_client.post(
+        "/api/agents/agent_not_exists/run",
+        json={"messages": [{"role": "user", "content": "hello"}]},
+        headers={"X-Api-Key": "dummy-admin-key"},
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body.get("detail") == "Agent not found"
+    assert body.get("error", {}).get("code") == "agent_not_found"

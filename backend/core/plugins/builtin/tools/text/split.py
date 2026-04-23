@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -16,7 +16,7 @@ class TextSplitTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
+        return cast(Dict[str, Any], create_input_schema({
             "text": {
                 "type": "string",
                 "description": "The text to split."
@@ -34,7 +34,7 @@ class TextSplitTool(Tool):
                 "description": "Number of characters to overlap between chunks when splitting by length (default: 0).",
                 "default": 0
             }
-        }, required=["text"])
+        }, required=["text"]))
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -44,7 +44,7 @@ class TextSplitTool(Tool):
         }
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return []
 
     @property

@@ -3,8 +3,8 @@ State Machine
 节点状态机，实现完整状态流转逻辑
 """
 
-from datetime import datetime
-from typing import Optional
+from datetime import UTC, datetime
+from typing import Any, Dict, Optional
 import logging
 
 from execution_kernel.models.node_models import (
@@ -17,6 +17,11 @@ from execution_kernel.persistence.db import Database
 
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_naive() -> datetime:
+    """Preserve existing naive datetime persistence semantics."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class InvalidStateTransitionError(Exception):
@@ -56,7 +61,7 @@ class StateMachine:
         self.repository = repository
         self.db = db
 
-    async def _get_node(self, node_id: str, for_update: bool = False):
+    async def _get_node(self, node_id: str, for_update: bool = False) -> Optional[Any]:
         if self.db is not None:
             async with self.db.async_session() as session:
                 repo = NodeRuntimeRepository(session)
@@ -71,12 +76,12 @@ class StateMachine:
         *,
         node_id: str,
         new_state: NodeState,
-        output_data: dict = None,
-        error_message: str = None,
-        error_type: str = None,
-        started_at: datetime = None,
-        finished_at: datetime = None,
-        retry_count: int = None,
+        output_data: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None,
+        error_type: Optional[str] = None,
+        started_at: Optional[datetime] = None,
+        finished_at: Optional[datetime] = None,
+        retry_count: Optional[int] = None,
     ) -> None:
         if self.db is not None:
             async with self.db.async_session() as session:
@@ -120,12 +125,12 @@ class StateMachine:
         self,
         node_id: str,
         target_state: NodeState,
-        output_data: dict = None,
-        error_message: str = None,
-        error_type: str = None,
-        started_at: datetime = None,
-        finished_at: datetime = None,
-        retry_count: int = None,
+        output_data: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None,
+        error_type: Optional[str] = None,
+        started_at: Optional[datetime] = None,
+        finished_at: Optional[datetime] = None,
+        retry_count: Optional[int] = None,
     ) -> NodeRuntime:
         """
         执行状态转换（幂等）
@@ -208,7 +213,7 @@ class StateMachine:
             updated_at=node_db.updated_at,
         )
 
-    async def get_node(self, node_id: str):
+    async def get_node(self, node_id: str) -> Optional[Any]:
         """获取节点运行时（供重试逻辑读取 retry_count 等字段）"""
         return await self._get_node(node_id)
 
@@ -221,7 +226,7 @@ class StateMachine:
         return await self.transition(
             node_id=node_id,
             target_state=NodeState.RUNNING,
-            started_at=datetime.utcnow(),
+            started_at=_utc_now_naive(),
         )
     
     async def succeed(self, node_id: str, output_data: dict) -> NodeRuntime:
@@ -230,14 +235,14 @@ class StateMachine:
             node_id=node_id,
             target_state=NodeState.SUCCESS,
             output_data=output_data,
-            finished_at=datetime.utcnow(),
+            finished_at=_utc_now_naive(),
         )
     
     async def fail(
         self, 
         node_id: str, 
         error_message: str, 
-        error_type: str = None
+        error_type: Optional[str] = None
     ) -> NodeRuntime:
         """节点执行失败"""
         return await self.transition(
@@ -245,7 +250,7 @@ class StateMachine:
             target_state=NodeState.FAILED,
             error_message=error_message,
             error_type=error_type,
-            finished_at=datetime.utcnow(),
+            finished_at=_utc_now_naive(),
         )
     
     async def timeout(self, node_id: str) -> NodeRuntime:
@@ -255,7 +260,7 @@ class StateMachine:
             target_state=NodeState.TIMEOUT,
             error_message="Execution timeout",
             error_type="TimeoutError",
-            finished_at=datetime.utcnow(),
+            finished_at=_utc_now_naive(),
         )
     
     async def retry(self, node_id: str, retry_count: int) -> NodeRuntime:
@@ -266,16 +271,16 @@ class StateMachine:
             retry_count=retry_count,
         )
     
-    async def cancel(self, node_id: str, reason: str = None) -> NodeRuntime:
+    async def cancel(self, node_id: str, reason: Optional[str] = None) -> NodeRuntime:
         """取消节点执行"""
         return await self.transition(
             node_id=node_id,
             target_state=NodeState.CANCELLED,
             error_message=reason,
-            finished_at=datetime.utcnow(),
+            finished_at=_utc_now_naive(),
         )
     
-    async def skip(self, node_id: str, reason: str = None) -> NodeRuntime:
+    async def skip(self, node_id: str, reason: Optional[str] = None) -> NodeRuntime:
         """跳过节点执行"""
         return await self.transition(
             node_id=node_id,

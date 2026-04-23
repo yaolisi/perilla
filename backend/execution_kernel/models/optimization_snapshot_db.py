@@ -4,12 +4,19 @@ V2.7: Optimization Layer - Optimization Snapshot DB Model
 持久化 OptimizationSnapshot 到数据库
 """
 
-from datetime import datetime
-from typing import Optional
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Optional
 from sqlalchemy import String, JSON, DateTime, Text, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from execution_kernel.persistence.db import Base
+
+if TYPE_CHECKING:
+    from execution_kernel.optimization.snapshot import OptimizationSnapshot
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class OptimizationSnapshotDB(Base):
@@ -32,7 +39,7 @@ class OptimizationSnapshotDB(Base):
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     version: Mapped[str] = mapped_column(String(32), unique=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now_naive)
     node_weights: Mapped[dict] = mapped_column(JSON, default=dict)
     skill_weights: Mapped[dict] = mapped_column(JSON, default=dict)
     latency_estimates: Mapped[dict] = mapped_column(JSON, default=dict)

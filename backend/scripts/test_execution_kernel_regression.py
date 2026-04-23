@@ -2283,7 +2283,7 @@ def test_phaseC_if_else_graph_structure():
     assert false_edge[0].to_node == "branch_false"
     
     # 验证图有效性
-    errors = graph.validate()
+    errors = graph.validate_graph()
     assert len(errors) == 0, f"Graph validation errors: {errors}"
     
     print("✅ test_phaseC_if_else_graph_structure passed")

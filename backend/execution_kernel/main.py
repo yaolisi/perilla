@@ -5,7 +5,7 @@ Execution Kernel Main Entry
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Dict, Any
 import os
 
@@ -40,6 +40,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 # 示例节点处理器（签名为 (node_def, input_data) 以与 Kernel Executor 一致）
 async def tool_handler(node_def, input_data: Dict[str, Any]) -> Dict[str, Any]:
     """工具节点处理器示例"""
@@ -47,7 +51,7 @@ async def tool_handler(node_def, input_data: Dict[str, Any]) -> Dict[str, Any]:
     await asyncio.sleep(0.5)
     return {
         "result": f"Processed: {input_data.get('data', 'unknown')}",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": _utc_now().isoformat(),
     }
 
 
@@ -151,7 +155,7 @@ def create_sample_graph() -> GraphDefinition:
     )
     
     # 验证图定义
-    errors = graph.validate()
+    errors = graph.validate_graph()
     if errors:
         logger.error(f"Graph validation errors: {errors}")
         raise ValueError(f"Invalid graph: {errors}")
@@ -204,7 +208,7 @@ async def run_demo():
     logger.info(f"  Entry nodes: {graph.get_entry_nodes()}")
     
     # 4. 启动执行
-    instance_id = f"demo_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+    instance_id = f"demo_{_utc_now().strftime('%Y%m%d_%H%M%S')}"
     
     logger.info(f"\nStarting execution: {instance_id}")
     await scheduler.start_instance(graph, instance_id, {"user": "demo"})
@@ -320,15 +324,15 @@ async def run_parallel_demo():
         scheduler = Scheduler(db, state_machine, executor)
     
     # 执行
-    instance_id = f"parallel_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+    instance_id = f"parallel_{_utc_now().strftime('%Y%m%d_%H%M%S')}"
     
     logger.info(f"\nStarting parallel execution: {instance_id}")
     
-    start_time = datetime.utcnow()
+    start_time = _utc_now()
     await scheduler.start_instance(parallel_graph, instance_id)
     
     final_state = await scheduler.wait_for_completion(instance_id, timeout=60.0)
-    elapsed = (datetime.utcnow() - start_time).total_seconds()
+    elapsed = (_utc_now() - start_time).total_seconds()
     
     logger.info(f"\nParallel execution completed in {elapsed:.2f}s")
     logger.info(f"Final state: {final_state.value}")
@@ -406,7 +410,7 @@ async def run_retry_demo():
         scheduler = Scheduler(db, state_machine, executor)
     
     # 执行
-    instance_id = f"retry_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+    instance_id = f"retry_{_utc_now().strftime('%Y%m%d_%H%M%S')}"
     
     logger.info(f"\nStarting retry execution: {instance_id}")
     await scheduler.start_instance(retry_graph, instance_id)

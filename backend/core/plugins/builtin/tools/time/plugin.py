@@ -3,7 +3,7 @@ from .now import TimeNowTool
 from .format import TimeFormatTool
 from .sleep import TimeSleepTool
 
-def register():
+def register() -> None:
     ToolRegistry.register(TimeNowTool())
     ToolRegistry.register(TimeFormatTool())
     ToolRegistry.register(TimeSleepTool())

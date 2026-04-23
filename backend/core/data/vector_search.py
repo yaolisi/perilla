@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from pathlib import Path
 
@@ -170,7 +170,8 @@ class SQLiteVecProvider(VectorSearchProvider):
                 # Test if vec0 module is available on this connection
                 try:
                     test_cursor = conn.execute("SELECT sqlite_version();")
-                    sqlite_version = test_cursor.fetchone()[0]
+                    sqlite_row = test_cursor.fetchone()
+                    sqlite_version = sqlite_row[0] if sqlite_row else "unknown"
                     logger.debug(f"[SQLiteVecProvider.{self.instance_id}] SQLite version: {sqlite_version}")
                     
                     # Try to use vec0 module explicitly
@@ -234,14 +235,15 @@ class SQLiteVecProvider(VectorSearchProvider):
         query_vec_json = json.dumps(query_vector)
         
         business_table = kwargs.get("business_table")
+        business_table_name = business_table if isinstance(business_table, str) and business_table else None
+        params: List[Any] = [query_vec_json, limit]
         
         with sqlite3.connect(str(self.db_path)) as conn:
             self._load_extension(conn)
             
             # 如果有 filters 和 business_table，使用 JOIN
-            if filters and business_table:
+            if filters and business_table_name:
                 where_clauses = []
-                params = [query_vec_json, limit]
                 
                 # 构建 WHERE 子句
                 for key, value in filters.items():
@@ -253,7 +255,7 @@ class SQLiteVecProvider(VectorSearchProvider):
                 sql = f"""
                     SELECT v.distance, v.rowid
                     FROM {table_name} v
-                    JOIN {business_table} b ON b.rowid = v.rowid
+                    JOIN {business_table_name} b ON b.rowid = v.rowid
                     WHERE v.embedding MATCH ?
                     AND v.k = ?
                     {where_sql}
@@ -295,10 +297,19 @@ def get_vector_provider() -> VectorSearchProvider:
         logger.debug("[get_vector_provider] Creating new SQLiteVecProvider instance")
         from core.data.base import get_db_path
         _vector_provider = SQLiteVecProvider(get_db_path())
-        logger.debug(f"[get_vector_provider] Created provider instance {_vector_provider.instance_id}, is_available: {_vector_provider.is_available()}")
+        provider_instance = cast(SQLiteVecProvider, _vector_provider)
+        logger.debug(
+            f"[get_vector_provider] Created provider instance {provider_instance.instance_id}, "
+            f"is_available: {provider_instance.is_available()}"
+        )
     else:
-        logger.debug(f"[get_vector_provider] Using cached provider instance {_vector_provider.instance_id}, is_available: {_vector_provider.is_available()}")
+        provider_instance = cast(SQLiteVecProvider, _vector_provider)
+        logger.debug(
+            f"[get_vector_provider] Using cached provider instance {provider_instance.instance_id}, "
+            f"is_available: {provider_instance.is_available()}"
+        )
     if not _vector_provider.is_available():
         raise RuntimeError("Vector search provider is not available")
-    logger.debug(f"[get_vector_provider] Returning provider instance {_vector_provider.instance_id}")
+    provider_instance = cast(SQLiteVecProvider, _vector_provider)
+    logger.debug(f"[get_vector_provider] Returning provider instance {provider_instance.instance_id}")
     return _vector_provider

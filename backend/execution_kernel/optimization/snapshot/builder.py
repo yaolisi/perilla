@@ -7,8 +7,8 @@ V2.7: Optimization Layer - Snapshot Builder
 import hashlib
 import json
 import logging
-from typing import Dict, Optional
-from datetime import datetime
+from typing import Any, Dict, Optional
+from datetime import UTC, datetime
 
 from execution_kernel.optimization.statistics.dataset import OptimizationDataset
 from execution_kernel.optimization.statistics.models import NodeStatistics, SkillStatistics
@@ -16,6 +16,10 @@ from execution_kernel.optimization.snapshot.snapshot import OptimizationSnapshot
 
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class SnapshotBuilder:
@@ -81,19 +85,20 @@ class SnapshotBuilder:
         latency_estimates = self._compute_latency_estimates(dataset)
         
         # 构建快照数据
-        snapshot_data = {
+        metadata: Dict[str, Any] = {
+            "node_count": len(node_weights),
+            "skill_count": len(skill_weights),
+            "source_event_count": dataset.event_count,
+            "source_instance_count": dataset.instance_count,
+            "success_weight": self.success_weight,
+            "frequency_weight": self.frequency_weight,
+        }
+        snapshot_data: Dict[str, Any] = {
             "node_weights": node_weights,
             "skill_weights": skill_weights,
             "latency_estimates": latency_estimates,
             "source_dataset_hash": dataset_hash,
-            "metadata": {
-                "node_count": len(node_weights),
-                "skill_count": len(skill_weights),
-                "source_event_count": dataset.event_count,
-                "source_instance_count": dataset.instance_count,
-                "success_weight": self.success_weight,
-                "frequency_weight": self.frequency_weight,
-            },
+            "metadata": metadata,
         }
         
         # 计算版本
@@ -101,7 +106,7 @@ class SnapshotBuilder:
         
         return OptimizationSnapshot(
             version=version,
-            created_at=datetime.utcnow(),
+            created_at=_utc_now(),
             node_weights=node_weights,
             skill_weights=skill_weights,
             latency_estimates=latency_estimates,
@@ -235,7 +240,7 @@ class SnapshotBuilder:
             final_skill_weights.update(custom_skill_weights)
         
         # 重新计算版本
-        snapshot_data = {
+        snapshot_data: Dict[str, Any] = {
             "node_weights": final_node_weights,
             "skill_weights": final_skill_weights,
             "latency_estimates": snapshot.latency_estimates,
@@ -250,7 +255,7 @@ class SnapshotBuilder:
         
         return OptimizationSnapshot(
             version=version,
-            created_at=datetime.utcnow(),
+            created_at=_utc_now(),
             node_weights=final_node_weights,
             skill_weights=final_skill_weights,
             latency_estimates=snapshot.latency_estimates,
@@ -261,7 +266,7 @@ class SnapshotBuilder:
     async def build_and_persist(
         self,
         dataset: OptimizationDataset,
-        repository,
+        repository: Any,
     ) -> OptimizationSnapshot:
         """
         V2.7: 构建快照并持久化

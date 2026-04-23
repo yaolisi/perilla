@@ -64,7 +64,8 @@ def try_parse_contract_plan(raw: Any) -> Optional[ContractPlan]:
             return None
         try:
             data = json.loads(text)
-            logger.debug(f"[PlanContractAdapter] Parsed JSON string: {len(data)} keys")
+            if isinstance(data, dict):
+                logger.debug(f"[PlanContractAdapter] Parsed JSON string: {len(data)} keys")
         except Exception as e:
             logger.warning(f"[PlanContractAdapter] Failed to parse JSON: {e}")
             return None

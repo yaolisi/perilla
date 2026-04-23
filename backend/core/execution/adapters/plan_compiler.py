@@ -49,7 +49,9 @@ class PlanCompiler:
         StepType.REPLAN: NodeType.REPLAN,        # RePlan 步骤
     }
     
-    def compile(self, plan: Plan, parent_graph_id: str = None) -> GraphDefinition:
+    def compile(
+        self, plan: Plan, parent_graph_id: Optional[str] = None
+    ) -> GraphDefinition:
         """
         编译 Plan 为 GraphDefinition
         
@@ -81,7 +83,7 @@ class PlanCompiler:
         )
         
         # 5. 验证
-        errors = graph.validate()
+        errors = graph.validate_graph()
         if errors:
             logger.warning(f"Plan compilation warnings: {errors}")
         
@@ -135,7 +137,7 @@ class PlanCompiler:
             
             # 构建节点配置（包含执行所需的所有信息）
             # default_input 供 Kernel 创建 NodeRuntime 时作为 input_data，保证首轮执行有正确输入
-            config = {
+            config: Dict[str, Any] = {
                 "executor": step.executor.value if step.executor else "internal",
                 "inputs": step.inputs,
                 "default_input": dict(step.inputs) if step.inputs else {},
@@ -261,7 +263,9 @@ class AgentGraphCompiler(PlanCompiler):
     Graph compiler with explicit parallel toggle for agent orchestration.
     """
 
-    def compile(self, plan: Plan, parent_graph_id: str = None) -> GraphDefinition:
+    def compile(
+        self, plan: Plan, parent_graph_id: Optional[str] = None
+    ) -> GraphDefinition:
         graph = super().compile(plan, parent_graph_id=parent_graph_id)
         graph.config = dict(graph.config or {})
         graph.config["agent_graph_parallel"] = bool((plan.context or {}).get("agent_graph_parallel", False))

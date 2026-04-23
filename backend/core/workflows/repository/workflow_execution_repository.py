@@ -8,7 +8,7 @@ Governance note (AGENTS.md §7):
 - 所有持久化必须通过项目 ORM 完成。
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable, cast
 from datetime import datetime, timezone
 import time
 from sqlalchemy.orm import Session
@@ -30,7 +30,41 @@ class WorkflowExecutionRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def _run_write_with_retry(self, op_name: str, fn):
+    @staticmethod
+    def _set_row_fields(row: WorkflowExecutionORM, **fields: object) -> None:
+        for key, value in fields.items():
+            setattr(row, key, value)
+
+    @staticmethod
+    def _should_clear_error_fields(state: WorkflowExecutionState) -> bool:
+        return state in {
+            WorkflowExecutionState.RUNNING,
+            WorkflowExecutionState.COMPLETED,
+            WorkflowExecutionState.FAILED,
+            WorkflowExecutionState.CANCELLED,
+            WorkflowExecutionState.TIMEOUT,
+        }
+
+    def _apply_error_fields(
+        self,
+        row: WorkflowExecutionORM,
+        *,
+        state: WorkflowExecutionState,
+        error_message: Optional[str],
+        error_details: Optional[Dict[str, Any]],
+    ) -> None:
+        if error_message is not None:
+            self._set_row_fields(row, error_message=error_message)
+        elif self._should_clear_error_fields(state):
+            # 进入运行态或终态时，若调用方未显式传入错误信息，则清理历史错误，避免陈旧信息残留。
+            self._set_row_fields(row, error_message=None)
+
+        if error_details is not None:
+            self._set_row_fields(row, error_details=error_details)
+        elif self._should_clear_error_fields(state):
+            self._set_row_fields(row, error_details=None)
+
+    def _run_write_with_retry(self, op_name: str, fn: Callable[[], Any]) -> Any:
         attempts = max(1, int(getattr(settings, "workflow_db_write_retry_attempts", 4) or 4))
         base_delay_ms = max(1, int(getattr(settings, "workflow_db_write_retry_base_delay_ms", 50) or 50))
 
@@ -53,45 +87,46 @@ class WorkflowExecutionRepository:
                 time.sleep(sleep_s)
 
     def _deserialize_from_orm(self, row: WorkflowExecutionORM) -> WorkflowExecution:
+        row_any = cast(Any, row)
         # node_states_json 存的是 JSON 字符串数组（保持与旧 schema 兼容）
         node_states = []
         try:
             import json
 
-            raw = row.node_states_json or "[]"
+            raw = cast(str, row_any.node_states_json or "[]")
             node_states_data = json.loads(raw)
             node_states = [WorkflowExecutionNode(**n) for n in (node_states_data or [])]
         except Exception:
             node_states = []
 
         return WorkflowExecution(
-            execution_id=row.execution_id,
-            workflow_id=row.workflow_id,
-            version_id=row.version_id,
-            graph_instance_id=row.graph_instance_id,
-            state=WorkflowExecutionState(row.state),
-            input_data=row.input_data or {},
-            output_data=row.output_data,
-            global_context=row.global_context or {},
+            execution_id=cast(str, row_any.execution_id),
+            workflow_id=cast(str, row_any.workflow_id),
+            version_id=cast(str, row_any.version_id),
+            graph_instance_id=cast(Optional[str], row_any.graph_instance_id),
+            state=WorkflowExecutionState(cast(str, row_any.state)),
+            input_data=cast(Dict[str, Any], row_any.input_data or {}),
+            output_data=cast(Dict[str, Any], row_any.output_data),
+            global_context=cast(Dict[str, Any], row_any.global_context or {}),
             node_states=node_states,
-            triggered_by=row.triggered_by,
-            trigger_type=row.trigger_type,
-            resource_quota=row.resource_quota,
-            error_message=row.error_message,
-            error_details=row.error_details or {},
-            created_at=row.created_at,
-            started_at=row.started_at,
-            finished_at=row.finished_at,
-            duration_ms=row.duration_ms,
-            queue_position=row.queue_position,
-            queued_at=row.queued_at,
-            wait_duration_ms=row.wait_duration_ms,
+            triggered_by=cast(Optional[str], row_any.triggered_by),
+            trigger_type=cast(str, row_any.trigger_type),
+            resource_quota=cast(Dict[str, Any], row_any.resource_quota),
+            error_message=cast(Optional[str], row_any.error_message),
+            error_details=cast(Optional[Dict[str, Any]], row_any.error_details),
+            created_at=cast(datetime, row_any.created_at),
+            started_at=cast(Optional[datetime], row_any.started_at),
+            finished_at=cast(Optional[datetime], row_any.finished_at),
+            duration_ms=cast(Optional[int], row_any.duration_ms),
+            queue_position=cast(Optional[int], row_any.queue_position),
+            queued_at=cast(Optional[datetime], row_any.queued_at),
+            wait_duration_ms=cast(Optional[int], row_any.wait_duration_ms),
         )
 
     def create(self, execution: WorkflowExecution) -> WorkflowExecution:
         import json
 
-        def _write():
+        def _write() -> None:
             orm = WorkflowExecutionORM(
                 execution_id=execution.execution_id,
                 workflow_id=execution.workflow_id,
@@ -172,7 +207,7 @@ class WorkflowExecutionRepository:
             q = q.filter(WorkflowExecutionORM.state == state.value)
         if trigger_type:
             q = q.filter(WorkflowExecutionORM.trigger_type == trigger_type)
-        return q.count()
+        return cast(int, q.count())
 
     def update_state(
         self,
@@ -181,7 +216,7 @@ class WorkflowExecutionRepository:
         error_message: Optional[str] = None,
         error_details: Optional[Dict[str, Any]] = None,
     ) -> Optional[WorkflowExecution]:
-        def _write():
+        def _write() -> None:
             row = (
                 self.db.query(WorkflowExecutionORM)
                 .filter(WorkflowExecutionORM.execution_id == execution_id)
@@ -190,46 +225,33 @@ class WorkflowExecutionRepository:
             if not row:
                 return
 
-            row.state = state.value
+            self._set_row_fields(row, state=state.value)
 
             # 根据状态更新时间戳
             now = datetime.now(timezone.utc)
             if state == WorkflowExecutionState.RUNNING and row.started_at is None:
-                row.started_at = now
+                self._set_row_fields(row, started_at=now)
             if state in {
                 WorkflowExecutionState.COMPLETED,
                 WorkflowExecutionState.FAILED,
                 WorkflowExecutionState.CANCELLED,
                 WorkflowExecutionState.TIMEOUT,
-            }:
-                if row.finished_at is None:
-                    row.finished_at = now
+            } and row.finished_at is None:
+                self._set_row_fields(row, finished_at=now)
 
-            if error_message is not None:
-                row.error_message = error_message
-            elif state in {
-                WorkflowExecutionState.RUNNING,
-                WorkflowExecutionState.COMPLETED,
-                WorkflowExecutionState.FAILED,
-                WorkflowExecutionState.CANCELLED,
-                WorkflowExecutionState.TIMEOUT,
-            }:
-                # 进入运行态或终态时，若调用方未显式传入错误信息，则清理历史错误，避免陈旧信息残留。
-                row.error_message = None
-            if error_details is not None:
-                row.error_details = error_details
-            elif state in {
-                WorkflowExecutionState.RUNNING,
-                WorkflowExecutionState.COMPLETED,
-                WorkflowExecutionState.FAILED,
-                WorkflowExecutionState.CANCELLED,
-                WorkflowExecutionState.TIMEOUT,
-            }:
-                row.error_details = None
+            self._apply_error_fields(
+                row,
+                state=state,
+                error_message=error_message,
+                error_details=error_details,
+            )
 
             # duration_ms 计算
             if row.started_at and row.finished_at:
-                row.duration_ms = int((row.finished_at - row.started_at).total_seconds() * 1000)
+                self._set_row_fields(
+                    row,
+                    duration_ms=int((row.finished_at - row.started_at).total_seconds() * 1000),
+                )
 
             self.db.commit()
 
@@ -251,7 +273,7 @@ class WorkflowExecutionRepository:
         if not existing:
             return None
 
-        def _write():
+        def _write() -> None:
             row = (
                 self.db.query(WorkflowExecutionORM)
                 .filter(WorkflowExecutionORM.execution_id == execution_id)
@@ -260,8 +282,9 @@ class WorkflowExecutionRepository:
             if not row:
                 return
             # use JSON mode to convert datetime/enum into serializable primitives
-            row.node_states_json = json.dumps(
-                [n.model_dump(mode="json") for n in (node_states or [])]
+            self._set_row_fields(
+                row,
+                node_states_json=json.dumps([n.model_dump(mode="json") for n in (node_states or [])]),
             )
             self.db.commit()
 
@@ -273,7 +296,7 @@ class WorkflowExecutionRepository:
         if not existing:
             return None
 
-        def _write():
+        def _write() -> None:
             row = (
                 self.db.query(WorkflowExecutionORM)
                 .filter(WorkflowExecutionORM.execution_id == execution_id)
@@ -281,7 +304,7 @@ class WorkflowExecutionRepository:
             )
             if not row:
                 return
-            row.output_data = output_data
+            self._set_row_fields(row, output_data=output_data)
             self.db.commit()
 
         self._run_write_with_retry("update_output", _write)
@@ -292,7 +315,7 @@ class WorkflowExecutionRepository:
         if not existing:
             return None
 
-        def _write():
+        def _write() -> None:
             row = (
                 self.db.query(WorkflowExecutionORM)
                 .filter(WorkflowExecutionORM.execution_id == execution_id)
@@ -300,7 +323,7 @@ class WorkflowExecutionRepository:
             )
             if not row:
                 return
-            row.global_context = global_context or {}
+            self._set_row_fields(row, global_context=global_context or {})
             self.db.commit()
 
         self._run_write_with_retry("update_global_context", _write)
@@ -318,7 +341,7 @@ class WorkflowExecutionRepository:
         if not existing:
             return None
 
-        def _write():
+        def _write() -> None:
             row = (
                 self.db.query(WorkflowExecutionORM)
                 .filter(WorkflowExecutionORM.execution_id == execution_id)
@@ -327,11 +350,11 @@ class WorkflowExecutionRepository:
             if not row:
                 return
             if queue_position is not None:
-                row.queue_position = int(queue_position)
+                self._set_row_fields(row, queue_position=int(queue_position))
             if queued_at is not None:
-                row.queued_at = queued_at
+                self._set_row_fields(row, queued_at=queued_at)
             if wait_duration_ms is not None:
-                row.wait_duration_ms = int(wait_duration_ms)
+                self._set_row_fields(row, wait_duration_ms=int(wait_duration_ms))
             self.db.commit()
 
         self._run_write_with_retry("update_queue_metrics", _write)
@@ -342,7 +365,7 @@ class WorkflowExecutionRepository:
         if not existing:
             return None
 
-        def _write():
+        def _write() -> None:
             row = (
                 self.db.query(WorkflowExecutionORM)
                 .filter(WorkflowExecutionORM.execution_id == execution_id)
@@ -350,7 +373,7 @@ class WorkflowExecutionRepository:
             )
             if not row:
                 return
-            row.graph_instance_id = graph_instance_id
+            self._set_row_fields(row, graph_instance_id=graph_instance_id)
             self.db.commit()
 
         self._run_write_with_retry("update_graph_instance_id", _write)
@@ -369,7 +392,7 @@ class WorkflowExecutionRepository:
         q = self.db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.workflow_id == workflow_id)
         if state:
             q = q.filter(WorkflowExecutionORM.state == state.value)
-        return q.count()
+        return cast(int, q.count())
 
     def delete_old_executions(self, workflow_id: str, keep_count: int = 100) -> int:
         # keep newest N by created_at
@@ -385,7 +408,7 @@ class WorkflowExecutionRepository:
             return 0
         deleted = 0
 
-        def _write():
+        def _write() -> None:
             nonlocal deleted
             deleted = (
                 self.db.query(WorkflowExecutionORM)
@@ -405,7 +428,7 @@ class WorkflowExecutionRepository:
 
         deleted = 0
 
-        def _write():
+        def _write() -> None:
             nonlocal deleted
             deleted = (
                 self.db.query(WorkflowExecutionORM)

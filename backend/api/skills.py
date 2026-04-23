@@ -1,11 +1,12 @@
 """
 Skill v1 FastAPI 接口：创建、列表、获取、执行。
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from api.errors import raise_api_error
 from core.skills import create_skill, get_skill, list_skills, SkillExecutor, update_skill, delete_skill
 from core.skills.models import SkillType
 from core.skills.registry import SkillRegistry
@@ -17,6 +18,7 @@ router = APIRouter(
     tags=["skills"],
     dependencies=[Depends(require_authenticated_platform_admin)],
 )
+MSG_SKILL_NOT_FOUND = "Skill not found"
 
 
 class CreateSkillBody(BaseModel):
@@ -44,7 +46,7 @@ class ExecuteSkillBody(BaseModel):
 
 
 @router.post("")
-async def api_create_skill(body: CreateSkillBody):
+async def api_create_skill(body: CreateSkillBody) -> Dict[str, Any]:
     """创建 Skill。"""
     skill = create_skill(
         name=body.name,
@@ -56,13 +58,14 @@ async def api_create_skill(body: CreateSkillBody):
         enabled=body.enabled,
     )
     if not skill:
-        raise HTTPException(status_code=500, detail="Failed to create skill")
-    SkillRegistry.register(skill)
-    return skill.to_dict()
+        raise_api_error(status_code=500, code="skill_create_failed", message="Failed to create skill")
+    assert skill is not None
+    SkillRegistry.register(cast(Any, skill))
+    return cast(Dict[str, Any], skill.to_dict())
 
 
 @router.get("")
-async def api_list_skills():
+async def api_list_skills() -> Dict[str, Any]:
     """列出所有 Skill。"""
     skills = list_skills(enabled_only=False)
     return {
@@ -72,22 +75,38 @@ async def api_list_skills():
 
 
 @router.get("/{skill_id}")
-async def api_get_skill(skill_id: str):
+async def api_get_skill(skill_id: str) -> Dict[str, Any]:
     """获取单个 Skill。"""
     skill = get_skill(skill_id)
     if not skill:
-        raise HTTPException(status_code=404, detail="Skill not found")
-    return skill.to_dict()
+        raise_api_error(
+            status_code=404,
+            code="skill_not_found",
+            message=MSG_SKILL_NOT_FOUND,
+            details={"skill_id": skill_id},
+        )
+    assert skill is not None
+    return cast(Dict[str, Any], skill.to_dict())
 
 
 @router.put("/{skill_id}")
-async def api_update_skill(skill_id: str, body: UpdateSkillBody):
+async def api_update_skill(skill_id: str, body: UpdateSkillBody) -> Dict[str, Any]:
     """更新 Skill。"""
     if skill_id.startswith("builtin_"):
-        raise HTTPException(status_code=400, detail="Cannot update built-in skill")
+        raise_api_error(
+            status_code=400,
+            code="skill_builtin_immutable",
+            message="Cannot update built-in skill",
+            details={"skill_id": skill_id},
+        )
     skill = get_skill(skill_id)
     if not skill:
-        raise HTTPException(status_code=404, detail="Skill not found")
+        raise_api_error(
+            status_code=404,
+            code="skill_not_found",
+            message=MSG_SKILL_NOT_FOUND,
+            details={"skill_id": skill_id},
+        )
     updated = update_skill(
         skill_id,
         name=body.name,
@@ -99,34 +118,52 @@ async def api_update_skill(skill_id: str, body: UpdateSkillBody):
         enabled=body.enabled,
     )
     if not updated:
-        raise HTTPException(status_code=500, detail="Failed to update skill")
-    return updated.to_dict()
+        raise_api_error(status_code=500, code="skill_update_failed", message="Failed to update skill")
+    assert updated is not None
+    return cast(Dict[str, Any], updated.to_dict())
 
 
 @router.delete("/{skill_id}")
-async def api_delete_skill(skill_id: str):
+async def api_delete_skill(skill_id: str) -> Dict[str, Any]:
     """删除 Skill。内置 builtin_* 不可删除。"""
     if skill_id.startswith("builtin_"):
-        raise HTTPException(status_code=400, detail="Cannot delete built-in skill")
+        raise_api_error(
+            status_code=400,
+            code="skill_builtin_immutable",
+            message="Cannot delete built-in skill",
+            details={"skill_id": skill_id},
+        )
     if not delete_skill(skill_id):
-        raise HTTPException(status_code=404, detail="Skill not found")
+        raise_api_error(
+            status_code=404,
+            code="skill_not_found",
+            message=MSG_SKILL_NOT_FOUND,
+            details={"skill_id": skill_id},
+        )
     return {"status": "ok"}
 
 
 @router.post("/{skill_id}/execute")
-async def api_execute_skill(skill_id: str, body: ExecuteSkillBody):
+async def api_execute_skill(skill_id: str, body: ExecuteSkillBody) -> Dict[str, Any]:
     """执行 Skill（供 Agent Runtime 使用）。返回 type + output（及可选的 error / prompt）。"""
     from core.skills.contract import SkillExecutionRequest
     
     skill = get_skill(skill_id)
     if not skill:
-        raise HTTPException(status_code=404, detail="Skill not found")
+        raise_api_error(
+            status_code=404,
+            code="skill_not_found",
+            message=MSG_SKILL_NOT_FOUND,
+            details={"skill_id": skill_id},
+        )
 
     blocked = get_blocked_skills([skill_id])
     if blocked:
-        raise HTTPException(
+        raise_api_error(
             status_code=403,
-            detail=f"dangerous skill execution blocked by server policy: {blocked[0]}",
+            code="skill_execution_blocked",
+            message=f"dangerous skill execution blocked by server policy: {blocked[0]}",
+            details={"skill_id": skill_id, "blocked_skill": blocked[0]},
         )
     
     # 构建执行请求
@@ -144,6 +181,8 @@ async def api_execute_skill(skill_id: str, body: ExecuteSkillBody):
     if response.status == "success":
         return {"type": "success", "output": response.output}
     elif response.status == "timeout":
-        return {"type": "error", "error": response.error.get("message", "Timeout")}
+        error = response.error if isinstance(response.error, dict) else {}
+        return {"type": "error", "error": error.get("message", "Timeout")}
     else:
-        return {"type": "error", "error": response.error.get("message", "Unknown error")}
+        error = response.error if isinstance(response.error, dict) else {}
+        return {"type": "error", "error": error.get("message", "Unknown error")}

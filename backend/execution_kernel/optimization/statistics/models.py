@@ -6,7 +6,11 @@ V2.7: Optimization Layer - Statistics Models
 
 from dataclasses import dataclass, field
 from typing import Optional
-from datetime import datetime
+from datetime import UTC, datetime
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -33,7 +37,7 @@ class NodeStatistics:
     failure_count: int = 0
     total_latency_ms: float = 0.0
     retry_success_count: int = 0
-    last_updated: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=_utc_now)
     
     @property
     def success_rate(self) -> float:
@@ -97,7 +101,7 @@ class SkillStatistics:
     total_latency_ms: float = 0.0
     retry_success_count: int = 0
     node_count: int = 0
-    last_updated: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=_utc_now)
     
     @property
     def success_rate(self) -> float:

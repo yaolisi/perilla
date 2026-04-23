@@ -5,7 +5,7 @@ V2.7: Optimization Layer - Statistics Collector
 """
 
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import UTC, datetime
 from collections import defaultdict
 import logging
 
@@ -19,6 +19,10 @@ from execution_kernel.optimization.statistics.dataset import OptimizationDataset
 
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class StatisticsCollector:
@@ -67,7 +71,7 @@ class StatisticsCollector:
         if not events:
             logger.debug(f"No events found for instance {instance_id}")
             return OptimizationDataset(
-                created_at=datetime.utcnow(),
+                created_at=_utc_now(),
                 event_count=0,
                 instance_count=1,
             )
@@ -78,7 +82,7 @@ class StatisticsCollector:
         return OptimizationDataset(
             node_stats=node_stats,
             skill_stats=skill_stats,
-            created_at=datetime.utcnow(),
+            created_at=_utc_now(),
             event_count=len(events),
             instance_count=1,
         )
@@ -104,7 +108,7 @@ class StatisticsCollector:
         # 合并所有数据集
         if not datasets:
             return OptimizationDataset(
-                created_at=datetime.utcnow(),
+                created_at=_utc_now(),
                 event_count=0,
                 instance_count=0,
             )
@@ -135,7 +139,7 @@ class StatisticsCollector:
         
         if not instance_ids:
             return OptimizationDataset(
-                created_at=datetime.utcnow(),
+                created_at=_utc_now(),
                 event_count=0,
                 instance_count=0,
             )
@@ -229,7 +233,7 @@ class StatisticsCollector:
             if event_type == ExecutionEventType.NODE_STARTED:
                 node_id = payload.get("node_id")
                 if node_id:
-                    node_start_times[node_id] = datetime.utcnow()
+                    node_start_times[node_id] = _utc_now()
                     node_data[node_id]["skill_name"] = payload.get("node_type")
             
             elif event_type == ExecutionEventType.NODE_SUCCEEDED:
@@ -277,7 +281,7 @@ class StatisticsCollector:
                 failure_count=data["failure_count"],
                 total_latency_ms=data["total_latency_ms"],
                 retry_success_count=data["retry_success_count"],
-                last_updated=datetime.utcnow(),
+                last_updated=_utc_now(),
             )
         
         return stats
@@ -322,7 +326,7 @@ class StatisticsCollector:
                 total_latency_ms=data["total_latency_ms"],
                 retry_success_count=data["retry_success_count"],
                 node_count=len(data["node_ids"]),
-                last_updated=datetime.utcnow(),
+                last_updated=_utc_now(),
             )
         
         return stats

@@ -9,10 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
-from datetime import datetime
+from datetime import UTC, datetime
 import threading
 
 from log import log_structured
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 # ---------- 性能指标 ----------
@@ -75,10 +79,10 @@ class ExecutionKernelStats:
     - 回退率（Kernel -> PlanBasedExecutor fallback）
     """
     
-    _instance = None
+    _instance: Optional["ExecutionKernelStats"] = None
     _lock = threading.Lock()
     
-    def __new__(cls):
+    def __new__(cls) -> "ExecutionKernelStats":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -86,7 +90,7 @@ class ExecutionKernelStats:
                     cls._instance._reset()
         return cls._instance
     
-    def _reset(self):
+    def _reset(self) -> None:
         """重置统计"""
         self._total_runs = 0
         self._kernel_runs = 0
@@ -97,8 +101,8 @@ class ExecutionKernelStats:
         self._total_replans = 0
         self._total_steps = 0
         self._failed_steps = 0
-        self._run_durations_ms: list = []
-        self._last_flush = datetime.utcnow()
+        self._run_durations_ms: list[float] = []
+        self._last_flush = _utc_now()
     
     def record_run(
         self,
@@ -109,7 +113,7 @@ class ExecutionKernelStats:
         step_count: int = 0,
         failed_steps: int = 0,
         duration_ms: float = 0,
-    ):
+    ) -> None:
         """记录一次执行"""
         self._total_runs += 1
         
@@ -145,7 +149,7 @@ class ExecutionKernelStats:
                 return None
             idx = int(count * p / 100)
             idx = min(idx, count - 1)
-            return durations[idx]
+            return float(durations[idx])
         
         return {
             "total_runs": self._total_runs,
@@ -172,10 +176,10 @@ class ExecutionKernelStats:
             "p95_duration_ms": percentile(95),
         }
     
-    def flush(self):
+    def flush(self) -> None:
         """刷新统计到日志"""
         stats = self.get_stats()
-        stats["flush_time"] = datetime.utcnow().isoformat()
+        stats["flush_time"] = _utc_now().isoformat()
         log_structured("KernelStats", "aggregate", level="info", **stats)
 
 

@@ -73,7 +73,7 @@ class WorkflowVersionService:
         dag = self._normalize_dag(dag)
 
         # 验证 DAG
-        errors = dag.validate()
+        errors = dag.validate_dag()
         if errors:
             raise ValueError(f"DAG validation failed: {'; '.join(errors)}")
         
@@ -104,70 +104,91 @@ class WorkflowVersionService:
     @staticmethod
     def _normalize_dag(dag: WorkflowDAG) -> WorkflowDAG:
         """配置归一化：收敛历史字段，降低前后端字段漂移风险。"""
-        normalized_nodes: List[WorkflowNode] = []
-        for node in dag.nodes:
-            cfg = dict(node.config or {})
-            node_type = str(node.type or "").strip().lower()
-            workflow_node_type = str(cfg.get("workflow_node_type") or node_type).strip().lower()
-
-            if workflow_node_type == "llm":
-                model_id = str(cfg.get("model_id") or "").strip()
-                legacy_model = str(cfg.get("model") or "").strip()
-                if not model_id and legacy_model:
-                    cfg["model_id"] = legacy_model
-                cfg.pop("model", None)
-
-            if workflow_node_type == "agent":
-                timeout = cfg.get("timeout")
-                legacy_timeout = cfg.get("agent_timeout_seconds")
-                if (timeout is None or timeout == "") and (legacy_timeout is not None and legacy_timeout != ""):
-                    cfg["timeout"] = legacy_timeout
-                cfg.pop("agent_timeout_seconds", None)
-
-            if workflow_node_type in {"tool", "skill"}:
-                tool_name = str(cfg.get("tool_name") or "").strip()
-                tool_id = str(cfg.get("tool_id") or "").strip()
-                if not tool_name and tool_id:
-                    cfg["tool_name"] = tool_id
-                cfg.pop("tool_id", None)
-
-            normalized_nodes.append(
-                WorkflowNode(
-                    id=node.id,
-                    type=node.type,
-                    name=node.name,
-                    description=node.description,
-                    config=cfg,
-                    position=node.position,
-                )
-            )
-
-        normalized_edges: List[WorkflowEdge] = []
-        for edge in dag.edges:
-            source_handle = str(edge.source_handle or "").strip().lower() or None
-            label = str(edge.label or "").strip().lower() or None
-
-            if not source_handle and label in {"true", "false", "continue", "exit", "condition_true", "condition_false", "loop_continue", "loop_exit"}:
-                source_handle = label
-            if not label and source_handle in {"true", "false", "continue", "exit"}:
-                label = source_handle
-
-            normalized_edges.append(
-                WorkflowEdge(
-                    from_node=edge.from_node,
-                    to_node=edge.to_node,
-                    source_handle=source_handle,
-                    target_handle=edge.target_handle,
-                    condition=edge.condition,
-                    label=label,
-                )
-            )
+        normalized_nodes = [WorkflowVersionService._normalize_node(node) for node in dag.nodes]
+        normalized_edges = [WorkflowVersionService._normalize_edge(edge) for edge in dag.edges]
 
         return WorkflowDAG(
             nodes=normalized_nodes,
             edges=normalized_edges,
             entry_node=dag.entry_node,
             global_config=dag.global_config,
+        )
+
+    @staticmethod
+    def _normalize_node(node: WorkflowNode) -> WorkflowNode:
+        cfg = dict(node.config or {})
+        node_type = str(node.type or "").strip().lower()
+        workflow_node_type = str(cfg.get("workflow_node_type") or node_type).strip().lower()
+
+        WorkflowVersionService._normalize_llm_config(cfg, workflow_node_type)
+        WorkflowVersionService._normalize_agent_config(cfg, workflow_node_type)
+        WorkflowVersionService._normalize_tool_config(cfg, workflow_node_type)
+
+        return WorkflowNode(
+            id=node.id,
+            type=node.type,
+            name=node.name,
+            description=node.description,
+            config=cfg,
+            position=node.position,
+        )
+
+    @staticmethod
+    def _normalize_llm_config(cfg: Dict[str, Any], workflow_node_type: str) -> None:
+        if workflow_node_type != "llm":
+            return
+        model_id = str(cfg.get("model_id") or "").strip()
+        legacy_model = str(cfg.get("model") or "").strip()
+        if not model_id and legacy_model:
+            cfg["model_id"] = legacy_model
+        cfg.pop("model", None)
+
+    @staticmethod
+    def _normalize_agent_config(cfg: Dict[str, Any], workflow_node_type: str) -> None:
+        if workflow_node_type != "agent":
+            return
+        timeout = cfg.get("timeout")
+        legacy_timeout = cfg.get("agent_timeout_seconds")
+        if (timeout is None or timeout == "") and (legacy_timeout is not None and legacy_timeout != ""):
+            cfg["timeout"] = legacy_timeout
+        cfg.pop("agent_timeout_seconds", None)
+
+    @staticmethod
+    def _normalize_tool_config(cfg: Dict[str, Any], workflow_node_type: str) -> None:
+        if workflow_node_type not in {"tool", "skill"}:
+            return
+        tool_name = str(cfg.get("tool_name") or "").strip()
+        tool_id = str(cfg.get("tool_id") or "").strip()
+        if not tool_name and tool_id:
+            cfg["tool_name"] = tool_id
+        cfg.pop("tool_id", None)
+
+    @staticmethod
+    def _normalize_edge(edge: WorkflowEdge) -> WorkflowEdge:
+        source_handle = str(edge.source_handle or "").strip().lower() or None
+        label = str(edge.label or "").strip().lower() or None
+
+        if not source_handle and label in {
+            "true",
+            "false",
+            "continue",
+            "exit",
+            "condition_true",
+            "condition_false",
+            "loop_continue",
+            "loop_exit",
+        }:
+            source_handle = label
+        if not label and source_handle in {"true", "false", "continue", "exit"}:
+            label = source_handle
+
+        return WorkflowEdge(
+            from_node=edge.from_node,
+            to_node=edge.to_node,
+            source_handle=source_handle,
+            target_handle=edge.target_handle,
+            condition=edge.condition,
+            label=label,
         )
     
     def get_version(self, version_id: str) -> Optional[WorkflowVersion]:
@@ -215,7 +236,7 @@ class WorkflowVersionService:
             return None
         
         # 验证 DAG
-        errors = version.dag.validate(
+        errors = version.dag.validate_dag(
             require_condition_branches=True,
             require_loop_branches=True,
         )
@@ -255,7 +276,7 @@ class WorkflowVersionService:
         require_loop_branches: bool = False,
     ) -> List[str]:
         """验证 DAG"""
-        return dag.validate(
+        return dag.validate_dag(
             require_condition_branches=require_condition_branches,
             require_loop_branches=require_loop_branches,
         )

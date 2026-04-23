@@ -1,7 +1,7 @@
 import unicodedata
 from pathlib import Path
 import asyncio
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -100,19 +100,22 @@ class FileReadTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "path": {
-                "type": "string",
-                "description": "File path: relative to workspace root, or absolute path under allowed roots (e.g. /Users/tony/file.txt or /path/to/file.txt if allowed)."
-            }
-        }, required=["path"])
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "path": {
+                    "type": "string",
+                    "description": "File path: relative to workspace root, or absolute path under allowed roots (e.g. /Users/tony/file.txt or /path/to/file.txt if allowed)."
+                }
+            }, required=["path"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
         return {"type": "string"}
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["file.read"]
 
     @property

@@ -10,7 +10,7 @@ import asyncio
 import json
 import platform
 from pathlib import Path
-from typing import Union, Optional, Dict, Any
+from typing import Union, Optional, Dict, Any, cast
 
 try:
     import numpy as np
@@ -27,6 +27,7 @@ except ImportError:
 try:
     from faster_whisper import WhisperModel
     FASTER_WHISPER_AVAILABLE = True
+    WHISPER_AVAILABLE = False
 except ImportError:
     FASTER_WHISPER_AVAILABLE = False
     try:
@@ -44,7 +45,9 @@ class TorchASRRuntime:
     从 model.json 读取配置，支持多种设备（CPU/CUDA/MPS）。
     """
 
-    def __init__(self, model_dir: Union[str, Path], model_config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self, model_dir: Union[str, Path], model_config: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
         初始化 ASR Runtime
         
@@ -54,7 +57,7 @@ class TorchASRRuntime:
         """
         self._model_dir = Path(model_dir)
         self._config = model_config or self._load_config()
-        self._model = None
+        self._model: Any = None
         self._lock = asyncio.Lock()
         self._use_faster_whisper = False  # 将在 _load_model 中设置
         
@@ -75,7 +78,7 @@ class TorchASRRuntime:
             raise FileNotFoundError(f"model.json not found in {self._model_dir}")
         
         with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            return cast(Dict[str, Any], json.load(f))
 
     def _get_device(self) -> str:
         """
@@ -224,7 +227,7 @@ class TorchASRRuntime:
                 seg["text"] = zhconv.convert(seg["text"], "zh-cn")
         return result
 
-    def _prepare_audio(self, audio_input: Union[str, bytes]) -> Union[str, bytes]:
+    def _prepare_audio(self, audio_input: Union[str, bytes]) -> Union[str, Any]:
         """
         准备音频输入
         
@@ -318,14 +321,14 @@ class TorchASRRuntime:
         self,
         audio: Union[str, Any],  # str 或 np.ndarray
         language: Optional[str],
-        options: Dict[str, Any]
+        options: Dict[str, Any],
     ) -> Dict[str, Any]:
         """使用 faster-whisper 转录"""
         
         beam_size = options.get("beam_size", 5)
         vad_filter = options.get("vad_filter", False)
         
-        def _run():
+        def _run() -> Dict[str, Any]:
             segments, info = self._model.transcribe(
                 audio,
                 language=language,
@@ -364,13 +367,13 @@ class TorchASRRuntime:
         self,
         audio: Union[str, Any],  # str 或 np.ndarray
         language: Optional[str],
-        options: Dict[str, Any]
+        options: Dict[str, Any],
     ) -> Dict[str, Any]:
         """使用原生 Whisper 转录"""
         
         temperature = options.get("temperature", 0.0)
         
-        def _run():
+        def _run() -> Dict[str, Any]:
             result = self._model.transcribe(
                 audio,
                 language=language,

@@ -3,7 +3,7 @@ V2.6: Observability & Replay Layer - Analytics Metrics
 基于事件流的指标计算
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List
 from datetime import datetime
 import logging
 
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from execution_kernel.events.event_store import EventStore
 from execution_kernel.events.event_types import ExecutionEventType
+from execution_kernel.optimization.snapshot.snapshot import OptimizationSnapshot
 
 
 logger = logging.getLogger(__name__)
@@ -178,27 +179,27 @@ class MetricsCalculator:
                 end_event = event
         
         if start_event and end_event:
-            return end_event.timestamp - start_event.timestamp
+            return float(end_event.timestamp - start_event.timestamp)
         return 0.0
     
     def _compute_avg_duration(self, events: List) -> float:
         """计算节点平均执行时长（毫秒）"""
-        node_durations = []
+        node_durations: List[float] = []
         
         for event in events:
             if event.event_type == ExecutionEventType.NODE_SUCCEEDED:
                 duration = event.payload.get("duration_ms")
                 if duration is not None:
-                    node_durations.append(duration)
+                    node_durations.append(float(duration))
         
         if not node_durations:
             return 0.0
         
-        return sum(node_durations) / len(node_durations)
+        return float(sum(node_durations) / len(node_durations))
     
     def _count_event_types(self, events: List) -> Dict[str, int]:
         """统计各事件类型数量"""
-        breakdown = {}
+        breakdown: Dict[str, int] = {}
         for event in events:
             event_type = event.event_type.value
             breakdown[event_type] = breakdown.get(event_type, 0) + 1
@@ -294,8 +295,8 @@ async def compute_metrics(instance_id: str, session: AsyncSession) -> Dict[str, 
 # ==================== V2.7: Optimization Layer Integration ====================
 
 def compute_optimization_impact(
-    before_snapshot,  # OptimizationSnapshot
-    after_snapshot,   # OptimizationSnapshot
+    before_snapshot: OptimizationSnapshot,
+    after_snapshot: OptimizationSnapshot,
 ) -> Dict[str, Any]:
     """
     V2.7: 计算优化效果
@@ -323,7 +324,7 @@ def compute_optimization_impact(
     after_meta = after_snapshot.metadata or {}
     
     # 计算平均成功率（从节点权重推导）
-    def _compute_avg_success_rate(snapshot) -> float:
+    def _compute_avg_success_rate(snapshot: OptimizationSnapshot) -> float:
         if not snapshot.node_weights:
             return 0.0
         # 权重越高表示成功率越高，归一化到 [0, 1]
@@ -337,7 +338,7 @@ def compute_optimization_impact(
             return 1.0  # 所有权重相同，表示所有节点表现一致
         # 计算平均归一化权重作为成功率近似
         normalized = [(w - min_weight) / (max_weight - min_weight) for w in weights]
-        return sum(normalized) / len(normalized) if normalized else 0.0
+        return float(sum(normalized) / len(normalized)) if normalized else 0.0
     
     success_rate_before = _compute_avg_success_rate(before_snapshot)
     success_rate_after = _compute_avg_success_rate(after_snapshot)
@@ -349,9 +350,9 @@ def compute_optimization_impact(
         improvement_pct = 0.0 if success_rate_after == 0 else 100.0
     
     # 计算平均延迟
-    def _compute_avg_latency(snapshot) -> float:
-        latencies = list(snapshot.latency_estimates.values())
-        return sum(latencies) / len(latencies) if latencies else 0.0
+    def _compute_avg_latency(snapshot: OptimizationSnapshot) -> float:
+        latencies = [float(v) for v in snapshot.latency_estimates.values()]
+        return float(sum(latencies) / len(latencies)) if latencies else 0.0
     
     latency_before_ms = _compute_avg_latency(before_snapshot)
     latency_after_ms = _compute_avg_latency(after_snapshot)

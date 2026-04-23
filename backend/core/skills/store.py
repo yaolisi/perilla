@@ -6,13 +6,17 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any, Dict, List, Optional, cast
 
 from core.data.base import db_session
 from core.data.models.skill import Skill as SkillORM
 from log import logger
 from core.skills.models import Skill, SkillType
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class SkillStore:
@@ -85,21 +89,22 @@ class SkillStore:
             skill_orm = db.query(SkillORM).filter(SkillORM.id == skill_id).first()
             if not skill_orm:
                 return None
+            orm = cast(Any, skill_orm)
 
             if name is not None:
-                skill_orm.name = name
+                orm.name = name
             if description is not None:
-                skill_orm.description = description
+                orm.description = description
             if category is not None:
-                skill_orm.category = category
+                orm.category = category
             if type is not None:
-                skill_orm.type = type
+                orm.type = type
             if definition is not None:
-                skill_orm.definition = json.dumps(definition)
+                orm.definition = json.dumps(definition)
             if input_schema is not None:
-                skill_orm.input_schema = json.dumps(input_schema)
+                orm.input_schema = json.dumps(input_schema)
             if enabled is not None:
-                skill_orm.enabled = 1 if enabled else 0
+                orm.enabled = 1 if enabled else 0
 
         return self.get(skill_id)
 
@@ -112,19 +117,20 @@ class SkillStore:
                 return True
         return False
 
-    def _orm_to_skill(self, skill_orm: SkillORM) -> Skill:
+    def _orm_to_skill(self, skill_orm: Any) -> Skill:
         """ORM 对象转 Skill"""
+        orm = cast(Any, skill_orm)
         return Skill(
-            id=skill_orm.id,
-            name=skill_orm.name,
-            description=skill_orm.description or "",
-            category=skill_orm.category or "",
-            type=skill_orm.type,  # type: ignore
-            definition=json.loads(skill_orm.definition) if skill_orm.definition else {},
-            input_schema=json.loads(skill_orm.input_schema) if skill_orm.input_schema else {},
-            enabled=bool(skill_orm.enabled),
-            created_at=skill_orm.created_at if skill_orm.created_at else datetime.utcnow(),
-            updated_at=skill_orm.updated_at if skill_orm.updated_at else datetime.utcnow(),
+            id=str(orm.id),
+            name=str(orm.name),
+            description=str(orm.description or ""),
+            category=str(orm.category or ""),
+            type=cast(SkillType, orm.type),
+            definition=json.loads(cast(str, orm.definition)) if orm.definition else {},
+            input_schema=json.loads(cast(str, orm.input_schema)) if orm.input_schema else {},
+            enabled=bool(orm.enabled),
+            created_at=cast(datetime, orm.created_at) if orm.created_at else _utc_now(),
+            updated_at=cast(datetime, orm.updated_at) if orm.updated_at else _utc_now(),
         )
 
 

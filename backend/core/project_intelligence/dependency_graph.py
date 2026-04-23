@@ -292,59 +292,57 @@ def parse_cmake_file(content: str) -> Dict[str, Any]:
     - Include directories
     - Source files
     """
-    result = {
-        'project_name': None,
-        'cmake_minimum_version': None,
-        'executables': [],
-        'libraries': [],
-        'dependencies': [],  # from find_package
-        'link_libraries': [],  # from target_link_libraries
-        'include_dirs': [],
-        'source_files': [],
-    }
+    project_name: Optional[str] = None
+    cmake_minimum_version: Optional[str] = None
+    executables: List[str] = []
+    libraries: List[str] = []
+    dependencies: List[str] = []  # from find_package
+    link_libraries: List[str] = []  # from target_link_libraries
+    include_dirs: List[str] = []
+    source_files: List[str] = []
     
     lines = content.split('\n')
     
     # Project name
     match = re.search(r'^\s*project\s*\(\s*([a-zA-Z0-9_]+)', content, re.MULTILINE)
     if match:
-        result['project_name'] = match.group(1)
+        project_name = match.group(1)
     
     # CMake minimum version
     match = re.search(r'^\s*cmake_minimum_required\s*\(\s*VERSION\s+([0-9.]+)', content, re.MULTILINE)
     if match:
-        result['cmake_minimum_version'] = match.group(1)
+        cmake_minimum_version = match.group(1)
     
     # Find packages (dependencies)
     find_package_pattern = re.compile(r'^\s*find_package\s*\(\s*([a-zA-Z0-9_]+)', re.MULTILINE)
     for match in find_package_pattern.finditer(content):
         pkg = match.group(1)
-        if pkg not in result['dependencies']:
-            result['dependencies'].append(pkg)
+        if pkg not in dependencies:
+            dependencies.append(pkg)
     
     # Add_subdirectory
     add_subdir_pattern = re.compile(r'^\s*add_subdirectory\s*\(\s*([a-zA-Z0-9_/.-]+)', re.MULTILINE)
     for match in add_subdir_pattern.finditer(content):
-        result['dependencies'].append(match.group(1))
+        dependencies.append(match.group(1))
     
     # Executables
     add_executable_pattern = re.compile(r'^\s*add_executable\s*\(\s*([a-zA-Z0-9_]+)', re.MULTILINE)
     for match in add_executable_pattern.finditer(content):
-        result['executables'].append(match.group(1))
+        executables.append(match.group(1))
     
     # Libraries (static/shared)
     add_library_pattern = re.compile(r'^\s*add_library\s*\(\s*([a-zA-Z0-9_]+)', re.MULTILINE)
     for match in add_library_pattern.finditer(content):
         lib = match.group(1)
         if lib not in ['${', 'SHARED', 'STATIC', 'OBJECT', 'MODULE']:  # Skip keywords
-            result['libraries'].append(lib)
+            libraries.append(lib)
     
     # Target link libraries
     link_lib_pattern = re.compile(r'^\s*target_link_libraries\s*\(\s*([a-zA-Z0-9_]+)\s+([a-zA-Z0-9_${}]+)', re.MULTILINE)
     for match in link_lib_pattern.finditer(content):
         lib = match.group(2).strip()
-        if lib not in result['link_libraries']:
-            result['link_libraries'].append(lib)
+        if lib not in link_libraries:
+            link_libraries.append(lib)
     
     # Include directories
     include_dir_pattern = re.compile(r'^\s*include_directories\s*\(\s*([^")]+)', re.MULTILINE)
@@ -353,8 +351,8 @@ def parse_cmake_file(content: str) -> Dict[str, Any]:
         for d in dirs:
             d = d.strip().strip('"').strip()
             if d and d not in ['PUBLIC', 'PRIVATE', 'INTERFACE']:
-                if d not in result['include_dirs']:
-                    result['include_dirs'].append(d)
+                if d not in include_dirs:
+                    include_dirs.append(d)
     
     # target_include_directories
     target_include_pattern = re.compile(r'^\s*target_include_directories\s*\([^)]+INTERFACE\s+([^)]+)\)', re.MULTILINE)
@@ -363,10 +361,19 @@ def parse_cmake_file(content: str) -> Dict[str, Any]:
         for d in dirs:
             d = d.strip().strip('"').strip()
             if d and d not in ['PUBLIC', 'PRIVATE', 'INTERFACE']:
-                if d not in result['include_dirs']:
-                    result['include_dirs'].append(d)
-    
-    return result
+                if d not in include_dirs:
+                    include_dirs.append(d)
+
+    return {
+        'project_name': project_name,
+        'cmake_minimum_version': cmake_minimum_version,
+        'executables': executables,
+        'libraries': libraries,
+        'dependencies': dependencies,
+        'link_libraries': link_libraries,
+        'include_dirs': include_dirs,
+        'source_files': source_files,
+    }
 
 
 # ============================================================

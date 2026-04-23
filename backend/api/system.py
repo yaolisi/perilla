@@ -1,18 +1,19 @@
-from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import StreamingResponse
 import asyncio
-import psutil
+import psutil  # type: ignore[import-untyped]
 import time
 import os
 import json
-import aiofiles
+import aiofiles  # type: ignore[import-untyped]
 from pathlib import Path
 from log import logger, log_structured
 
 import subprocess
-from typing import Optional, Literal
+from typing import Annotated, Any, Literal, Optional, Dict, AsyncIterator, cast
 from pydantic import BaseModel, Field, ConfigDict
 
+from api.errors import raise_api_error
 from config.settings import settings
 from core.system.settings_store import get_system_settings_store
 from core.system.feature_flags import get_feature_flags, set_feature_flags
@@ -25,6 +26,7 @@ router = APIRouter(
     tags=["system"],
     dependencies=[Depends(require_authenticated_platform_admin)],
 )
+KERNEL_ADAPTER_NOT_INITIALIZED = "Kernel adapter not initialized"
 
 ALLOWED_SYSTEM_CONFIG_KEYS = {
     "offlineMode",
@@ -86,16 +88,21 @@ class SystemConfigUpdate(BaseModel):
     chaosNetErrWarn: Optional[int] = Field(default=None, ge=0, le=10000)
 
 
-def _validate_system_config_payload(config_data: dict) -> dict:
+def _validate_system_config_payload(config_data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(config_data, dict):
-        raise HTTPException(status_code=400, detail="config payload must be a JSON object")
+        raise_api_error(
+            status_code=400,
+            code="system_config_invalid_type",
+            message="config payload must be a JSON object",
+        )
 
     unsupported = sorted(set(config_data.keys()) - ALLOWED_SYSTEM_CONFIG_KEYS)
     if unsupported:
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail={
-                "message": "unsupported system config keys",
+            code="system_config_unsupported_keys",
+            message="unsupported system config keys",
+            details={
                 "unsupported_keys": unsupported,
                 "allowed_keys": sorted(ALLOWED_SYSTEM_CONFIG_KEYS),
             },
@@ -105,13 +112,18 @@ def _validate_system_config_payload(config_data: dict) -> dict:
         validated = SystemConfigUpdate.model_validate(config_data)
     except Exception as e:
         if hasattr(e, "errors"):
-            raise HTTPException(status_code=400, detail={"message": "invalid system config payload", "errors": e.errors()})
-        raise HTTPException(status_code=400, detail=str(e))
+            raise_api_error(
+                status_code=400,
+                code="system_config_validation_failed",
+                message="invalid system config payload",
+                details={"errors": e.errors()},
+            )
+        raise_api_error(status_code=400, code="system_config_invalid", message=str(e))
 
-    return validated.model_dump(exclude_none=True)
+    return cast(Dict[str, Any], validated.model_dump(exclude_none=True))
 
 @router.get("/config")
-async def get_config():
+async def get_config() -> Dict[str, Any]:
     """获取系统配置"""
     store = get_system_settings_store()
     db_settings = store.get_all_settings()
@@ -128,7 +140,11 @@ async def get_config():
     }
 
 @router.post("/config")
-async def update_config(config_data: dict, _role=Depends(require_platform_admin)):
+async def update_config(
+    config_data: Dict[str, Any],
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
     """更新系统配置"""
     config_data = _validate_system_config_payload(config_data)
     store = get_system_settings_store()
@@ -137,7 +153,7 @@ async def update_config(config_data: dict, _role=Depends(require_platform_admin)
     return {"success": True}
 
 @router.post("/engine/reload")
-async def reload_engine(_role=Depends(require_platform_admin)):
+async def reload_engine(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
     """重载推理引擎"""
     logger.info("[System] Reloading inference engine...")
     # 这里可以添加实际的重载逻辑，比如重启 Ollama 服务或重置 llama.cpp 实例
@@ -145,7 +161,7 @@ async def reload_engine(_role=Depends(require_platform_admin)):
     return {"success": True}
 
 @router.get("/browse-directory")
-async def browse_directory():
+async def browse_directory() -> Dict[str, Optional[str]]:
     """打开本地目录选择器 (目前仅支持 MacOS)"""
     import platform
     import subprocess
@@ -160,7 +176,7 @@ async def browse_directory():
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await proc.communicate()
+            stdout, _ = await proc.communicate()
             if proc.returncode == 0:
                 return {"path": stdout.decode().strip()}
         elif system == "Windows":
@@ -171,7 +187,7 @@ async def browse_directory():
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await proc.communicate()
+            stdout, _ = await proc.communicate()
             if proc.returncode == 0:
                 return {"path": stdout.decode().strip()}
     except Exception as e:
@@ -182,17 +198,17 @@ async def browse_directory():
 # 获取启动时间
 BOOT_TIME = time.time()
 
-def get_node_version():
+def get_node_version() -> str:
     """获取 Node.js 版本"""
     try:
         result = subprocess.run(["node", "-v"], capture_output=True, text=True, timeout=2)
         if result.returncode == 0:
             return result.stdout.strip()
-    except:
+    except Exception:
         pass
     return "N/A"
 
-def get_gpu_metrics():
+def get_gpu_metrics() -> Dict[str, Any]:
     """获取真实的 GPU 指标"""
     gpu_metrics = {
         "gpu_usage": 0,
@@ -203,7 +219,7 @@ def get_gpu_metrics():
     
     # 1. 尝试 NVIDIA GPU (pynvml)
     try:
-        import pynvml
+        import pynvml  # type: ignore[import-not-found]
         pynvml.nvmlInit()
         device_count = pynvml.nvmlDeviceGetCount()
         if device_count > 0:
@@ -218,7 +234,7 @@ def get_gpu_metrics():
             gpu_metrics["cuda_version"] = f"{cuda_ver // 1000}.{(cuda_ver % 1000) // 10}"
             pynvml.nvmlShutdown()
             return gpu_metrics
-    except:
+    except Exception:
         pass
 
     # 2. 尝试 MacOS Apple Silicon (MPS / Unified Memory)
@@ -241,20 +257,20 @@ def get_gpu_metrics():
                 if match:
                     gpu_metrics["gpu_usage"] = int(match.group(1))
             return gpu_metrics
-        except:
+        except Exception:
             pass
 
     return gpu_metrics
 
 @router.get("/runtime-metrics")
-async def get_runtime_metrics_api():
+async def get_runtime_metrics_api() -> Dict[str, Any]:
     """V2.9 运行时稳定层指标：按模型的请求数、延迟、队列、tokens"""
     from core.runtime import get_runtime_metrics
-    return get_runtime_metrics().get_metrics()
+    return cast(Dict[str, Any], get_runtime_metrics().get_metrics())
 
 
 @router.get("/observability-summary")
-async def observability_summary():
+async def observability_summary() -> Dict[str, Any]:
     """聚合观测摘要（用于生产巡检看板）。"""
     from core.runtime import get_runtime_metrics
 
@@ -273,12 +289,12 @@ async def observability_summary():
 
 
 @router.get("/storage-readiness")
-async def storage_readiness_api():
-    return storage_readiness(getattr(settings, "db_path", ""))
+async def storage_readiness_api() -> Dict[str, Any]:
+    return cast(Dict[str, Any], storage_readiness(getattr(settings, "db_path", "")))
 
 
 @router.get("/queue-summary")
-async def queue_summary_api():
+async def queue_summary_api() -> Dict[str, Any]:
     """统一任务负载摘要（workflow + image + runtime）。"""
     workflow_running = 0
     image_pending = 0
@@ -321,27 +337,39 @@ async def queue_summary_api():
     except Exception:
         runtime_models = 0
 
-    return build_unified_queue_summary(workflow_running, image_pending, image_running, runtime_models)
+    return cast(
+        Dict[str, Any],
+        build_unified_queue_summary(workflow_running, image_pending, image_running, runtime_models),
+    )
 
 
 @router.get("/feature-flags")
-async def get_feature_flags_api(request: Request):
+async def get_feature_flags_api(request: Request) -> Dict[str, Any]:
     tenant_id = getattr(request.state, "tenant_id", None)
     return {"tenant_id": tenant_id, "flags": get_feature_flags(tenant_id)}
 
 
 @router.post("/feature-flags")
-async def update_feature_flags_api(payload: dict, request: Request, _role=Depends(require_platform_admin)):
+async def update_feature_flags_api(
+    payload: Dict[str, Any],
+    request: Request,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
     flags = payload.get("flags", payload)
     if not isinstance(flags, dict):
-        raise HTTPException(status_code=400, detail="flags must be object")
+        raise_api_error(
+            status_code=400,
+            code="system_feature_flags_invalid",
+            message="flags must be object",
+        )
     tenant_id = getattr(request.state, "tenant_id", None)
     saved = set_feature_flags(flags, tenant_id=tenant_id)
     return {"success": True, "tenant_id": tenant_id, "flags": saved}
 
 
 @router.get("/metrics")
-async def get_metrics():
+async def get_metrics() -> Dict[str, Any]:
     """获取硬件指标"""
     from core.inference.stats.tracker import get_inference_stats
     
@@ -374,8 +402,63 @@ def format_uptime(seconds: int) -> str:
     minutes, seconds = divmod(remainder, 60)
     return f"{hours}h {minutes}m {seconds}s"
 
+
+def _is_log_line_skippable(line: str) -> bool:
+    return not line or line.startswith("Traceback") or line.startswith("File \"")
+
+
+def _parse_log_entries(lines: list[str]) -> list[Dict[str, Any]]:
+    entries: list[Dict[str, Any]] = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if _is_log_line_skippable(line):
+            continue
+        entry = parse_log_line(line)
+        if entry:
+            entries.append(entry)
+    return entries
+
+
+async def _read_recent_log_entries(
+    log_file_abs: Path, tail_count: int = 50
+) -> list[Dict[str, Any]]:
+    async with aiofiles.open(log_file_abs, mode='r', encoding='utf-8') as f:
+        lines = await f.readlines()
+    return _parse_log_entries(lines[-tail_count:])
+
+
+async def _read_incremental_log_entries(
+    log_file_abs: Path, last_size: int
+) -> tuple[list[Dict[str, Any]], int]:
+    current_size = log_file_abs.stat().st_size
+    if current_size <= last_size:
+        return [], last_size
+
+    async with aiofiles.open(log_file_abs, mode='r', encoding='utf-8') as f:
+        await f.seek(last_size)
+        new_lines = await f.readlines()
+    return _parse_log_entries(new_lines), current_size
+
+
+async def _tail_log_entries(
+    request: Request, log_file_abs: Path, last_size: int
+) -> AsyncIterator[Dict[str, Any]]:
+    while True:
+        if await request.is_disconnected():
+            break
+        try:
+            entries, next_size = await _read_incremental_log_entries(log_file_abs, last_size)
+            for entry in entries:
+                yield entry
+            last_size = next_size
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"Error reading log file: {e}")
+            await asyncio.sleep(1)
+
+
 @router.get("/logs/stream")
-async def stream_logs(request: Request):
+async def stream_logs(request: Request) -> StreamingResponse:
     """实时流式推送日志"""
     # 使用与 logger.py 相同的路径计算方式（基于 __file__ 的相对路径）
     # backend/api/system.py -> backend/api -> backend -> 项目根目录
@@ -385,7 +468,7 @@ async def stream_logs(request: Request):
     root_dir = backend_api_dir.parent.parent  # 项目根目录 (backend/api -> backend -> 项目根目录)
     log_file = root_dir / "logs" / "app.log"  # 已经是绝对路径
     
-    async def log_generator():
+    async def log_generator() -> AsyncIterator[str]:
         # 确保日志目录存在（log_file 已经是绝对路径）
         log_file_abs = log_file.resolve()  # 再次确保是绝对路径
         log_file_abs.parent.mkdir(parents=True, exist_ok=True)
@@ -397,51 +480,19 @@ async def stream_logs(request: Request):
             await asyncio.sleep(0.1)
 
         # 先读取最后 50 行
-        async with aiofiles.open(log_file_abs, mode='r', encoding='utf-8') as f:
-            lines = await f.readlines()
-            # 只处理最后 50 行，跳过空行和 Traceback 行
-            for line in lines[-50:]:
-                line = line.strip()
-                if not line or line.startswith("Traceback") or line.startswith("File \""):
-                    continue
-                entry = parse_log_line(line)
-                if entry:
-                    yield f"data: {json.dumps(entry)}\n\n"
+        initial_entries = await _read_recent_log_entries(log_file_abs, tail_count=50)
+        for entry in initial_entries:
+            yield f"data: {json.dumps(entry)}\n\n"
 
         # 持续监控新日志
         # 使用轮询方式监控文件变化，因为 aiofiles.readline() 在文件末尾不会阻塞
         last_size = log_file_abs.stat().st_size if log_file_abs.exists() else 0
-        
-        while True:
-            if await request.is_disconnected():
-                break
-            
-            try:
-                current_size = log_file_abs.stat().st_size
-                
-                # 如果文件大小增加，读取新内容
-                if current_size > last_size:
-                    async with aiofiles.open(log_file_abs, mode='r', encoding='utf-8') as f:
-                        await f.seek(last_size)
-                        new_lines = await f.readlines()
-                        for line in new_lines:
-                            line = line.strip()
-                            # 跳过空行和 Traceback 行
-                            if not line or line.startswith("Traceback") or line.startswith("File \""):
-                                continue
-                            entry = parse_log_line(line)
-                            if entry:
-                                yield f"data: {json.dumps(entry)}\n\n"
-                        last_size = current_size
-                
-                await asyncio.sleep(0.5)  # 轮询间隔
-            except Exception as e:
-                logger.error(f"Error reading log file: {e}")
-                await asyncio.sleep(1)
+        async for entry in _tail_log_entries(request, log_file_abs, last_size):
+            yield f"data: {json.dumps(entry)}\n\n"
 
     return StreamingResponse(log_generator(), media_type="text/event-stream")
 
-def parse_log_line(line: str) -> dict:
+def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     """
     解析日志行
     格式: [%(asctime)s] %(levelname)s [%(name)s] [%(filename)s:%(lineno)d] - %(message)s
@@ -498,7 +549,7 @@ def parse_log_line(line: str) -> dict:
 # ========== Execution Kernel 管理 API ==========
 
 @router.get("/kernel/stats")
-async def get_kernel_stats():
+async def get_kernel_stats() -> Dict[str, Any]:
     """
     获取 Execution Kernel 聚合统计指标
     
@@ -515,11 +566,11 @@ async def get_kernel_stats():
     - p95_duration_ms: P95 耗时
     """
     from core.agent_runtime.v2.observability import get_kernel_stats
-    return get_kernel_stats().get_stats()
+    return cast(Dict[str, Any], get_kernel_stats().get_stats())
 
 
 @router.get("/kernel/status")
-async def get_kernel_status():
+async def get_kernel_status() -> Dict[str, Any]:
     """
     获取 Execution Kernel 当前状态
     
@@ -536,7 +587,11 @@ async def get_kernel_status():
 
 
 @router.post("/kernel/toggle")
-async def toggle_kernel(data: dict, _role=Depends(require_platform_admin)):
+async def toggle_kernel(
+    data: Dict[str, Any],
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
     """
     运行时切换 Execution Kernel 开关
     
@@ -566,7 +621,7 @@ async def toggle_kernel(data: dict, _role=Depends(require_platform_admin)):
 
 
 @router.post("/kernel/stats/reset")
-async def reset_kernel_stats(_role=Depends(require_platform_admin)):
+async def reset_kernel_stats(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
     """重置 Kernel 统计指标"""
     from core.agent_runtime.v2.observability import get_kernel_stats
     stats = get_kernel_stats()
@@ -578,7 +633,7 @@ async def reset_kernel_stats(_role=Depends(require_platform_admin)):
 # ========== V2.7: Optimization Layer API ==========
 
 @router.get("/kernel/optimization")
-async def get_optimization_status():
+async def get_optimization_status() -> Dict[str, Any]:
     """
     V2.7: 获取 Optimization Layer 状态
     
@@ -594,15 +649,19 @@ async def get_optimization_status():
     if adapter is None:
         return {
             "enabled": False,
-            "error": "Kernel adapter not initialized",
+            "error": KERNEL_ADAPTER_NOT_INITIALIZED,
         }
     if not adapter._initialized:
         await adapter.initialize()
-    return adapter.get_optimization_status()
+    return cast(Dict[str, Any], adapter.get_optimization_status())
 
 
 @router.post("/kernel/optimization/rebuild-snapshot")
-async def rebuild_optimization_snapshot(data: dict = None, _role=Depends(require_platform_admin)):
+async def rebuild_optimization_snapshot(
+    data: Optional[Dict[str, Any]] = None,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
     """
     V2.7: 重新构建 OptimizationSnapshot
     
@@ -619,7 +678,7 @@ async def rebuild_optimization_snapshot(data: dict = None, _role=Depends(require
     
     adapter = get_kernel_adapter()
     if adapter is None:
-        return {"success": False, "error": "Kernel adapter not initialized"}
+        return {"success": False, "error": KERNEL_ADAPTER_NOT_INITIALIZED}
     if not adapter._initialized:
         await adapter.initialize()
     
@@ -649,7 +708,11 @@ async def rebuild_optimization_snapshot(data: dict = None, _role=Depends(require
 
 
 @router.post("/kernel/optimization/config")
-async def set_optimization_config(data: dict, _role=Depends(require_platform_admin)):
+async def set_optimization_config(
+    data: Dict[str, Any],
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
     """
     V2.7: 更新 Optimization 配置
     
@@ -667,7 +730,7 @@ async def set_optimization_config(data: dict, _role=Depends(require_platform_adm
     
     adapter = get_kernel_adapter()
     if adapter is None:
-        return {"success": False, "error": "Kernel adapter not initialized"}
+        return {"success": False, "error": KERNEL_ADAPTER_NOT_INITIALIZED}
     if not adapter._initialized:
         await adapter.initialize()
     
@@ -699,7 +762,7 @@ async def set_optimization_config(data: dict, _role=Depends(require_platform_adm
 
 
 @router.get("/kernel/optimization/impact-report")
-async def get_optimization_impact_report():
+async def get_optimization_impact_report() -> Dict[str, Any]:
     """
     V2.7: 获取优化效果报告
     
@@ -714,7 +777,7 @@ async def get_optimization_impact_report():
     
     adapter = get_kernel_adapter()
     if adapter is None:
-        return {"error": "Kernel adapter not initialized"}
+        return {"error": KERNEL_ADAPTER_NOT_INITIALIZED}
     
     if not adapter._initialized:
         await adapter.initialize()

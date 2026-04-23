@@ -7,11 +7,15 @@ WorkflowVersion 包含实际的 DAG 定义。
 
 from enum import Enum
 from typing import Dict, Any, Optional, List
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import UTC, datetime
+from pydantic import BaseModel, ConfigDict, Field
 import uuid
 import hashlib
 import json
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class WorkflowVersionState(str, Enum):
@@ -37,8 +41,7 @@ class WorkflowNode(BaseModel):
         description="UI 位置 {x, y}"
     )
     
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
 
 class WorkflowEdge(BaseModel):
@@ -59,8 +62,7 @@ class WorkflowEdge(BaseModel):
     )
     label: Optional[str] = Field(default=None, description="边标签")
     
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
 
 class WorkflowDAG(BaseModel):
@@ -88,8 +90,7 @@ class WorkflowDAG(BaseModel):
         description="全局执行配置"
     )
     
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
     
     @staticmethod
     def _normalize_node_type(node_type: Optional[str]) -> str:
@@ -108,7 +109,90 @@ class WorkflowDAG(BaseModel):
             return cfg_type
         return cls._normalize_node_type(node.type)
 
-    def validate(
+    def _collect_outgoing_by_node(
+        self,
+        target_node_ids: set[str],
+    ) -> Dict[str, List[WorkflowEdge]]:
+        outgoing_by_node: Dict[str, List[WorkflowEdge]] = {nid: [] for nid in target_node_ids}
+        for edge in self.edges:
+            if edge.from_node in outgoing_by_node:
+                outgoing_by_node[edge.from_node].append(edge)
+        return outgoing_by_node
+
+    @staticmethod
+    def _missing_condition_branches(outgoing: List[WorkflowEdge]) -> List[str]:
+        has_true = False
+        has_false = False
+        for edge in outgoing:
+            trigger_hint = str(edge.source_handle or edge.label or "").strip().lower()
+            if trigger_hint in {"true", "condition_true"}:
+                has_true = True
+            elif trigger_hint in {"false", "condition_false"}:
+                has_false = True
+            elif edge.condition:
+                # 兼容历史定义：有 condition 但无显式 handle/label 时按 true 分支处理
+                has_true = True
+
+        missing: List[str] = []
+        if not has_true:
+            missing.append("true")
+        if not has_false:
+            missing.append("false")
+        return missing
+
+    @staticmethod
+    def _missing_loop_branches(outgoing: List[WorkflowEdge]) -> List[str]:
+        has_continue = False
+        has_exit = False
+        for edge in outgoing:
+            trigger_hint = str(edge.source_handle or edge.label or "").strip().lower()
+            if trigger_hint in {"continue", "loop_continue"}:
+                has_continue = True
+            elif trigger_hint in {"exit", "loop_exit"}:
+                has_exit = True
+
+        missing: List[str] = []
+        if not has_continue:
+            missing.append("continue")
+        if not has_exit:
+            missing.append("exit")
+        return missing
+
+    def _validate_condition_branches(self, errors: List[str]) -> None:
+        condition_node_ids = {
+            node.id
+            for node in self.nodes
+            if self._resolve_node_semantic_type(node) == "condition"
+        }
+        if not condition_node_ids:
+            return
+
+        outgoing_by_node = self._collect_outgoing_by_node(condition_node_ids)
+        for node_id, outgoing in outgoing_by_node.items():
+            missing = self._missing_condition_branches(outgoing)
+            if missing:
+                errors.append(
+                    f"Condition node '{node_id}' missing required branch edge(s): {', '.join(missing)}"
+                )
+
+    def _validate_loop_branches(self, errors: List[str]) -> None:
+        loop_node_ids = {
+            node.id
+            for node in self.nodes
+            if self._resolve_node_semantic_type(node) == "loop"
+        }
+        if not loop_node_ids:
+            return
+
+        outgoing_by_node = self._collect_outgoing_by_node(loop_node_ids)
+        for node_id, outgoing in outgoing_by_node.items():
+            missing = self._missing_loop_branches(outgoing)
+            if missing:
+                errors.append(
+                    f"Loop node '{node_id}' missing required branch edge(s): {', '.join(missing)}"
+                )
+
+    def validate_dag(
         self,
         require_condition_branches: bool = False,
         require_loop_branches: bool = False,
@@ -139,78 +223,17 @@ class WorkflowDAG(BaseModel):
             errors.append("Cycle detected in DAG")
 
         if require_condition_branches:
-            condition_node_ids = {
-                node.id
-                for node in self.nodes
-                if self._resolve_node_semantic_type(node) == "condition"
-            }
-            if condition_node_ids:
-                outgoing_by_node: Dict[str, List[WorkflowEdge]] = {nid: [] for nid in condition_node_ids}
-                for edge in self.edges:
-                    if edge.from_node in outgoing_by_node:
-                        outgoing_by_node[edge.from_node].append(edge)
-
-                for node_id, outgoing in outgoing_by_node.items():
-                    has_true = False
-                    has_false = False
-                    for edge in outgoing:
-                        trigger_hint = str(edge.source_handle or edge.label or "").strip().lower()
-                        if trigger_hint in {"true", "condition_true"}:
-                            has_true = True
-                        elif trigger_hint in {"false", "condition_false"}:
-                            has_false = True
-                        elif edge.condition:
-                            # 兼容历史定义：有 condition 但无显式 handle/label 时按 true 分支处理
-                            has_true = True
-
-                    missing = []
-                    if not has_true:
-                        missing.append("true")
-                    if not has_false:
-                        missing.append("false")
-                    if missing:
-                        errors.append(
-                            f"Condition node '{node_id}' missing required branch edge(s): {', '.join(missing)}"
-                        )
+            self._validate_condition_branches(errors)
 
         if require_loop_branches:
-            loop_node_ids = {
-                node.id
-                for node in self.nodes
-                if self._resolve_node_semantic_type(node) == "loop"
-            }
-            if loop_node_ids:
-                outgoing_by_node: Dict[str, List[WorkflowEdge]] = {nid: [] for nid in loop_node_ids}
-                for edge in self.edges:
-                    if edge.from_node in outgoing_by_node:
-                        outgoing_by_node[edge.from_node].append(edge)
-
-                for node_id, outgoing in outgoing_by_node.items():
-                    has_continue = False
-                    has_exit = False
-                    for edge in outgoing:
-                        trigger_hint = str(edge.source_handle or edge.label or "").strip().lower()
-                        if trigger_hint in {"continue", "loop_continue"}:
-                            has_continue = True
-                        elif trigger_hint in {"exit", "loop_exit"}:
-                            has_exit = True
-
-                    missing = []
-                    if not has_continue:
-                        missing.append("continue")
-                    if not has_exit:
-                        missing.append("exit")
-                    if missing:
-                        errors.append(
-                            f"Loop node '{node_id}' missing required branch edge(s): {', '.join(missing)}"
-                        )
+            self._validate_loop_branches(errors)
         
         return errors
     
     def _has_cycle(self) -> bool:
         """检查是否有循环依赖"""
         # 构建邻接表
-        graph = {node.id: [] for node in self.nodes}
+        graph: Dict[str, List[str]] = {node.id: [] for node in self.nodes}
         for edge in self.edges:
             graph[edge.from_node].append(edge.to_node)
         
@@ -230,9 +253,8 @@ class WorkflowDAG(BaseModel):
             return False
         
         for node_id in graph:
-            if node_id not in visited:
-                if dfs(node_id):
-                    return True
+            if node_id not in visited and dfs(node_id):
+                return True
         return False
     
     def compute_checksum(self) -> str:
@@ -298,7 +320,7 @@ class WorkflowVersion(BaseModel):
     
     # 创建信息
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="创建时间"
     )
     created_by: Optional[str] = Field(
@@ -316,9 +338,7 @@ class WorkflowVersion(BaseModel):
         description="发布者"
     )
     
-    class Config:
-        from_attributes = True
-        frozen = True
+    model_config = ConfigDict(from_attributes=True, frozen=True)
     
     def validate_dag(
         self,
@@ -326,7 +346,7 @@ class WorkflowVersion(BaseModel):
         require_loop_branches: bool = False,
     ) -> List[str]:
         """验证 DAG 有效性"""
-        return self.dag.validate(
+        return self.dag.validate_dag(
             require_condition_branches=require_condition_branches,
             require_loop_branches=require_loop_branches,
         )

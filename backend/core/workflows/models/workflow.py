@@ -6,9 +6,13 @@ Workflow 是平台一级资源，支持 RBAC、生命周期管理、审计日志
 
 from enum import Enum
 from typing import Dict, Any, Optional, List
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import UTC, datetime
+from pydantic import BaseModel, ConfigDict, Field
 import uuid
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class WorkflowLifecycleState(str, Enum):
@@ -85,11 +89,11 @@ class Workflow(BaseModel):
     
     # 审计字段
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="创建时间"
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="更新时间"
     )
     created_by: Optional[str] = Field(
@@ -101,8 +105,7 @@ class Workflow(BaseModel):
         description="最后更新者"
     )
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
     
     def can_execute(self) -> bool:
         """检查是否可以执行"""

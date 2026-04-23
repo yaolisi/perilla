@@ -9,7 +9,7 @@ Skill v2 单元测试。
 - 非法输入触发 schema 校验错误
 """
 import pytest
-from datetime import datetime
+from datetime import UTC, datetime
 from core.skills.models import SkillDefinition, Skill
 from core.skills.registry import SkillRegistry
 from core.skills.contract import SkillExecutionRequest, SkillExecutionResponse
@@ -403,8 +403,8 @@ class TestV1Compatibility:
             definition={"tool_name": "test_tool"},
             input_schema={"type": "object"},
             enabled=True,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC)
         )
         
         # 转换
@@ -431,8 +431,8 @@ class TestV1Compatibility:
             definition={"tool_name": "test_tool"},
             input_schema={"type": "object"},
             enabled=True,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC)
         )
         
         # 注册 v1

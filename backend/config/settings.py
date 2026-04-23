@@ -1,7 +1,7 @@
 """
 配置设置
 """
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def apply_production_security_defaults(s: "Settings") -> list[str]:
@@ -275,8 +275,7 @@ class Settings(BaseSettings):
     # 生产安全护栏是否严格阻断启动（False=仅告警）
     security_guardrails_strict: bool = True
     
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 # 全局配置实例

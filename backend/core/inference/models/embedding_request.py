@@ -4,9 +4,9 @@ V2.8 Inference Gateway Layer - Embedding Request Model
 Dedicated request model for embedding inference (non-chat).
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Self, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EmbeddingRequest(BaseModel):
@@ -24,7 +24,7 @@ class EmbeddingRequest(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Observability metadata")
 
     @model_validator(mode="after")
-    def validate_input(self):
+    def validate_input(self) -> Self:
         if isinstance(self.input, str):
             if not self.input.strip():
                 raise ValueError("input must be non-empty")
@@ -35,6 +35,5 @@ class EmbeddingRequest(BaseModel):
                 raise ValueError("all input items must be non-empty strings")
         return self
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 

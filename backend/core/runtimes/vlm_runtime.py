@@ -6,15 +6,11 @@ VLMRuntime: Vision-Language Model Runtime Abstraction
 """
 
 from abc import ABC, abstractmethod
-from typing import Union, Optional, Dict, Any
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 from pathlib import Path
 
-try:
-    from PIL import Image
-except ImportError:
-    # Type stub for when PIL is not available
-    class Image:
-        pass
+if TYPE_CHECKING:
+    from PIL import Image as PILImage
 
 
 class VLMRuntime(ABC):
@@ -29,7 +25,9 @@ class VLMRuntime(ABC):
     """
     
     @abstractmethod
-    async def initialize(self, model_path: Union[str, Path], **kwargs) -> None:
+    async def initialize(
+        self, model_path: Union[str, Path], **kwargs: Any
+    ) -> None:
         """
         初始化模型运行时
         
@@ -48,11 +46,11 @@ class VLMRuntime(ABC):
     @abstractmethod
     async def infer(
         self,
-        image: Union[Image.Image, bytes],
+        image: Union["PILImage.Image", bytes],
         prompt: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        **kwargs
+        **kwargs: Any
     ) -> str:
         """
         执行单次多模态推理

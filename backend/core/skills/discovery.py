@@ -5,7 +5,7 @@ Skill Discovery 模块
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from log import logger
@@ -30,7 +30,7 @@ class SkillVectorIndex:
     - 内存存储，重启后重建
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         # skill_id -> (version, vector)
         self._vectors: Dict[str, Tuple[str, List[float]]] = {}
         self._dimension: Optional[int] = None
@@ -236,7 +236,7 @@ class SkillDiscoveryEngine:
         agent_id: str,
         organization_id: Optional[str] = None,
         top_k: int = 5,
-        filters: Optional[Dict] = None
+        filters: Optional[Dict[str, Any]] = None
     ) -> List[SkillDefinition]:
         """
         搜索 Skills
@@ -301,7 +301,7 @@ class SkillDiscoveryEngine:
             semantic_score = similarity_map.get((skill.id, skill.version), 0.0)
             
             # 标签匹配分数
-            tag_score = self._calculate_tag_match_score(skill, query, filters)
+            tag_score = self._calculate_tag_match_score(skill, query)
             
             # Hybrid 评分（可配置权重）
             # 默认：语义 70%，标签 30%
@@ -320,7 +320,7 @@ class SkillDiscoveryEngine:
     
     def _apply_structural_filters(
         self,
-        filters: Dict
+        filters: Dict[str, Any]
     ) -> List[SkillDefinition]:
         """
         应用结构化过滤
@@ -335,37 +335,28 @@ class SkillDiscoveryEngine:
             return []
         
         # 从 Registry 获取所有 Skills
-        enabled_only = filters.get("enabled_only", True)
+        enabled_only = bool(filters.get("enabled_only", True))
         candidates = self._registry.list_all(enabled_only=enabled_only)
         
-        filtered = []
-        for skill in candidates:
-            # 标签过滤
-            if "tags" in filters:
-                required_tags = set(filters["tags"])
-                if not required_tags.issubset(set(skill.tags)):
-                    continue
-            
-            # 类别过滤
-            if "category" in filters:
-                filter_category = filters["category"]
-                if filter_category not in skill.category:
-                    continue
-            
-            # 可见性过滤
-            if "visibility" in filters:
-                if skill.visibility != filters["visibility"]:
-                    continue
-            
-            filtered.append(skill)
-        
-        return filtered
+        return [skill for skill in candidates if self._skill_matches_filters(skill, filters)]
+
+    def _skill_matches_filters(self, skill: SkillDefinition, filters: Dict[str, Any]) -> bool:
+        if "tags" in filters:
+            required_tags = set(filters["tags"])
+            if not required_tags.issubset(set(skill.tags)):
+                return False
+        if "category" in filters:
+            filter_category = filters["category"]
+            if filter_category not in skill.category:
+                return False
+        if "visibility" in filters and skill.visibility != filters["visibility"]:
+            return False
+        return True
     
     def _calculate_tag_match_score(
         self,
         skill: SkillDefinition,
         query: str,
-        filters: Dict
     ) -> float:
         """
         计算标签匹配分数
@@ -379,7 +370,7 @@ class SkillDiscoveryEngine:
         query_lower = query.lower()
         query_words = set(query_lower.split())
         
-        matched = 0
+        matched = 0.0
         for tag in skill.tags:
             tag_lower = tag.lower()
             # 完全匹配

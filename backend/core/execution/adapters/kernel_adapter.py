@@ -7,7 +7,7 @@ V2.7: 集成 Optimization Layer，支持调度策略优化
 """
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 import logging
@@ -47,6 +47,10 @@ from core.execution.adapters.node_executors import init_executors, get_executor_
 
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def _get_db_url() -> str:
@@ -367,7 +371,7 @@ class ExecutionKernelAdapter:
         run_policy, run_snapshot = await self._build_policy_snapshot_for_config(effective_opt_config)
         
         # 4. 执行
-        instance_id = f"{plan.plan_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        instance_id = f"{plan.plan_id}_{_utc_now().strftime('%Y%m%d_%H%M%S')}"
         
         # V2.6: 设置 kernel_instance_id 到 metrics（用于前端 Debug UI）
         if metrics:
@@ -866,7 +870,7 @@ class ExecutionKernelAdapter:
         next_version = patcher.generate_next_version(current_graph.version)
         
         patch = GraphPatch(
-            patch_id=f"replan_{instance_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
+            patch_id=f"replan_{instance_id}_{_utc_now().strftime('%Y%m%d_%H%M%S')}",
             target_graph_id=current_graph.id,
             base_version=current_graph.version,
             target_version=next_version,

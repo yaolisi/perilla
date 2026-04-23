@@ -309,10 +309,10 @@ def detect_tests(
             break
     
     # Guess coverage targets based on structure
-    coverage_targets = []
-    for d in ['services/', 'models/', 'controllers/', 'routes/', 'core/']:
-        if (root / d).exists():
-            coverage_targets.append(d)
+    coverage_targets: List[str] = []
+    for target_dir in ['services/', 'models/', 'controllers/', 'routes/', 'core/']:
+        if (root / target_dir).exists():
+            coverage_targets.append(target_dir)
     info.coverage_target_guess = coverage_targets
     
     # Check for fixtures and mocks
@@ -488,10 +488,14 @@ def detect_frameworks(
     if pkg_json.exists():
         try:
             import json
-            content = json.loads(pkg_json.read_text(encoding='utf-8'))
-            deps = content.get('dependencies', {})
-            deps.update(content.get('devDependencies', {}))
-            all_deps.update(d.lower() for d in deps.keys())
+            parsed_pkg = json.loads(pkg_json.read_text(encoding='utf-8'))
+            if isinstance(parsed_pkg, dict):
+                deps_raw = parsed_pkg.get('dependencies', {})
+                dev_deps_raw = parsed_pkg.get('devDependencies', {})
+                deps: Dict[str, Any] = deps_raw if isinstance(deps_raw, dict) else {}
+                dev_deps: Dict[str, Any] = dev_deps_raw if isinstance(dev_deps_raw, dict) else {}
+                deps.update(dev_deps)
+                all_deps.update(str(d).lower() for d in deps.keys())
         except Exception:
             pass
     
@@ -805,7 +809,7 @@ def parse_pom_xml(content: str) -> Dict[str, Any]:
     - properties
     - parent project info
     """
-    result = {
+    result: Dict[str, Any] = {
         'groupId': None,
         'artifactId': None,
         'version': None,
@@ -889,7 +893,7 @@ def parse_build_gradle(content: str) -> Dict[str, Any]:
     - dependencies
     - repositories
     """
-    result = {
+    result: Dict[str, Any] = {
         'plugins': [],
         'group': None,
         'version': None,
@@ -966,7 +970,7 @@ def parse_build_gradle_kts(content: str) -> Dict[str, Any]:
     
     Similar to Groovy DSL but with Kotlin syntax.
     """
-    result = {
+    result: Dict[str, Any] = {
         'plugins': [],
         'group': None,
         'version': None,

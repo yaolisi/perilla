@@ -5,9 +5,12 @@ Skill Scope & Permission 模块
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from log import logger
+
+if TYPE_CHECKING:
+    from core.skills.models import SkillDefinition
 
 
 class SkillScopeResolver:

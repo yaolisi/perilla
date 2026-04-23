@@ -2,8 +2,8 @@
 Workflow Governance Audit Repository (ORM)
 """
 
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+from typing import Any, Dict, List, Optional, cast
+from datetime import UTC, datetime
 import uuid
 from sqlalchemy.orm import Session
 
@@ -29,7 +29,7 @@ class WorkflowGovernanceAuditRepository:
             changed_by=changed_by,
             old_config=old_config or {},
             new_config=new_config or {},
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
         self.db.add(row)
         self.db.commit()
@@ -69,9 +69,12 @@ class WorkflowGovernanceAuditRepository:
         ]
 
     def count_audits(self, workflow_id: str) -> int:
-        return (
+        return cast(
+            int,
+            (
             self.db.query(WorkflowGovernanceAuditORM)
             .filter(WorkflowGovernanceAuditORM.workflow_id == workflow_id)
             .count()
+            ),
         )
 

@@ -4,7 +4,7 @@ V2.6: Observability & Replay Layer - State Rebuilder
 """
 
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import UTC, datetime
 import logging
 
 from execution_kernel.events.event_model import ExecutionEvent
@@ -13,6 +13,10 @@ from execution_kernel.models.node_models import NodeState
 
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class RebuiltNodeState:
@@ -156,22 +160,22 @@ class StateRebuilder:
         state.graph_id = payload.get("graph_id", "")
         state.graph_version = payload.get("graph_version", "1.0.0")
         state.context = payload.get("initial_context", {})
-        state.started_at = datetime.utcnow()
+        state.started_at = _utc_now()
     
     def _on_graph_completed(self, state: RebuiltGraphState, payload: Dict[str, Any]):
         """Graph 完成"""
         state.state = "completed"
-        state.finished_at = datetime.utcnow()
+        state.finished_at = _utc_now()
     
     def _on_graph_failed(self, state: RebuiltGraphState, payload: Dict[str, Any]):
         """Graph 失败"""
         state.state = "failed"
-        state.finished_at = datetime.utcnow()
+        state.finished_at = _utc_now()
     
     def _on_graph_cancelled(self, state: RebuiltGraphState, payload: Dict[str, Any]):
         """Graph 取消"""
         state.state = "cancelled"
-        state.finished_at = datetime.utcnow()
+        state.finished_at = _utc_now()
     
     def _on_node_scheduled(self, state: RebuiltGraphState, payload: Dict[str, Any]):
         """Node 被调度"""
@@ -187,7 +191,7 @@ class StateRebuilder:
             node = state.get_node(node_id)
             node.state = NodeState.RUNNING
             node.input_data = payload.get("input_data", {})
-            node.started_at = datetime.utcnow()
+            node.started_at = _utc_now()
     
     def _on_node_succeeded(self, state: RebuiltGraphState, payload: Dict[str, Any]):
         """Node 成功"""
@@ -196,7 +200,7 @@ class StateRebuilder:
             node = state.get_node(node_id)
             node.state = NodeState.SUCCESS
             node.output_data = payload.get("output_data", {})
-            node.finished_at = datetime.utcnow()
+            node.finished_at = _utc_now()
     
     def _on_node_failed(self, state: RebuiltGraphState, payload: Dict[str, Any]):
         """Node 失败"""
@@ -206,7 +210,7 @@ class StateRebuilder:
             node.state = NodeState.FAILED
             node.error_type = payload.get("error_type")
             node.error_message = payload.get("error_message")
-            node.finished_at = datetime.utcnow()
+            node.finished_at = _utc_now()
     
     def _on_node_retry(self, state: RebuiltGraphState, payload: Dict[str, Any]):
         """Node 重试"""
@@ -229,7 +233,7 @@ class StateRebuilder:
         if node_id:
             node = state.get_node(node_id)
             node.state = NodeState.TIMEOUT
-            node.finished_at = datetime.utcnow()
+            node.finished_at = _utc_now()
     
     def _on_context_updated(self, state: RebuiltGraphState, payload: Dict[str, Any]):
         """Context 更新"""

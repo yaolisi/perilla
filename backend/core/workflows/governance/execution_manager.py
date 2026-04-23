@@ -5,13 +5,14 @@ Execution Manager
 整合 ConcurrencyLimiter 和 QuotaManager。
 """
 
-from typing import Optional, Dict, Any, List, Literal
+from typing import Optional, Dict, Any, List, Literal, cast
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import asyncio
 
 from config.settings import settings
 from core.data.base import SessionLocal
+from core.data.models.workflow import WorkflowExecutionQueueORM
 from core.workflows.repository import WorkflowExecutionQueueRepository
 from core.workflows.governance.concurrency_limiter import ConcurrencyLimiter
 from core.workflows.governance.quota_manager import QuotaManager, QuotaConfig
@@ -191,71 +192,9 @@ class ExecutionManager:
 
         # 如果已经在队列中，等待
         if request.execution_id in self._queued_executions:
-            queue_position = self._get_queue_position(request.execution_id)
-            queued_meta = self._queued_meta.get(request.execution_id) or {}
-            queued_at = queued_meta.get("queued_at")
-            queued_at_iso = queued_at.isoformat() if isinstance(queued_at, datetime) else None
-            queue_entered_ts = (
-                queued_at.timestamp()
-                if isinstance(queued_at, datetime)
-                else datetime.now(timezone.utc).timestamp()
-            )
-            next_warn_ts = queue_entered_ts + self._pending_warn_seconds
-            # 等待队列处理
-            while request.execution_id in self._queued_executions:
-                now_ts = datetime.now(timezone.utc).timestamp()
-                if now_ts >= next_warn_ts:
-                    queued_for_s = max(0.0, now_ts - queue_entered_ts)
-                    status = self.concurrency_limiter.get_status()
-                    wf_active = int(status.get("per_workflow_active", {}).get(request.workflow_id, 0))
-                    wf_waiting = int(status.get("per_workflow_waiting", {}).get(request.workflow_id, 0))
-                    logger.warning(
-                        "[ExecutionManager] Pending execution exceeded threshold: "
-                        f"execution_id={request.execution_id} workflow_id={request.workflow_id} "
-                        f"queued_for_s={queued_for_s:.1f} queue_position={self._get_queue_position(request.execution_id)} "
-                        f"queue_size={len(self._queued_executions)} workflow_queue_size={self._queued_by_workflow.get(request.workflow_id, 0)} "
-                        f"slots(global_active={status.get('global_active')}/{status.get('global_limit')}, "
-                        f"global_available={status.get('global_available')}, global_waiting={status.get('global_waiting')}, "
-                        f"workflow_active={wf_active}/{status.get('per_workflow_limit')}, workflow_waiting={wf_waiting})"
-                    )
-                    next_warn_ts = now_ts + self._pending_warn_interval_seconds
-                await asyncio.sleep(0.1)
-
-            # 现在尝试获取槽位
-            if self.concurrency_limiter.is_acquired(request.execution_id):
-                wait_duration_ms = None
-                if isinstance(queued_at, datetime):
-                    wait_duration_ms = int((datetime.now(timezone.utc) - queued_at).total_seconds() * 1000)
-                    self._record_wait_duration(request.workflow_id, wait_duration_ms)
-                return ExecutionResult(
-                    allowed=True,
-                    execution_id=request.execution_id,
-                    queue_position=queue_position,
-                    estimated_wait_seconds=self._estimate_wait_time(queue_position),
-                    queued_at=queued_at_iso,
-                    wait_duration_ms=wait_duration_ms,
-                )
-
-            acquired = await self.concurrency_limiter.acquire(
-                request.execution_id,
-                request.workflow_id,
-                timeout=request.timeout_seconds
-            )
-
-            if acquired:
-                self.quota_manager.record_execution_start(request.workflow_id)
-                wait_duration_ms = None
-                if isinstance(queued_at, datetime):
-                    wait_duration_ms = int((datetime.now(timezone.utc) - queued_at).total_seconds() * 1000)
-                    self._record_wait_duration(request.workflow_id, wait_duration_ms)
-                return ExecutionResult(
-                    allowed=True,
-                    execution_id=request.execution_id,
-                    queue_position=queue_position,
-                    estimated_wait_seconds=self._estimate_wait_time(queue_position),
-                    queued_at=queued_at_iso,
-                    wait_duration_ms=wait_duration_ms,
-                )
+            queued_result = await self._await_queued_execution(request)
+            if queued_result is not None:
+                return queued_result
 
         # 直接尝试获取槽位（带超时）
         acquired = await self.concurrency_limiter.acquire(
@@ -275,6 +214,106 @@ class ExecutionManager:
             allowed=False,
             execution_id=request.execution_id,
             reason="Timeout waiting for execution slot"
+        )
+
+    async def _await_queued_execution(self, request: ExecutionRequest) -> Optional[ExecutionResult]:
+        queue_position = self._get_queue_position(request.execution_id)
+        queued_meta = self._queued_meta.get(request.execution_id) or {}
+        queued_at = queued_meta.get("queued_at")
+        queued_at_iso = queued_at.isoformat() if isinstance(queued_at, datetime) else None
+        queue_entered_ts = (
+            queued_at.timestamp()
+            if isinstance(queued_at, datetime)
+            else datetime.now(timezone.utc).timestamp()
+        )
+        next_warn_ts = queue_entered_ts + self._pending_warn_seconds
+
+        while request.execution_id in self._queued_executions:
+            now_ts = datetime.now(timezone.utc).timestamp()
+            if now_ts >= next_warn_ts:
+                self._log_pending_wait_warning(request, queue_entered_ts, now_ts)
+                next_warn_ts = now_ts + self._pending_warn_interval_seconds
+            await asyncio.sleep(0.1)
+
+        return await self._try_acquire_after_queue_wait(
+            request=request,
+            queue_position=queue_position,
+            queued_at=queued_at,
+            queued_at_iso=queued_at_iso,
+        )
+
+    def _log_pending_wait_warning(
+        self, request: ExecutionRequest, queue_entered_ts: float, now_ts: float
+    ) -> None:
+        queued_for_s = max(0.0, now_ts - queue_entered_ts)
+        status = self.concurrency_limiter.get_status()
+        wf_active = int(status.get("per_workflow_active", {}).get(request.workflow_id, 0))
+        wf_waiting = int(status.get("per_workflow_waiting", {}).get(request.workflow_id, 0))
+        logger.warning(
+            "[ExecutionManager] Pending execution exceeded threshold: "
+            f"execution_id={request.execution_id} workflow_id={request.workflow_id} "
+            f"queued_for_s={queued_for_s:.1f} queue_position={self._get_queue_position(request.execution_id)} "
+            f"queue_size={len(self._queued_executions)} workflow_queue_size={self._queued_by_workflow.get(request.workflow_id, 0)} "
+            f"slots(global_active={status.get('global_active')}/{status.get('global_limit')}, "
+            f"global_available={status.get('global_available')}, global_waiting={status.get('global_waiting')}, "
+            f"workflow_active={wf_active}/{status.get('per_workflow_limit')}, workflow_waiting={wf_waiting})"
+        )
+
+    async def _try_acquire_after_queue_wait(
+        self,
+        *,
+        request: ExecutionRequest,
+        queue_position: Optional[int],
+        queued_at: Any,
+        queued_at_iso: Optional[str],
+    ) -> Optional[ExecutionResult]:
+        if self.concurrency_limiter.is_acquired(request.execution_id):
+            wait_duration_ms = self._compute_wait_duration_ms(request.workflow_id, queued_at)
+            return self._build_queued_allowed_result(
+                request=request,
+                queue_position=queue_position,
+                queued_at_iso=queued_at_iso,
+                wait_duration_ms=wait_duration_ms,
+            )
+
+        acquired = await self.concurrency_limiter.acquire(
+            request.execution_id,
+            request.workflow_id,
+            timeout=request.timeout_seconds
+        )
+        if not acquired:
+            return None
+        self.quota_manager.record_execution_start(request.workflow_id)
+        wait_duration_ms = self._compute_wait_duration_ms(request.workflow_id, queued_at)
+        return self._build_queued_allowed_result(
+            request=request,
+            queue_position=queue_position,
+            queued_at_iso=queued_at_iso,
+            wait_duration_ms=wait_duration_ms,
+        )
+
+    def _compute_wait_duration_ms(self, workflow_id: str, queued_at: Any) -> Optional[int]:
+        if not isinstance(queued_at, datetime):
+            return None
+        wait_duration_ms = int((datetime.now(timezone.utc) - queued_at).total_seconds() * 1000)
+        self._record_wait_duration(workflow_id, wait_duration_ms)
+        return wait_duration_ms
+
+    def _build_queued_allowed_result(
+        self,
+        *,
+        request: ExecutionRequest,
+        queue_position: Optional[int],
+        queued_at_iso: Optional[str],
+        wait_duration_ms: Optional[int],
+    ) -> ExecutionResult:
+        return ExecutionResult(
+            allowed=True,
+            execution_id=request.execution_id,
+            queue_position=queue_position,
+            estimated_wait_seconds=self._estimate_wait_time(queue_position),
+            queued_at=queued_at_iso,
+            wait_duration_ms=wait_duration_ms,
         )
 
     def complete_execution(
@@ -439,11 +478,12 @@ class ExecutionManager:
         leased = self._lease_next()
         if leased is None:
             return
+        leased_any = cast(Any, leased)
         request = ExecutionRequest(
-            execution_id=leased.execution_id,
-            workflow_id=leased.workflow_id,
-            version_id=leased.version_id,
-            priority=int(leased.priority or 0),
+            execution_id=cast(str, leased_any.execution_id),
+            workflow_id=cast(str, leased_any.workflow_id),
+            version_id=cast(str, leased_any.version_id),
+            priority=int(cast(int, leased_any.priority) or 0),
         )
         queued_meta = self._queued_meta.pop(request.execution_id, {})
         queued_at = queued_meta.get("queued_at")
@@ -505,7 +545,7 @@ class ExecutionManager:
         with SessionLocal() as db:
             WorkflowExecutionQueueRepository(db).mark_cancelled(execution_id)
 
-    def _lease_next(self):
+    def _lease_next(self) -> Optional[WorkflowExecutionQueueORM]:
         with SessionLocal() as db:
             return WorkflowExecutionQueueRepository(db).lease_next(lease_owner=self._lease_owner, lease_seconds=30)
 
@@ -514,25 +554,26 @@ class ExecutionManager:
             with SessionLocal() as db:
                 rows = WorkflowExecutionQueueRepository(db).list_active()
             for row in rows:
+                row_any = cast(Any, row)
                 req = ExecutionRequest(
-                    execution_id=row.execution_id,
-                    workflow_id=row.workflow_id,
-                    version_id=row.version_id,
-                    priority=int(row.priority or 0),
+                    execution_id=cast(str, row_any.execution_id),
+                    workflow_id=cast(str, row_any.workflow_id),
+                    version_id=cast(str, row_any.version_id),
+                    priority=int(cast(int, row_any.priority) or 0),
                 )
                 if req.execution_id in self._queued_executions:
                     continue
-                self._queue_order = max(self._queue_order, int(row.queue_order or 0))
-                queued_at = row.queued_at
+                self._queue_order = max(self._queue_order, int(cast(int, row_any.queue_order) or 0))
+                queued_at = cast(Optional[datetime], row_any.queued_at)
                 self._queued_executions.add(req.execution_id)
                 self._queued_by_workflow[req.workflow_id] = self._queued_by_workflow.get(req.workflow_id, 0) + 1
                 self._queued_meta[req.execution_id] = {
                     "workflow_id": req.workflow_id,
                     "priority": req.priority,
                     "queued_at": queued_at,
-                    "order": int(row.queue_order or 0),
+                    "order": int(cast(int, row_any.queue_order) or 0),
                 }
-                self._execution_queue.put_nowait((req.priority, float(int(row.queue_order or 0)), req))
+                self._execution_queue.put_nowait((req.priority, float(int(cast(int, row_any.queue_order) or 0)), req))
             if rows:
                 logger.info(f"[ExecutionManager] Recovered persisted queue items: {len(rows)}")
         except Exception as e:

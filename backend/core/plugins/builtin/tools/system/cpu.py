@@ -1,5 +1,5 @@
-import psutil
-from typing import Dict, Any
+import psutil  # type: ignore[import-untyped]
+from typing import Dict, Any, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -17,7 +17,7 @@ class SystemCpuTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
+        return cast(Dict[str, Any], create_input_schema({
             "per_cpu": {
                 "type": "boolean",
                 "description": "Whether to return per-core CPU usage (default: false).",
@@ -30,7 +30,7 @@ class SystemCpuTool(Tool):
                 "minimum": 0.1,
                 "maximum": 1.0
             }
-        })
+        }))
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -45,7 +45,7 @@ class SystemCpuTool(Tool):
         }
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["system.info"]
 
     @property

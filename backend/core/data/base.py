@@ -11,6 +11,7 @@ from typing import Generator, Iterator
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, MetaData, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session, declarative_base
 from sqlalchemy.exc import OperationalError
 
@@ -29,7 +30,7 @@ def get_db_path() -> Path:
     return root / "backend" / "data" / "platform.db"
 
 
-def create_engine_instance():
+def create_engine_instance() -> Engine:
     """创建数据库引擎（优化并发配置）"""
     db_path = get_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,6 +122,6 @@ def init_db() -> None:
     logger.info("[Data] Database tables created")
 
 
-def get_engine():
+def get_engine() -> Engine:
     """获取引擎（用于 Alembic、迁移脚本等）"""
     return _engine

@@ -6,11 +6,15 @@ v2 支持版本管理、Schema 定义和统一执行契约。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Literal, Optional
 
 SkillType = Literal["prompt", "tool", "composite", "workflow"]
 SkillVisibility = Literal["public", "org", "private"]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass
@@ -50,10 +54,10 @@ class SkillDefinition:
     enabled: bool = True
     composable: bool = True  # 是否可组合（为未来 Graph 引擎预留）
     
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_utc_now)
+    updated_at: datetime = field(default_factory=_utc_now)
     
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """验证字段合法性"""
         if not self.version:
             raise ValueError("version is required")
@@ -103,8 +107,8 @@ class SkillDefinition:
             output_schema=data.get("output_schema", {}),
             enabled=data.get("enabled", True),
             composable=data.get("composable", True),
-            created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.utcnow(),
-            updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.utcnow(),
+            created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else _utc_now(),
+            updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else _utc_now(),
         )
 
 

@@ -3,8 +3,8 @@ Repositories
 数据访问层，封装所有数据库操作
 """
 
-from datetime import datetime
-from typing import Optional, List
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 import asyncio
 import logging
 import os
@@ -32,9 +32,18 @@ from execution_kernel.models.node_models import (
     NodeCacheEntry,
 )
 
+if TYPE_CHECKING:
+    from execution_kernel.models.graph_patch import ExecutionPointer
+    from execution_kernel.optimization.snapshot import OptimizationSnapshot
+
 
 logger = logging.getLogger("ai_platform")
 POINTER_UPDATE_STRATEGY = (os.getenv("EXECUTION_POINTER_STRATEGY", "best_effort") or "best_effort").strip().lower()
+
+
+def _utc_now_naive() -> datetime:
+    """Drop tzinfo to preserve existing DB naive datetime behavior."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class GraphDefinitionRepository:
@@ -149,13 +158,13 @@ class GraphInstanceRepository:
         self, 
         instance_id: str, 
         new_state: GraphInstanceState,
-        started_at: datetime = None,
-        finished_at: datetime = None,
+        started_at: Optional[datetime] = None,
+        finished_at: Optional[datetime] = None,
     ) -> bool:
         """更新图实例状态（幂等）"""
         values = {
             "state": GraphInstanceStateDB(new_state.value),
-            "updated_at": datetime.utcnow(),
+            "updated_at": _utc_now_naive(),
         }
         if started_at:
             values["started_at"] = started_at
@@ -167,7 +176,7 @@ class GraphInstanceRepository:
             .where(GraphInstanceDB.id == instance_id)
             .values(**values)
         )
-        return result.rowcount > 0
+        return bool((cast(Any, result).rowcount or 0) > 0)
     
     async def get_running_instances(self) -> List[GraphInstanceDB]:
         """获取所有运行中的实例（用于 crash 恢复）"""
@@ -263,17 +272,17 @@ class NodeRuntimeRepository:
         self,
         node_id: str,
         new_state: NodeState,
-        output_data: dict = None,
-        error_message: str = None,
-        error_type: str = None,
-        started_at: datetime = None,
-        finished_at: datetime = None,
-        retry_count: int = None,
+        output_data: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None,
+        error_type: Optional[str] = None,
+        started_at: Optional[datetime] = None,
+        finished_at: Optional[datetime] = None,
+        retry_count: Optional[int] = None,
     ) -> bool:
         """更新节点状态（幂等）"""
         values = {
             "state": NodeStateDB(new_state.value),
-            "updated_at": datetime.utcnow(),
+            "updated_at": _utc_now_naive(),
         }
         if output_data is not None:
             values["output_data"] = output_data
@@ -293,7 +302,7 @@ class NodeRuntimeRepository:
             .where(NodeRuntimeDB.id == node_id)
             .values(**values)
         )
-        return result.rowcount > 0
+        return bool((cast(Any, result).rowcount or 0) > 0)
     
     async def reset_running_to_pending(self, instance_id: str) -> int:
         """将运行中节点重置为待执行（用于 crash 恢复）"""
@@ -307,10 +316,10 @@ class NodeRuntimeRepository:
             )
             .values(
                 state=NodeStateDB.PENDING,
-                updated_at=datetime.utcnow(),
+                updated_at=_utc_now_naive(),
             )
         )
-        return result.rowcount
+        return int(cast(Any, result).rowcount or 0)
     
     async def get_all_by_instance(self, instance_id: str) -> List[NodeRuntimeDB]:
         """获取实例的所有节点运行时"""
@@ -360,13 +369,14 @@ class NodeCacheRepository:
             select(NodeCacheDB).where(
                 and_(
                     NodeCacheDB.expires_at.isnot(None),
-                    NodeCacheDB.expires_at < datetime.utcnow(),
+                    NodeCacheDB.expires_at < _utc_now_naive(),
                 )
             )
         )
         expired = list(result.scalars().all())
         for cache in expired:
             await self.session.delete(cache)
+        return len(expired)
 
 
 # Phase B: Graph Patch Repositories
@@ -408,7 +418,7 @@ class GraphPatchRepository:
         import json
         from datetime import datetime
         
-        def serialize_datetime(obj):
+        def serialize_datetime(obj: Any) -> str:
             if isinstance(obj, datetime):
                 return obj.isoformat()
             raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
@@ -422,7 +432,7 @@ class GraphPatchRepository:
             .values(
                 state="applied",
                 result=serialized_result,
-                applied_at=datetime.utcnow(),
+                applied_at=_utc_now_naive(),
             )
         )
     
@@ -463,7 +473,7 @@ class ExecutionPointerRepository:
             ready_nodes=pointer.ready_nodes,
             running_nodes=pointer.running_nodes,
             failed_nodes=pointer.failed_nodes,
-            updated_at=datetime.utcnow(),
+            updated_at=_utc_now_naive(),
         )
         self.session.add(db_obj)
         await self.session.flush()
@@ -491,7 +501,7 @@ class ExecutionPointerRepository:
                         ready_nodes=pointer.ready_nodes,
                         running_nodes=pointer.running_nodes,
                         failed_nodes=pointer.failed_nodes,
-                        updated_at=datetime.utcnow(),
+                        updated_at=_utc_now_naive(),
                     )
                 )
                 return
@@ -515,7 +525,6 @@ class ExecutionPointerRepository:
                 "[ExecutionPointerRepository] Skip pointer update due to DB lock: instance_id=%s",
                 pointer.instance_id,
             )
-            return
     
     async def delete(self, instance_id: str) -> None:
         """删除执行指针"""
@@ -539,7 +548,7 @@ class OptimizationSnapshotRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
     
-    async def save(self, snapshot) -> str:
+    async def save(self, snapshot: "OptimizationSnapshot") -> str:
         """
         保存快照到数据库
         

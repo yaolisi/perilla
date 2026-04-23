@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ============== Execution Mode ==============
@@ -65,8 +65,7 @@ class Step(BaseModel):
     replan_instruction: Optional[str] = None  # 重规划指令
     on_failure_replan: Optional[str] = None  # 失败时重规划指令
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class Plan(BaseModel):
@@ -85,8 +84,7 @@ class Plan(BaseModel):
     # V2.2: Plan 血缘关系
     parent_plan_id: Optional[str] = None  # 父 Plan ID
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 # ============== State ==============

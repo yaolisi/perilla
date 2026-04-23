@@ -88,4 +88,115 @@ describe('NodeConfigPanel searchable selectors', () => {
     expect(selects[0].text()).not.toContain('Web Search')
     expect(selects[0].text()).toContain('Python Exec')
   })
+
+  it('filters agent options by keyword', async () => {
+    const wrapper = mount(NodeConfigPanel, {
+      props: {
+        node: {
+          id: 'n-3',
+          data: { type: 'agent', label: 'Agent', config: {} },
+        } as any,
+        selectedNodeId: 'n-3',
+        nodes: [{ id: 'n-3', data: { type: 'agent', label: 'Agent', config: {} } }] as any,
+      },
+      global: { plugins: [makeI18n()] },
+    })
+
+    await flushPromises()
+    const selects = wrapper.findAll('select')
+    expect(selects[0].text()).toContain('Planner Agent')
+    expect(selects[0].text()).toContain('Reporter Agent')
+
+    const inputs = wrapper.findAll('input')
+    await inputs[0].setValue('planner')
+    await flushPromises()
+
+    expect(selects[0].text()).toContain('Planner Agent')
+    expect(selects[0].text()).not.toContain('Reporter Agent')
+  })
+
+  it('emits normalized model config when selecting model', async () => {
+    const wrapper = mount(NodeConfigPanel, {
+      props: {
+        node: {
+          id: 'n-4',
+          data: { type: 'llm', label: 'LLM', config: {} },
+        } as any,
+        selectedNodeId: 'n-4',
+        nodes: [{ id: 'n-4', data: { type: 'llm', label: 'LLM', config: {} } }] as any,
+      },
+      global: { plugins: [makeI18n()] },
+    })
+
+    await flushPromises()
+    const modelSelect = wrapper.find('select')
+    await modelSelect.setValue('qwen-7b')
+    await flushPromises()
+
+    const events = wrapper.emitted('update:config')
+    expect(events).toBeTruthy()
+    const payload = events?.at(-1)
+    expect(payload?.[0]).toBe('n-4')
+    expect(payload?.[1]).toMatchObject({
+      model_id: 'qwen-7b',
+      model_display_name: 'Qwen 7B',
+    })
+  })
+
+  it('emits agent config when selecting agent', async () => {
+    const wrapper = mount(NodeConfigPanel, {
+      props: {
+        node: {
+          id: 'n-5',
+          data: { type: 'agent', label: 'Agent', config: {} },
+        } as any,
+        selectedNodeId: 'n-5',
+        nodes: [{ id: 'n-5', data: { type: 'agent', label: 'Agent', config: {} } }] as any,
+      },
+      global: { plugins: [makeI18n()] },
+    })
+
+    await flushPromises()
+    const agentSelect = wrapper.find('select')
+    await agentSelect.setValue('planner-agent')
+    await flushPromises()
+
+    const events = wrapper.emitted('update:config')
+    expect(events).toBeTruthy()
+    const payload = events?.at(-1)
+    expect(payload?.[0]).toBe('n-5')
+    expect(payload?.[1]).toMatchObject({
+      agent_id: 'planner-agent',
+      agent_display_name: 'Planner Agent',
+    })
+  })
+
+  it('emits tool config when selecting tool', async () => {
+    const wrapper = mount(NodeConfigPanel, {
+      props: {
+        node: {
+          id: 'n-6',
+          data: { type: 'skill', label: 'Tool', config: {} },
+        } as any,
+        selectedNodeId: 'n-6',
+        nodes: [{ id: 'n-6', data: { type: 'skill', label: 'Tool', config: {} } }] as any,
+      },
+      global: { plugins: [makeI18n()] },
+    })
+
+    await flushPromises()
+    const toolSelect = wrapper.find('select')
+    await toolSelect.setValue('web.search')
+    await flushPromises()
+
+    const events = wrapper.emitted('update:config')
+    expect(events).toBeTruthy()
+    const payload = events?.at(-1)
+    expect(payload?.[0]).toBe('n-6')
+    expect(payload?.[1]).toMatchObject({
+      tool_name: 'web.search',
+      tool_id: 'web.search',
+      tool_display_name: 'Web Search',
+    })
+  })
 })

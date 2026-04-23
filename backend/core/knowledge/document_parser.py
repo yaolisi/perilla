@@ -11,7 +11,7 @@ from log import logger
 
 class ParsedPage:
     """解析后的页面"""
-    def __init__(self, page: int, text: str):
+    def __init__(self, page: int, text: str) -> None:
         self.page = page
         self.text = text.strip()
 
@@ -24,7 +24,7 @@ class ParsedDocument:
         filename: str,
         pages: List[ParsedPage],
         doc_type: str,
-    ):
+    ) -> None:
         self.doc_id = doc_id
         self.filename = filename
         self.pages = pages
@@ -82,7 +82,7 @@ class DocumentParser:
     def _parse_pdf(file_path: Path) -> ParsedDocument:
         """解析 PDF"""
         try:
-            import pdfplumber
+            import pdfplumber  # type: ignore[import-untyped]
         except ImportError:
             try:
                 import pypdf
@@ -93,7 +93,7 @@ class DocumentParser:
         doc_id = file_path.stem
         
         try:
-            import pdfplumber
+            import pdfplumber  # type: ignore[import-untyped]
             with pdfplumber.open(file_path) as pdf:
                 for page_num, page in enumerate(pdf.pages, start=1):
                     text = page.extract_text()
@@ -101,7 +101,7 @@ class DocumentParser:
                         pages.append(ParsedPage(page=page_num, text=text))
         except ImportError:
             # Fallback to pypdf
-            import pypdf
+            import pypdf  # type: ignore[import-untyped]
             with open(file_path, 'rb') as f:
                 pdf_reader = pypdf.PdfReader(f)
                 for page_num, page in enumerate(pdf_reader.pages, start=1):
@@ -123,7 +123,7 @@ class DocumentParser:
     def _parse_docx(file_path: Path) -> ParsedDocument:
         """解析 DOCX"""
         try:
-            from docx import Document
+            from docx import Document  # type: ignore[import-untyped]
         except ImportError:
             raise ImportError("Please install python-docx: pip install python-docx")
         

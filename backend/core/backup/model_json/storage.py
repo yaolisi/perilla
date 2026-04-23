@@ -91,7 +91,6 @@ def write_snapshot(
     model_id: str,
     content: bytes,
     *,
-    backup_id: Optional[str] = None,
     timestamp_utc: Optional[datetime] = None,
 ) -> tuple[Path, str, str]:
     """
@@ -197,7 +196,7 @@ def parse_index_events(model_id: Optional[str] = None, limit: int = 50) -> List[
     index_path = get_index_path()
     if not index_path.exists():
         return []
-    events = []
+    events: List[Dict[str, Any]] = []
     with open(index_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -250,7 +249,7 @@ def list_daily_manifests() -> List[str]:
     manifests_dir = get_manifests_dir()
     if not manifests_dir.exists():
         return []
-    out = []
+    out: List[str] = []
     for p in manifests_dir.iterdir():
         if p.is_file() and p.suffix == ".json" and p.name.startswith("daily_snapshot_"):
             # daily_snapshot_20260312.json

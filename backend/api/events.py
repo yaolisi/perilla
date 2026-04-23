@@ -2,10 +2,13 @@
 V2.6: Observability & Replay Layer - Event API
 提供事件流查询、回放和指标计算的 API
 """
-from fastapi import APIRouter, HTTPException, Query
-from typing import List, Dict, Any, Optional
+from typing import Annotated, Any, Dict, List, Optional
+
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from log import logger
+
+from api.errors import raise_api_error
 
 from execution_kernel.persistence.db import Database
 from execution_kernel.events.event_store import EventStore
@@ -58,8 +61,8 @@ class ValidationResponse(BaseModel):
     event_count: int
     node_count: int
     errors: List[str]
-    first_sequence: Optional[int]
-    last_sequence: Optional[int]
+    first_sequence: Optional[int] = None
+    last_sequence: Optional[int] = None
 
 
 class MetricsResponse(BaseModel):
@@ -104,9 +107,9 @@ def _event_to_response(event: ExecutionEvent) -> EventResponse:
 @router.get("/instance/{instance_id}", response_model=EventListResponse)
 async def get_instance_events(
     instance_id: str,
-    start_sequence: int = Query(1, ge=1, description="起始序列号"),
-    end_sequence: Optional[int] = Query(None, ge=1, description="结束序列号"),
-):
+    start_sequence: Annotated[int, Query(ge=1, description="起始序列号")] = 1,
+    end_sequence: Annotated[Optional[int], Query(ge=1, description="结束序列号")] = None,
+) -> EventListResponse:
     """
     获取实例的事件流
     
@@ -136,14 +139,20 @@ async def get_instance_events(
             )
     except Exception as e:
         logger.error(f"Failed to get events for instance {instance_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(
+            status_code=500,
+            code="events_internal_error",
+            message=str(e),
+            details={"instance_id": instance_id, "operation": "get_instance_events"},
+        )
+        raise AssertionError("unreachable")
 
 
 @router.get("/agent-session/{session_id}")
 async def get_agent_session_events(
     session_id: str,
-    limit_instances: int = Query(20, ge=1, le=100, description="最多返回的实例数"),
-):
+    limit_instances: Annotated[int, Query(ge=1, le=100, description="最多返回的实例数")] = 20,
+) -> Dict[str, Any]:
     """
     按 Agent Session 聚合查询执行事件。
 
@@ -171,11 +180,17 @@ async def get_agent_session_events(
             }
     except Exception as e:
         logger.error(f"Failed to get events by session {session_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(
+            status_code=500,
+            code="events_internal_error",
+            message=str(e),
+            details={"session_id": session_id, "operation": "get_agent_session_events"},
+        )
+        raise AssertionError("unreachable")
 
 
 @router.get("/instance/{instance_id}/event-types")
-async def get_event_type_breakdown(instance_id: str):
+async def get_event_type_breakdown(instance_id: str) -> Dict[str, Any]:
     """
     获取实例的事件类型分布
     
@@ -201,7 +216,13 @@ async def get_event_type_breakdown(instance_id: str):
             }
     except Exception as e:
         logger.error(f"Failed to get event breakdown for instance {instance_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(
+            status_code=500,
+            code="events_internal_error",
+            message=str(e),
+            details={"instance_id": instance_id, "operation": "get_event_type_breakdown"},
+        )
+        raise AssertionError("unreachable")
 
 
 # =========================
@@ -211,8 +232,8 @@ async def get_event_type_breakdown(instance_id: str):
 @router.get("/instance/{instance_id}/replay", response_model=RebuiltStateResponse)
 async def replay_instance_state(
     instance_id: str,
-    target_sequence: Optional[int] = Query(None, ge=1, description="目标序列号（用于断点调试）"),
-):
+    target_sequence: Annotated[Optional[int], Query(ge=1, description="目标序列号（用于断点调试）")] = None,
+) -> RebuiltStateResponse:
     """
     回放实例状态
     
@@ -246,14 +267,26 @@ async def replay_instance_state(
                 last_sequence=state.last_sequence,
             )
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise_api_error(
+            status_code=404,
+            code="events_replay_not_found",
+            message=str(e),
+            details={"instance_id": instance_id},
+        )
+        raise AssertionError("unreachable")
     except Exception as e:
         logger.error(f"Failed to replay instance {instance_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(
+            status_code=500,
+            code="events_internal_error",
+            message=str(e),
+            details={"instance_id": instance_id, "operation": "replay_instance_state"},
+        )
+        raise AssertionError("unreachable")
 
 
 @router.get("/instance/{instance_id}/validate", response_model=ValidationResponse)
-async def validate_event_stream(instance_id: str):
+async def validate_event_stream(instance_id: str) -> ValidationResponse:
     """
     验证事件流完整性
     
@@ -283,7 +316,13 @@ async def validate_event_stream(instance_id: str):
             )
     except Exception as e:
         logger.error(f"Failed to validate event stream for instance {instance_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(
+            status_code=500,
+            code="events_internal_error",
+            message=str(e),
+            details={"instance_id": instance_id, "operation": "validate_event_stream"},
+        )
+        raise AssertionError("unreachable")
 
 
 # =========================
@@ -291,7 +330,7 @@ async def validate_event_stream(instance_id: str):
 # =========================
 
 @router.get("/instance/{instance_id}/metrics", response_model=MetricsResponse)
-async def get_instance_metrics(instance_id: str):
+async def get_instance_metrics(instance_id: str) -> MetricsResponse:
     """
     获取实例执行指标
     
@@ -320,4 +359,10 @@ async def get_instance_metrics(instance_id: str):
             )
     except Exception as e:
         logger.error(f"Failed to get metrics for instance {instance_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_api_error(
+            status_code=500,
+            code="events_internal_error",
+            message=str(e),
+            details={"instance_id": instance_id, "operation": "get_instance_metrics"},
+        )
+        raise AssertionError("unreachable")

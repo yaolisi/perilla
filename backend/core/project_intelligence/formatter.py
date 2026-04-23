@@ -43,7 +43,7 @@ class ProjectFormatter:
     # Executive Summary
     # ============================================================
     
-    def executive_summary(self, style: str = "markdown") -> str:
+    def executive_summary(self, style: str = "markdown") -> Any:
         """
         Generate a high-level executive summary.
         
@@ -459,7 +459,7 @@ class ProjectFormatter:
     
     def _count_modules_by_type(self) -> Dict[str, int]:
         """Count modules by type."""
-        counts = {}
+        counts: Dict[str, int] = {}
         for module in self.model.modules:
             mtype = module.type
             counts[mtype] = counts.get(mtype, 0) + 1

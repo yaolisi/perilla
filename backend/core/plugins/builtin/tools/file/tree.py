@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -34,27 +34,30 @@ class FileTreeTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "path": {
-                "type": "string",
-                "description": "Root directory path: relative to workspace, or absolute path."
-            },
-            "max_depth": {
-                "type": "integer",
-                "description": "Maximum depth to display (default: 3).",
-                "default": 3
-            },
-            "include_hidden": {
-                "type": "boolean",
-                "description": "Include hidden files/directories (default: false).",
-                "default": False
-            },
-            "exclude_dirs": {
-                "type": "array",
-                "description": "Directories to exclude (default: ['node_modules', '__pycache__', '.git', 'venv', '.venv']).",
-                "default": ["node_modules", "__pycache__", ".git", "venv", ".venv", "dist", "build", ".next", "target"]
-            }
-        }, required=["path"])
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "path": {
+                    "type": "string",
+                    "description": "Root directory path: relative to workspace, or absolute path."
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": "Maximum depth to display (default: 3).",
+                    "default": 3
+                },
+                "include_hidden": {
+                    "type": "boolean",
+                    "description": "Include hidden files/directories (default: false).",
+                    "default": False
+                },
+                "exclude_dirs": {
+                    "type": "array",
+                    "description": "Directories to exclude (default: ['node_modules', '__pycache__', '.git', 'venv', '.venv']).",
+                    "default": ["node_modules", "__pycache__", ".git", "venv", ".venv", "dist", "build", ".next", "target"]
+                }
+            }, required=["path"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -66,7 +69,7 @@ class FileTreeTool(Tool):
         }}
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["file.read"]
 
     @property
@@ -125,7 +128,7 @@ class FileTreeTool(Tool):
             total_files = 0
             max_depth_reached = 0
 
-            def walk_directory(dir_path: Path, prefix: str = "", depth: int = 0):
+            def walk_directory(dir_path: Path, prefix: str = "", depth: int = 0) -> None:
                 nonlocal total_dirs, total_files, max_depth_reached
 
                 if depth > max_depth:

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -17,7 +17,7 @@ class TimeFormatTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
+        return cast(Dict[str, Any], create_input_schema({
             "input": {
                 "type": ["string", "number"],
                 "description": "Input date/time: ISO 8601 string or Unix timestamp (integer)."
@@ -30,14 +30,14 @@ class TimeFormatTool(Tool):
                 "type": "string",
                 "description": "Input format string (Python strptime format). Only needed if input is a non-standard string."
             }
-        }, required=["input", "output_format"])
+        }, required=["input", "output_format"]))
 
     @property
     def output_schema(self) -> Dict[str, Any]:
         return {"type": "string"}
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return []
 
     @property

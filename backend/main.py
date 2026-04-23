@@ -3,7 +3,7 @@
 """
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Any, Dict, List, Optional
 import atexit
 import signal
 from datetime import datetime, timedelta, timezone
@@ -48,11 +48,14 @@ from api.model_backups import router as model_backups_router
 from api.events import router as events_router
 from api.workflows import router as workflows_router
 from api.audit import router as audit_router
+from api.errors import register_error_handlers
 from core.security.deps import require_authenticated_platform_admin
 
+MODEL_NOT_FOUND_ERROR = "Model not found"
+AdminRole = Annotated[Any, Depends(require_authenticated_platform_admin)]
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+
+def _apply_security_baseline() -> None:
     security_changes = apply_production_security_defaults(settings)
     if security_changes:
         logger.warning(
@@ -68,27 +71,31 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "[SecurityBaseline] security_guardrails_strict=False, continue startup with unsafe production settings."
         )
-    if not getattr(settings, "debug", True):
-        if (getattr(settings, "cors_allowed_origins", "") or "").strip() == "":
-            logger.warning("[SecurityBaseline] cors_allowed_origins is empty in production; avoid wildcard CORS.")
-        if getattr(settings, "file_read_allowed_roots", "").strip() == "/":
-            logger.warning("[SecurityBaseline] file_read_allowed_roots='/' in production; narrow this allowlist.")
-        if getattr(settings, "tool_net_http_enabled", False):
-            logger.warning("[SecurityBaseline] tool_net_http_enabled=True in production; verify outbound policy.")
-        if getattr(settings, "tool_net_web_enabled", False):
-            logger.warning("[SecurityBaseline] tool_net_web_enabled=True in production; verify privacy policy.")
+    if getattr(settings, "debug", True):
+        return
+    if (getattr(settings, "cors_allowed_origins", "") or "").strip() == "":
+        logger.warning("[SecurityBaseline] cors_allowed_origins is empty in production; avoid wildcard CORS.")
+    if getattr(settings, "file_read_allowed_roots", "").strip() == "/":
+        logger.warning("[SecurityBaseline] file_read_allowed_roots='/' in production; narrow this allowlist.")
+    if getattr(settings, "tool_net_http_enabled", False):
+        logger.warning("[SecurityBaseline] tool_net_http_enabled=True in production; verify outbound policy.")
+    if getattr(settings, "tool_net_web_enabled", False):
+        logger.warning("[SecurityBaseline] tool_net_web_enabled=True in production; verify privacy policy.")
 
+
+def _log_startup_banner() -> None:
     logger.info(f"Starting {settings.app_name} v{settings.version}...")
-    logger.info(f"Log files will be kept for 30 days in logs/ directory")
-    _web_enabled = getattr(settings, "tool_net_web_enabled", True)
-    logger.info(f"tool_net_web_enabled={_web_enabled} (web.search: True=real, False=disabled)")
-    if not _web_enabled:
+    logger.info("Log files will be kept for 30 days in logs/ directory")
+    web_enabled = getattr(settings, "tool_net_web_enabled", True)
+    logger.info(f"tool_net_web_enabled={web_enabled} (web.search: True=real, False=disabled)")
+    if not web_enabled:
         logger.warning("Web search is DISABLED. Set TOOL_NET_WEB_ENABLED=true (or remove from .env) and restart for real search.")
-    
-    # 初始化数据库表（确保ORM表存在）
+
+
+def _initialize_database_tables() -> None:
     try:
         from core.data.base import Base, get_engine
-        from core.data.models import (
+        from core.data.models import (  # noqa: F401
             SystemSetting,
             Model,
             ModelConfig,
@@ -99,40 +106,30 @@ async def lifespan(app: FastAPI):
             ImageGenerationJobORM,
             ImageGenerationWarmupORM,
         )
-        from core.data.models.audit import AuditLogORM
-        from core.data.models.workflow import WorkflowExecutionQueueORM
+        from core.data.models.audit import AuditLogORM  # noqa: F401
+        from core.data.models.workflow import WorkflowExecutionQueueORM  # noqa: F401
         from sqlalchemy import text
+
         engine = get_engine()
         Base.metadata.create_all(engine)
-
-        # Workflow schema 兼容迁移（SQLite）：为旧表补齐新增列
         with engine.connect() as conn:
-            # workflow_executions 新增队列观测列
-            cols = {
-                str(row[1])
-                for row in conn.execute(text("PRAGMA table_info(workflow_executions)")).fetchall()
-            }
+            cols = {str(row[1]) for row in conn.execute(text("PRAGMA table_info(workflow_executions)")).fetchall()}
             if "queue_position" not in cols:
                 conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN queue_position INTEGER"))
             if "queued_at" not in cols:
                 conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN queued_at DATETIME"))
             if "wait_duration_ms" not in cols:
                 conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN wait_duration_ms INTEGER"))
-            # audit_logs 新增 tenant_id
-            audit_cols = {
-                str(row[1])
-                for row in conn.execute(text("PRAGMA table_info(audit_logs)")).fetchall()
-            }
+            audit_cols = {str(row[1]) for row in conn.execute(text("PRAGMA table_info(audit_logs)")).fetchall()}
             if audit_cols and "tenant_id" not in audit_cols:
                 conn.execute(text("ALTER TABLE audit_logs ADD COLUMN tenant_id VARCHAR(128) DEFAULT 'default'"))
             conn.commit()
-
         logger.info("Database tables initialized")
     except Exception as e:
         logger.error(f"Failed to initialize database tables: {e}", exc_info=True)
-        # 不阻止启动，但记录错误
 
-    # 启动兜底：清理长时间卡在 running 的旧会话，避免异常退出后残留“假运行中”
+
+def _recover_stale_running_sessions() -> None:
     try:
         from core.data.base import db_session
         from core.data.models.session import AgentSession as AgentSessionORM
@@ -142,10 +139,7 @@ async def lifespan(app: FastAPI):
         with db_session(retry_count=3, retry_delay=0.1) as db:
             stmt = (
                 AgentSessionORM.__table__.update()
-                .where(
-                    AgentSessionORM.status == "running",
-                    AgentSessionORM.updated_at < cutoff,
-                )
+                .where(AgentSessionORM.status == "running", AgentSessionORM.updated_at < cutoff)
                 .values(
                     status="error",
                     error_message="Recovered on startup: stale running session",
@@ -155,16 +149,14 @@ async def lifespan(app: FastAPI):
             result = db.execute(stmt)
             recovered = int(getattr(result, "rowcount", 0) or 0)
         if recovered > 0:
-            logger.warning(
-                f"[Startup] Recovered {recovered} stale running agent session(s) "
-                f"(threshold={stale_seconds}s)"
-            )
+            logger.warning(f"[Startup] Recovered {recovered} stale running agent session(s) (threshold={stale_seconds}s)")
         else:
             logger.info(f"[Startup] No stale running agent sessions (threshold={stale_seconds}s)")
     except Exception as e:
         logger.warning(f"[Startup] Failed to recover stale running sessions: {e}")
 
-    # 启动兜底：将上次异常退出残留的图片任务状态回收，避免 UI 显示假 running/queued
+
+def _recover_stale_image_jobs() -> None:
     try:
         from core.data.base import db_session
         from core.data.models.image_generation import ImageGenerationJobORM
@@ -190,7 +182,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[Startup] Failed to recover stale image generation jobs: {e}")
 
-    # 启动兜底：回收过期租约的 workflow queue 项，避免异常退出后卡在 leased
+
+def _recover_expired_workflow_leases() -> None:
     try:
         from core.data.base import db_session
         from core.data.models.workflow import WorkflowExecutionQueueORM
@@ -204,12 +197,7 @@ async def lifespan(app: FastAPI):
                     WorkflowExecutionQueueORM.lease_expire_at.isnot(None),
                     WorkflowExecutionQueueORM.lease_expire_at < now,
                 )
-                .values(
-                    status="queued",
-                    lease_owner=None,
-                    lease_expire_at=None,
-                    updated_at=now,
-                )
+                .values(status="queued", lease_owner=None, lease_expire_at=None, updated_at=now)
             )
             result = db.execute(stmt)
             recovered_leases = int(getattr(result, "rowcount", 0) or 0)
@@ -220,89 +208,83 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[Startup] Failed to recover workflow queue leases: {e}")
 
-    # model.json 定时全量快照（阶段 2）：若启用则后台循环在配置的 UTC 时间执行
-    if getattr(settings, "model_json_backup_daily_enabled", False):
+
+def _start_model_json_snapshot_task(app: FastAPI) -> None:
+    if not getattr(settings, "model_json_backup_daily_enabled", False):
+        return
+    try:
+        from core.backup.model_json.scheduler import run_daily_snapshot_loop
+
+        app.state.model_json_snapshot_task = asyncio.create_task(run_daily_snapshot_loop())
+    except Exception as e:
+        logger.warning(f"[Startup] Model.json daily snapshot scheduler not started: {e}")
+
+
+async def _shutdown_cleanup_async() -> int:
+    logger.info("[Shutdown] Performing cleanup of loaded models...")
+    unloaded_count = 0
+    try:
+        from core.models.registry import get_model_registry
+        from core.runtimes.factory import get_runtime_factory
+
+        registry = get_model_registry()
+        factory = get_runtime_factory()
+        unloaded_count = await _shutdown_unload_registered_models(registry, factory)
+        await _shutdown_cleanup_cached_runtimes(factory)
+    except Exception as e:
+        logger.error(f"[Shutdown] Cleanup failed: {e}")
+    logger.info(f"[Shutdown] Cleanup complete. Unloaded {unloaded_count} models.")
+    return unloaded_count
+
+
+async def _shutdown_unload_registered_models(registry: Any, factory: Any) -> int:
+    unloaded_count = 0
+    for model_descriptor in registry.list_models():
         try:
-            from core.backup.model_json.scheduler import run_daily_snapshot_loop
-            asyncio.create_task(run_daily_snapshot_loop())
+            if getattr(model_descriptor, "model_type", "").lower() == "perception":
+                continue
+            runtime = factory.get_runtime(model_descriptor.runtime)
+            if await runtime.is_loaded(model_descriptor):
+                logger.info(f"[Shutdown] Unloading model: {model_descriptor.id}")
+                ok = await runtime.unload(model_descriptor)
+                if ok:
+                    unloaded_count += 1
+                else:
+                    logger.warning(f"[Shutdown] Failed to unload: {model_descriptor.id}")
         except Exception as e:
-            logger.warning(f"[Startup] Model.json daily snapshot scheduler not started: {e}")
-    
-    async def _shutdown_cleanup_async() -> int:
-        """
-        Cleanup loaded resources on graceful shutdown.
+            logger.error(f"[Shutdown] Error unloading {model_descriptor.id}: {e}")
+    return unloaded_count
 
-        IMPORTANT:
-        - Run in the lifespan teardown (async) to avoid deadlocks.
-        - Do NOT block inside signal handlers.
-        """
-        logger.info("[Shutdown] Performing cleanup of loaded models...")
-        unloaded_count = 0
-        try:
-            # Import here to avoid circular imports
-            from core.models.registry import get_model_registry
-            from core.runtimes.factory import get_runtime_factory
 
-            registry = get_model_registry()
-            factory = get_runtime_factory()
+async def _shutdown_cleanup_cached_runtimes(factory: Any) -> None:
+    try:
+        n_embed = factory.close_embedding_runtimes()
+        if n_embed:
+            logger.info(f"[Shutdown] Closed {n_embed} embedding runtime(s)")
+    except Exception as e:
+        logger.warning(f"[Shutdown] Failed to close embedding runtimes: {e}")
+    try:
+        n_vlm = await factory.unload_vlm_runtimes()
+        if n_vlm:
+            logger.info(f"[Shutdown] Unloaded {n_vlm} VLM runtime(s)")
+    except Exception as e:
+        logger.warning(f"[Shutdown] Failed to unload VLM runtimes: {e}")
+    try:
+        n_asr = await factory.unload_asr_runtimes()
+        if n_asr:
+            logger.info(f"[Shutdown] Unloaded {n_asr} ASR runtime(s)")
+    except Exception as e:
+        logger.warning(f"[Shutdown] Failed to unload ASR runtimes: {e}")
+    try:
+        n_perception = await factory.unload_perception_runtimes()
+        if n_perception:
+            logger.info(f"[Shutdown] Unloaded {n_perception} perception runtime(s)")
+    except Exception as e:
+        logger.warning(f"[Shutdown] Failed to unload perception runtimes: {e}")
 
-            all_models = registry.list_models()
-            for model_descriptor in all_models:
-                try:
-                    # Perception 模型由 unload_perception_runtimes 统一处理，跳过
-                    if getattr(model_descriptor, "model_type", "").lower() == "perception":
-                        continue
-                    runtime = factory.get_runtime(model_descriptor.runtime)
-                    if await runtime.is_loaded(model_descriptor):
-                        logger.info(f"[Shutdown] Unloading model: {model_descriptor.id}")
-                        ok = await runtime.unload(model_descriptor)
-                        if ok:
-                            unloaded_count += 1
-                            logger.info(f"[Shutdown] Successfully unloaded: {model_descriptor.id}")
-                        else:
-                            logger.warning(f"[Shutdown] Failed to unload: {model_descriptor.id}")
-                except Exception as e:
-                    logger.error(f"[Shutdown] Error unloading {model_descriptor.id}: {e}")
-                    continue
 
-            # Also release cached embedding runtimes (best-effort)
-            try:
-                n_embed = factory.close_embedding_runtimes()
-                if n_embed:
-                    logger.info(f"[Shutdown] Closed {n_embed} embedding runtime(s)")
-            except Exception as e:
-                logger.warning(f"[Shutdown] Failed to close embedding runtimes: {e}")
-
-            # Also unload cached VLM runtimes (best-effort)
-            try:
-                n_vlm = await factory.unload_vlm_runtimes()
-                if n_vlm:
-                    logger.info(f"[Shutdown] Unloaded {n_vlm} VLM runtime(s)")
-            except Exception as e:
-                logger.warning(f"[Shutdown] Failed to unload VLM runtimes: {e}")
-
-            # Also unload cached ASR runtimes (best-effort)
-            try:
-                n_asr = await factory.unload_asr_runtimes()
-                if n_asr:
-                    logger.info(f"[Shutdown] Unloaded {n_asr} ASR runtime(s)")
-            except Exception as e:
-                logger.warning(f"[Shutdown] Failed to unload ASR runtimes: {e}")
-
-            # Also unload cached perception runtimes (best-effort)
-            try:
-                n_perception = await factory.unload_perception_runtimes()
-                if n_perception:
-                    logger.info(f"[Shutdown] Unloaded {n_perception} perception runtime(s)")
-            except Exception as e:
-                logger.warning(f"[Shutdown] Failed to unload perception runtimes: {e}")
-        except Exception as e:
-            logger.error(f"[Shutdown] Cleanup failed: {e}")
-        logger.info(f"[Shutdown] Cleanup complete. Unloaded {unloaded_count} models.")
-        return unloaded_count
-
-    # atexit 作为兜底：进程被正常退出且 lifespan teardown 未执行时尽量清理（不保证所有场景）
-    def cleanup_handler_sync():
+def _register_shutdown_handlers() -> None:
+    def cleanup_handler_sync() -> None:
         try:
             asyncio.run(_shutdown_cleanup_async())
         except Exception as e:
@@ -310,56 +292,41 @@ async def lifespan(app: FastAPI):
 
     atexit.register(cleanup_handler_sync)
 
-    # 注册 SIGINT/SIGTERM/SIGHUP：仅记录并委托给原处理器，避免在请求中直接抛 KeyboardInterrupt 导致 500
-    _prev_signal_handlers = {}
+    prev_signal_handlers: Dict[int, Any] = {}
 
-    def _exit_request_handler(signum, frame):
+    def _exit_request_handler(signum: int, frame: Any) -> None:
         try:
             sig_name = signal.Signals(signum).name
         except Exception:
             sig_name = str(signum)
         logger.info(f"[Shutdown] Received signal {sig_name} ({signum}); delegating to previous signal handler.")
-
-        prev = _prev_signal_handlers.get(signum)
-        # 委托给 uvicorn/系统原 handler；不要在这里直接 raise KeyboardInterrupt
+        prev = prev_signal_handlers.get(signum)
         if callable(prev):
             prev(signum, frame)
             return
         if prev == signal.SIG_IGN:
             return
-        # SIG_DFL/未知：回退为中断异常（极少发生，保底行为）
         raise KeyboardInterrupt
 
     try:
-        for _sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            _prev_signal_handlers[_sig] = signal.getsignal(_sig)
-            signal.signal(_sig, _exit_request_handler)
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            prev_signal_handlers[sig] = signal.getsignal(sig)
+            signal.signal(sig, _exit_request_handler)
     except Exception:
-        # Windows/某些环境可能没有 SIGHUP
         pass
-    
-    # 扫描并注册模型
-    from core.models.scanner.ollama import OllamaScanner
-    from core.models.scanner.lmstudio import LMStudioScanner
-    from core.models.scanner.local import LocalScanner
-    from core.models.descriptor import ModelDescriptor
+
+
+async def _load_plugins_and_skills() -> None:
     from core.models.registry import get_model_registry
     from core.plugins.registry import get_plugin_registry
-    
+
     registry = get_model_registry()
     plugin_registry = get_plugin_registry()
-    
-    # 初始化并加载内置插件
     try:
         from api.chat import memory_store
-        await plugin_registry.load_builtin_plugins(
-            logger=logger,
-            memory=memory_store,
-            model_registry=registry
-        )
+        await plugin_registry.load_builtin_plugins(logger=logger, memory=memory_store, model_registry=registry)
         logger.info(f"[Main] Loaded {len(plugin_registry.list())} plugins")
-        
-        # 注册内置 Tools
+
         from core.plugins.builtin.tools import bootstrap_tools
         bootstrap_tools()
         logger.info("[Main] Registered built-in tools")
@@ -367,12 +334,12 @@ async def lifespan(app: FastAPI):
         from core.skills.registry import SkillRegistry
         from core.skills.service import bootstrap_builtin_skills
         from core.skills.discovery import get_discovery_engine
+
         SkillRegistry.load()
         logger.info("[Main] Loaded Skill registry")
         n_builtin = bootstrap_builtin_skills()
         if n_builtin:
             logger.info(f"[Main] Registered {n_builtin} built-in skills from tools")
-        # Skill 语义发现：绑定 Registry 并构建向量索引（供运行时 use_skill_discovery 使用）
         try:
             engine = get_discovery_engine()
             engine.bind_registry(SkillRegistry)
@@ -383,28 +350,41 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Plugin initialization failed: {e}")
 
-    try:
-        ollama_scanner = OllamaScanner()
-        await ollama_scanner.scan()
-    except Exception as e:
-        logger.error(f"Ollama scan failed: {e}")
-        
-    try:
-        lmstudio_scanner = LMStudioScanner()
-        await lmstudio_scanner.scan()
-    except Exception as e:
-        logger.debug(f"LM Studio scan failed: {e}")
+
+async def _startup_scan_models() -> None:
+    from core.models.scanner.ollama import OllamaScanner
+    from core.models.scanner.lmstudio import LMStudioScanner
+    from core.models.scanner.local import LocalScanner
 
     try:
-        local_scanner = LocalScanner()
-        await local_scanner.scan()
+        await OllamaScanner().scan()
+    except Exception as e:
+        logger.error(f"Ollama scan failed: {e}")
+    try:
+        await LMStudioScanner().scan()
+    except Exception as e:
+        logger.debug(f"LM Studio scan failed: {e}")
+    try:
+        await LocalScanner().scan()
     except Exception as e:
         logger.error(f"Local model scan failed: {e}")
-    
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _apply_security_baseline()
+    _log_startup_banner()
+    _initialize_database_tables()
+    _recover_stale_running_sessions()
+    _recover_stale_image_jobs()
+    _recover_expired_workflow_leases()
+    _start_model_json_snapshot_task(app)
+    _register_shutdown_handlers()
+    await _load_plugins_and_skills()
+    await _startup_scan_models()
     try:
         yield
     finally:
-        # graceful shutdown path
         await _shutdown_cleanup_async()
 
 # 创建应用
@@ -414,6 +394,7 @@ app = FastAPI(
     description="本地 AI 推理网关",
     lifespan=lifespan
 )
+register_error_handlers(app)
 
 # 中间件顺序：先注册的更靠近应用内核；外层后注册，请求先经过外层。
 # 期望链路：Audit(外) → CORS → RBAC 强制 → UserContext → RBAC 角色 → RateLimit → RequestTrace(内)
@@ -457,7 +438,10 @@ app.add_middleware(UserContextMiddleware)
 if getattr(settings, "rbac_enabled", False) and getattr(settings, "rbac_enforcement", False):
     app.add_middleware(RBACEnforcementMiddleware)
 
-# CORS 中间件配置
+if getattr(settings, "audit_log_enabled", False):
+    app.add_middleware(AuditLogMiddleware)
+
+# CORS 中间件配置（按顺序要求放在最后）
 _cors_origins = [x.strip() for x in (getattr(settings, "cors_allowed_origins", "") or "").split(",") if x.strip()]
 _cors_allow_credentials = bool(_cors_origins) and "*" not in _cors_origins
 app.add_middleware(
@@ -468,9 +452,6 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Session-Id", "X-Request-Id", "X-Trace-Id", "X-Response-Time-Ms", "X-CSRF-Token"],
 )
-
-if getattr(settings, "audit_log_enabled", False):
-    app.add_middleware(AuditLogMiddleware)
 
 # 包含路由
 app.include_router(chat_router)
@@ -558,8 +539,85 @@ def _sanitize_metadata(metadata: Optional[dict]) -> dict:
             out[k] = v
     return out
 
+
+async def _fill_model_status(model_item: Dict[str, Any], reg: Any, factory: Any) -> None:
+    model_item["status"] = "detached"
+    model_id = str(model_item.get("id", ""))
+    if not model_id:
+        return
+    desc = reg.get_model(model_id)
+    if not desc:
+        return
+
+    descriptor_type = getattr(desc, "model_type", "").lower()
+    if descriptor_type == "perception":
+        if factory.is_perception_loaded(desc.id):
+            model_item["status"] = "active"
+        return
+    if descriptor_type == "image_generation":
+        if factory.is_image_generation_loaded(desc.id):
+            model_item["status"] = "active"
+        return
+
+    runtime = factory.get_runtime(desc.runtime)
+    if await runtime.is_loaded(desc):
+        model_item["status"] = "active"
+        if desc.runtime == "llama.cpp":
+            model_item["device"] = "GPU:0"  # 暂时硬编码为 GPU:0，未来可从 runtime 获取
+
+
+async def _scan_model_count(scanner_cls: Any, key: str, results: Dict[str, int], *, log_level: str = "error") -> List[Any]:
+    try:
+        scanner = scanner_cls()
+        models = await scanner.scan()
+        results[key] = len(models)
+        return list(models)
+    except Exception as e:
+        if log_level == "debug":
+            logger.debug(f"{key} scan failed: {e}")
+        else:
+            logger.error(f"{key} scan failed: {e}")
+        return []
+
+
+async def _unload_model_for_rescan(factory: Any, desc: Any) -> None:
+    descriptor_type = getattr(desc, "model_type", "").lower()
+    if descriptor_type == "perception":
+        factory.unload_perception_runtime(desc.id)
+        return
+    if descriptor_type == "image_generation":
+        await factory.unload_image_generation_runtime(desc.id)
+        return
+    runtime = factory.get_runtime(desc.runtime)
+    if await runtime.is_loaded(desc):
+        await runtime.unload(desc)
+
+
+async def _remove_outdated_local_models(local_models: List[Any], results: Dict[str, int]) -> None:
+    from core.models.registry import get_model_registry
+    from core.runtimes.factory import get_runtime_factory
+
+    reg = get_model_registry()
+    factory = get_runtime_factory()
+    scanned_ids = {d.id for d in local_models}
+    existing_local = reg.list_models(provider="local")
+
+    for desc in existing_local:
+        if desc.id in scanned_ids:
+            continue
+        try:
+            try:
+                await _unload_model_for_rescan(factory, desc)
+            except Exception:
+                pass
+            reg.delete_model(desc.id)
+            results["removed"] += 1
+            logger.info(f"[Scan] Removed outdated local model: {desc.id}")
+        except Exception as e:
+            logger.warning(f"[Scan] Failed to remove {desc.id}: {e}")
+
 @app.post("/api/models")
-async def register_model(req: CreateModelRequest, _role=Depends(require_authenticated_platform_admin)):
+async def register_model(req: CreateModelRequest, _role: AdminRole = None):
     """手动注册模型（如云端 OpenAI, DeepSeek 等）"""
     from core.models.registry import get_model_registry
     from core.models.descriptor import ModelDescriptor
@@ -583,7 +641,7 @@ async def register_model(req: CreateModelRequest, _role=Depends(require_authenti
     return {"success": True, "id": descriptor.id}
 
 @app.get("/api/models")
-async def list_models(model_type: str = None):
+async def list_models(model_type: Optional[str] = None):
     """列出可用模型"""
     from core.agents.router import get_router
     from core.runtimes.factory import get_runtime_factory
@@ -596,23 +654,7 @@ async def list_models(model_type: str = None):
     
     # 注入实时状态
     for m in models:
-        m["status"] = "detached"
-        desc = reg.get_model(m["id"])
-        if desc:
-            model_type = getattr(desc, "model_type", "").lower()
-            if model_type == "perception":
-                if factory.is_perception_loaded(desc.id):
-                    m["status"] = "active"
-            elif model_type == "image_generation":
-                if factory.is_image_generation_loaded(desc.id):
-                    m["status"] = "active"
-            else:
-                runtime = factory.get_runtime(desc.runtime)
-                if await runtime.is_loaded(desc):
-                    m["status"] = "active"
-                    # 如果是 llama.cpp 并且在缓存中，我们可以标记 device
-                    if desc.runtime == "llama.cpp":
-                        m["device"] = "GPU:0" # 暂时硬编码为 GPU:0，未来可从 runtime 获取
+        await _fill_model_status(m, reg, factory)
             
     return {
         "object": "list",
@@ -621,7 +663,7 @@ async def list_models(model_type: str = None):
 
 
 @app.post("/api/models/scan")
-async def scan_models(_role=Depends(require_authenticated_platform_admin)):
+async def scan_models(_role: AdminRole = None):
     """手动扫描模型，同步本地模型状态（移除磁盘上已不存在的本地模型）"""
     from core.models.scanner.ollama import OllamaScanner
     from core.models.scanner.lmstudio import LMStudioScanner
@@ -631,58 +673,17 @@ async def scan_models(_role=Depends(require_authenticated_platform_admin)):
     
     results = {"ollama": 0, "lmstudio": 0, "local": 0, "removed": 0}
     
-    try:
-        ollama_scanner = OllamaScanner()
-        models = await ollama_scanner.scan()
-        results["ollama"] = len(models)
-    except Exception as e:
-        logger.error(f"Ollama scan failed: {e}")
-        
-    try:
-        lmstudio_scanner = LMStudioScanner()
-        models = await lmstudio_scanner.scan()
-        results["lmstudio"] = len(models)
-    except Exception as e:
-        logger.debug(f"LM Studio scan failed: {e}")
-
-    try:
-        local_scanner = LocalScanner()
-        models = await local_scanner.scan()
-        results["local"] = len(models)
-        
-        # 同步本地模型：移除磁盘上已不存在的本地模型
-        reg = get_model_registry()
-        factory = get_runtime_factory()
-        scanned_ids = {d.id for d in models}
-        existing_local = reg.list_models(provider="local")
-        for desc in existing_local:
-            if desc.id not in scanned_ids:
-                try:
-                    model_type = getattr(desc, "model_type", "").lower()
-                    if model_type == "perception":
-                        factory.unload_perception_runtime(desc.id)
-                    elif model_type == "image_generation":
-                        await factory.unload_image_generation_runtime(desc.id)
-                    else:
-                        try:
-                            runtime = factory.get_runtime(desc.runtime)
-                            if await runtime.is_loaded(desc):
-                                await runtime.unload(desc)
-                        except Exception:
-                            pass
-                    reg.delete_model(desc.id)
-                    results["removed"] += 1
-                    logger.info(f"[Scan] Removed outdated local model: {desc.id}")
-                except Exception as e:
-                    logger.warning(f"[Scan] Failed to remove {desc.id}: {e}")
-    except Exception as e:
-        logger.error(f"Local model scan failed: {e}")
+    await _scan_model_count(OllamaScanner, "ollama", results)
+    await _scan_model_count(LMStudioScanner, "lmstudio", results, log_level="debug")
+    local_models = await _scan_model_count(LocalScanner, "local", results)
+    if local_models:
+        await _remove_outdated_local_models(local_models, results)
         
     return {"success": True, "results": results}
 
 
 @app.post("/api/models/{model_id}/load")
-async def load_model(model_id: str, _role=Depends(require_authenticated_platform_admin)):
+async def load_model(model_id: str, _role: AdminRole = None):
     """手动加载模型"""
     from core.models.registry import get_model_registry
     from core.runtimes.factory import get_runtime_factory
@@ -690,7 +691,7 @@ async def load_model(model_id: str, _role=Depends(require_authenticated_platform
     reg = get_model_registry()
     desc = reg.get_model(model_id)
     if not desc:
-        return {"error": "Model not found"}, 404
+        return {"error": MODEL_NOT_FOUND_ERROR}, 404
         
     factory = get_runtime_factory()
     
@@ -722,7 +723,7 @@ async def load_model(model_id: str, _role=Depends(require_authenticated_platform
 
 
 @app.post("/api/models/{model_id}/unload")
-async def unload_model(model_id: str, _role=Depends(require_authenticated_platform_admin)):
+async def unload_model(model_id: str, _role: AdminRole = None):
     """手动卸载模型"""
     from core.models.registry import get_model_registry
     from core.runtimes.factory import get_runtime_factory
@@ -730,11 +731,118 @@ async def unload_model(model_id: str, _role=Depends(require_authenticated_platfo
     reg = get_model_registry()
     desc = reg.get_model(model_id)
     if not desc:
-        return {"error": "Model not found"}, 404
+        return {"error": MODEL_NOT_FOUND_ERROR}, 404
         
     factory = get_runtime_factory()
     success = await factory.unload_model(desc.id)
     return {"success": success, "status": "detached"}
+
+
+def _estimate_model_size_gb(size_text: Optional[str]) -> float:
+    import re
+
+    if not size_text:
+        return 0.0
+    match = re.search(r"(\d+(\.\d+)?)\s*(GB|MB)", size_text)
+    if not match:
+        return 0.0
+    value = float(match.group(1))
+    unit = match.group(3)
+    return value if unit == "GB" else value / 1024
+
+
+def _build_vram_warning(vram_available: float, estimated_total_gb: float) -> Optional[str]:
+    if vram_available > estimated_total_gb:
+        return None
+    if vram_available + 2 > estimated_total_gb:
+        return (
+            f"VRAM is tight ({round(vram_available, 1)}GB available). "
+            "The model might be slow or fail to load."
+        )
+    return (
+        f"Insufficient VRAM! Estimated {round(estimated_total_gb, 1)}GB required, "
+        f"but only {round(vram_available, 1)}GB available."
+    )
+
+
+def _resolve_local_model_dir(desc: Any) -> Optional[str]:
+    import os
+
+    if not desc or desc.provider != "local":
+        return None
+    model_path_val = desc.metadata.get("model_path") or desc.metadata.get("path")
+    if not model_path_val:
+        return None
+    return os.path.dirname(model_path_val)
+
+
+def _is_browse_path_allowed(model_dir: str, browse_dir: str) -> bool:
+    import os
+
+    model_dir_real = os.path.realpath(model_dir)
+    browse_real = os.path.realpath(browse_dir)
+    return browse_real.startswith(model_dir_real) or model_dir_real.startswith(browse_real)
+
+
+def _list_browse_entries(browse_dir: str) -> Dict[str, List[str]]:
+    import os
+
+    entries = sorted(os.listdir(browse_dir))
+    dirs: List[str] = []
+    files: List[str] = []
+    for name in entries:
+        if name.startswith("."):
+            continue
+        full = os.path.join(browse_dir, name)
+        if os.path.isdir(full):
+            dirs.append(name)
+        else:
+            files.append(name)
+    return {"dirs": sorted(dirs), "files": sorted(files)}
+
+
+async def _try_read_local_manifest(desc: Any, model_id: str) -> Optional[Dict[str, Any]]:
+    import os
+    import json
+    import aiofiles  # type: ignore[import-untyped]
+
+    model_dir = _resolve_local_model_dir(desc)
+    if not model_dir:
+        return None
+
+    manifest_path = os.path.join(model_dir, "model.json")
+    if not os.path.exists(manifest_path):
+        return None
+    try:
+        async with aiofiles.open(manifest_path, "r", encoding="utf-8") as f:
+            content = await f.read()
+        manifest = json.loads(content)
+        if not isinstance(manifest, dict):
+            return None
+        manifest["metadata"] = _sanitize_metadata(manifest.get("metadata"))
+        rel_path = manifest.get("path", "")
+        if rel_path and not os.path.isabs(rel_path):
+            abs_path = os.path.normpath(os.path.join(model_dir, rel_path))
+            manifest = {**manifest, "path": abs_path}
+        return manifest
+    except Exception as e:
+        logger.warning(f"Failed to read manifest for {model_id}: {e}")
+        return None
+
+
+def _build_default_manifest(desc: Any) -> Dict[str, Any]:
+    return {
+        "model_id": desc.id,
+        "name": desc.name,
+        "model_type": getattr(desc, "model_type", None) or desc.metadata.get("modality", "llm"),
+        "runtime": desc.runtime,
+        "format": desc.metadata.get("format", "gguf"),
+        "path": desc.metadata.get("model_path") or desc.metadata.get("path", ""),
+        "capabilities": getattr(desc, "capabilities", None) or desc.metadata.get("capabilities", []),
+        "quantization": desc.metadata.get("quantization", ""),
+        "description": desc.description or "",
+        "metadata": _sanitize_metadata(desc.metadata),
+    }
 
 
 @app.get("/api/models/{model_id}/safety_check")
@@ -742,12 +850,11 @@ async def model_safety_check(model_id: str):
     """检查模型加载的 VRAM 安全性"""
     from core.models.registry import get_model_registry
     from api.system import get_gpu_metrics
-    import re
     
     reg = get_model_registry()
     desc = reg.get_model(model_id)
     if not desc:
-        return {"error": "Model not found"}, 404
+        return {"error": MODEL_NOT_FOUND_ERROR}, 404
         
     # 获取当前 GPU 状态
     gpu = get_gpu_metrics()
@@ -757,13 +864,7 @@ async def model_safety_check(model_id: str):
     
     # 估算模型所需 VRAM
     # 基础: 模型文件大小
-    size_gb = 0
-    if desc.size:
-        match = re.search(r"(\d+(\.\d+)?)\s*(GB|MB)", desc.size)
-        if match:
-            val = float(match.group(1))
-            unit = match.group(3)
-            size_gb = val if unit == "GB" else val / 1024
+    size_gb = _estimate_model_size_gb(desc.size)
             
     # 上下文开销 (估算: 8k 约 0.5GB, 32k 约 2GB)
     ctx_kb = desc.context_length or 4096
@@ -785,12 +886,7 @@ async def model_safety_check(model_id: str):
             "warning": None if vram_available > size_gb else "Ollama may use system RAM if VRAM is low."
         }
         
-    warning = None
-    if not is_safe:
-        if vram_available + 2 > estimated_total_gb: # 差点点
-            warning = f"VRAM is tight ({round(vram_available, 1)}GB available). The model might be slow or fail to load."
-        else:
-            warning = f"Insufficient VRAM! Estimated {round(estimated_total_gb, 1)}GB required, but only {round(vram_available, 1)}GB available."
+    warning = _build_vram_warning(vram_available, estimated_total_gb)
             
     return {
         "is_safe": is_safe,
@@ -802,14 +898,14 @@ async def model_safety_check(model_id: str):
 
 
 @app.patch("/api/models/{model_id}")
-async def update_model(model_id: str, data: dict, _role=Depends(require_authenticated_platform_admin)):
+async def update_model(model_id: str, data: dict, _role: AdminRole = None):
     """更新模型元数据/配置"""
     from core.models.registry import get_model_registry
     
     reg = get_model_registry()
     desc = reg.get_model(model_id)
     if not desc:
-        return {"error": "Model not found"}, 404
+        return {"error": MODEL_NOT_FOUND_ERROR}, 404
         
     # 更新字段
     if "name" in data:
@@ -841,7 +937,7 @@ async def get_model_chat_params(model_id: str):
 
 
 @app.post("/api/models/{model_id}/chat-params")
-async def save_model_chat_params(model_id: str, data: dict, _role=Depends(require_authenticated_platform_admin)):
+async def save_model_chat_params(model_id: str, data: dict, _role: AdminRole = None):
     """保存模型的聊天参数"""
     from core.models.registry import get_model_registry
     logger.info(f"Updating chat parameters for model {model_id}: {data}")
@@ -858,42 +954,26 @@ async def browse_model_dir(model_id: str, dir: str = ""):
 
     reg = get_model_registry()
     desc = reg.get_model(model_id)
-    if not desc or desc.provider != "local":
+    model_dir = _resolve_local_model_dir(desc)
+    if not model_dir:
         return {"error": "Model not found or not local"}, 404
 
-    model_path_val = desc.metadata.get("model_path") or desc.metadata.get("path")
-    if not model_path_val:
-        return {"error": "Model path unknown"}, 404
-
-    model_dir = os.path.dirname(model_path_val)
     browse_dir = os.path.normpath(os.path.join(model_dir, dir)) if dir else model_dir
 
     if not os.path.isdir(browse_dir):
         return {"error": "Directory not found", "path": browse_dir}, 404
 
     # 安全检查：仅允许模型目录及其父级（便于选择模型文件）
-    model_dir_real = os.path.realpath(model_dir)
-    browse_real = os.path.realpath(browse_dir)
-    if not (browse_real.startswith(model_dir_real) or model_dir_real.startswith(browse_real)):
+    if not _is_browse_path_allowed(model_dir, browse_dir):
         return {"error": "Access denied"}, 403
 
     try:
-        entries = sorted(os.listdir(browse_dir))
-        dirs = []
-        files = []
-        for name in entries:
-            if name.startswith("."):
-                continue
-            full = os.path.join(browse_dir, name)
-            if os.path.isdir(full):
-                dirs.append(name)
-            else:
-                files.append(name)
+        entry_map = _list_browse_entries(browse_dir)
         parent_dir = os.path.dirname(browse_dir) if browse_dir != model_dir else None
         return {
             "path": browse_dir,
-            "dirs": sorted(dirs),
-            "files": sorted(files),
+            "dirs": entry_map["dirs"],
+            "files": entry_map["files"],
             "parent": parent_dir,
             "model_dir": model_dir,
         }
@@ -908,61 +988,29 @@ async def browse_model_dir(model_id: str, dir: str = ""):
 async def get_model_manifest(model_id: str):
     """获取模型清单配置"""
     from core.models.registry import get_model_registry
-    import os
-    import json
-    
     reg = get_model_registry()
     desc = reg.get_model(model_id)
     if not desc:
-        return {"error": "Model not found"}, 404
-    
-    # 对于本地模型，尝试读取 model.json
-    model_path_val = desc.metadata.get("model_path") or desc.metadata.get("path")
-    if desc.provider == "local" and model_path_val:
-        model_dir = os.path.dirname(model_path_val)
-        manifest_path = os.path.join(model_dir, "model.json")
-        
-        if os.path.exists(manifest_path):
-            try:
-                with open(manifest_path, 'r', encoding='utf-8') as f:
-                    manifest = json.load(f)
-                if isinstance(manifest, dict):
-                    manifest["metadata"] = _sanitize_metadata(manifest.get("metadata"))
-                # 将相对 path 解析为绝对路径
-                rel_path = manifest.get("path", "")
-                if rel_path and not os.path.isabs(rel_path):
-                    abs_path = os.path.normpath(os.path.join(model_dir, rel_path))
-                    manifest = {**manifest, "path": abs_path}
-                return manifest
-            except Exception as e:
-                logger.warning(f"Failed to read manifest for {model_id}: {e}")
-    
-    # 返回默认清单
-    return {
-        "model_id": desc.id,
-        "name": desc.name,
-        "model_type": getattr(desc, "model_type", None) or desc.metadata.get("modality", "llm"),
-        "runtime": desc.runtime,
-        "format": desc.metadata.get("format", "gguf"),
-        "path": desc.metadata.get("model_path") or desc.metadata.get("path", ""),
-        "capabilities": getattr(desc, "capabilities", None) or desc.metadata.get("capabilities", []),
-        "quantization": desc.metadata.get("quantization", ""),
-        "description": desc.description or "",
-        "metadata": _sanitize_metadata(desc.metadata)
-    }
+        return {"error": MODEL_NOT_FOUND_ERROR}, 404
+
+    manifest = await _try_read_local_manifest(desc, model_id)
+    if manifest is not None:
+        return manifest
+    return _build_default_manifest(desc)
 
 
 @app.put("/api/models/{model_id}/manifest")
-async def update_model_manifest(model_id: str, data: dict, _role=Depends(require_authenticated_platform_admin)):
+async def update_model_manifest(model_id: str, data: dict, _role: AdminRole = None):
     """更新模型清单配置"""
     from core.models.registry import get_model_registry
     import os
     import json
+    import aiofiles  # type: ignore[import-untyped]
     
     reg = get_model_registry()
     desc = reg.get_model(model_id)
     if not desc:
-        return {"error": "Model not found"}, 404
+        return {"error": MODEL_NOT_FOUND_ERROR}, 404
     
     # 对于本地模型，更新 model.json
     model_path_val = desc.metadata.get("model_path") or desc.metadata.get("path")
@@ -981,8 +1029,9 @@ async def update_model_manifest(model_id: str, data: dict, _role=Depends(require
                         save_data["path"] = rel
                 except ValueError:
                     pass
-            with open(manifest_path, 'w', encoding='utf-8') as f:
-                json.dump(save_data, f, indent=2, ensure_ascii=False)
+            serialized = json.dumps(save_data, indent=2, ensure_ascii=False)
+            async with aiofiles.open(manifest_path, "w", encoding="utf-8") as f:
+                await f.write(serialized)
             logger.info(f"Updated manifest for {model_id} at {manifest_path}")
         except Exception as e:
             logger.error(f"Failed to write manifest for {model_id}: {e}")

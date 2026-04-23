@@ -6,11 +6,13 @@ VLM API 端点
 import json
 import base64
 import time
+from typing import cast
 from pathlib import Path
 from typing import Optional, Any
-from fastapi import APIRouter, HTTPException, UploadFile, Form, File, Request, Response
+from fastapi import APIRouter, UploadFile, Form, File, Request, Response
 from pydantic import BaseModel, Field
 from log import logger
+from api.errors import raise_api_error
 from config.settings import settings
 
 from core.models.descriptor import ModelDescriptor
@@ -55,7 +57,7 @@ def _get_or_create_session_id(*, store: HistoryStore, req: Request, user_id: str
         title = "New Chat"
     else:
         title = title[:50]
-    return store.create_session(user_id=user_id, title=title, last_model=model_id)
+    return cast(str, store.create_session(user_id=user_id, title=title, last_model=model_id))
 
 
 async def _maybe_unload_previous_model(*, store: HistoryStore, user_id: str, session_id: str, current_model_id: str) -> None:
@@ -119,7 +121,7 @@ async def vlm_generate(
     response: Response,
     request_json: str = Form(..., alias="request", description="JSON string of VLMGenerateRequest"),
     image: UploadFile = File(..., description="输入图像文件"),
-):
+) -> VLMGenerateResponse:
     """
     VLM 多模态推理接口
     
@@ -131,7 +133,7 @@ async def vlm_generate(
         VLMGenerateResponse: 包含生成文本的响应
         
     Raises:
-        HTTPException: 当模型不存在、不是 VLM 模型或推理失败时
+        结构化错误: 当模型不存在、不是 VLM 模型或推理失败时
         
     设计说明：
     1. 使用 Form + File 分离 JSON 参数和二进制图像数据
@@ -151,7 +153,11 @@ async def vlm_generate(
     try:
         req_obj = VLMGenerateRequest(**json.loads(request_json))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request JSON: {e}")
+        raise_api_error(
+            status_code=400,
+            code="vlm_invalid_request_json",
+            message=f"Invalid request JSON: {e}",
+        )
     logger.info(
         "[VLM API] parsed request model=%s prompt_len=%s temperature=%s max_tokens=%s",
         req_obj.model, len(req_obj.prompt or ""), req_obj.temperature, req_obj.max_tokens,
@@ -167,17 +173,22 @@ async def vlm_generate(
         model_descriptor = model_registry.get(req_obj.model)
     
     if not model_descriptor:
-        raise HTTPException(
+        raise_api_error(
             status_code=404,
-            detail=f"Model '{req_obj.model}' not found"
+            code="vlm_model_not_found",
+            message=f"Model '{req_obj.model}' not found",
+            details={"model_id": req_obj.model},
         )
+    assert model_descriptor is not None
     
     # 2. 验证模型类型（应为 VLM 或包含 vision 能力）
     # 这里可以根据你的模型描述符结构调整验证逻辑
     if not _is_vlm_model(model_descriptor):
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail=f"Model '{req_obj.model}' is not a VLM model"
+            code="vlm_model_not_vlm",
+            message=f"Model '{req_obj.model}' is not a VLM model",
+            details={"model_id": req_obj.model},
         )
     
     # 3. 获取对应的 VLM Runtime（使用单例工厂以复用 VLM runtime 缓存）
@@ -190,24 +201,28 @@ async def vlm_generate(
         vlm_runtime = await _get_vlm_runtime(model_descriptor, runtime_factory)
     except Exception as e:
         logger.error(f"[VLM API] Failed to get VLM runtime for model {req_obj.model}: {e}")
-        raise HTTPException(
+        raise_api_error(
             status_code=500,
-            detail=f"Failed to initialize VLM runtime: {str(e)}"
+            code="vlm_runtime_init_failed",
+            message=f"Failed to initialize VLM runtime: {str(e)}",
+            details={"model_id": req_obj.model},
         )
     
-    # 4. 读取并验证图像数据
+    # 4. 读取并验证图像数据（结构化错误需在 ``except Exception`` 之外抛出，避免被误判为读取失败）
     try:
         image_content = await image.read()
-        if not image_content:
-            raise HTTPException(
-                status_code=400,
-                detail="Empty image file provided"
-            )
     except Exception as e:
         logger.error(f"[VLM API] Failed to read image file: {e}")
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail=f"Invalid image file: {str(e)}"
+            code="vlm_invalid_image",
+            message=f"Invalid image file: {str(e)}",
+        )
+    if not image_content:
+        raise_api_error(
+            status_code=400,
+            code="vlm_empty_image",
+            message="Empty image file provided",
         )
     logger.info("[VLM API] image bytes read size=%s", len(image_content))
     
@@ -262,7 +277,14 @@ async def vlm_generate(
             # 确保运行时已初始化
             if not vlm_runtime.is_loaded:
                 logger.info("[VLM API] initializing VLM runtime model=%s runtime=%s", req_obj.model, getattr(model_descriptor, "runtime", None))
-                await vlm_runtime.initialize()
+                descriptor_meta = model_descriptor.metadata or {}
+                model_path = (
+                    descriptor_meta.get("model_path")
+                    or descriptor_meta.get("path")
+                    or model_descriptor.provider_model_id
+                    or model_descriptor.id
+                )
+                await vlm_runtime.initialize(model_path=model_path)
             else:
                 logger.info("[VLM API] runtime cache hit model=%s", req_obj.model)
             
@@ -316,9 +338,11 @@ async def vlm_generate(
         except Exception:
             pass
         logger.error(f"[VLM API] Inference failed for model {req_obj.model}: {e}", exc_info=True)
-        raise HTTPException(
+        raise_api_error(
             status_code=500,
-            detail=f"Inference failed: {str(e)}"
+            code="vlm_inference_failed",
+            message=f"Inference failed: {str(e)}",
+            details={"model_id": req_obj.model},
         )
 
     # Persist assistant message
@@ -397,7 +421,7 @@ async def _get_vlm_runtime(model_descriptor: ModelDescriptor, factory: Any) -> V
         VLMRuntime: VLM 运行时实例
     """
     # 使用工厂基于 ModelDescriptor 创建 VLM 运行时
-    return factory.create_vlm_runtime(model_descriptor)
+    return cast(VLMRuntime, factory.create_vlm_runtime(model_descriptor))
 
 
 # 使用示例（仅供说明）：

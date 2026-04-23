@@ -257,7 +257,7 @@ def validate_plan_structure(plan: Plan) -> Dict[str, Any]:
     ]
     
     # Calculate max depth (longest dependency chain)
-    def get_depth(step_id: str, memo: Dict[str, int] = None) -> int:
+    def get_depth(step_id: str, memo: Optional[Dict[str, int]] = None) -> int:
         if memo is None:
             memo = {}
         

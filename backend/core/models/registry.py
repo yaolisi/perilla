@@ -2,7 +2,7 @@
 模型注册中心 (ORM 版本)
 """
 import json
-from typing import List, Optional, Any, Dict
+from typing import Any, Dict, List, Optional, cast
 
 from sqlalchemy.dialects.sqlite import insert
 
@@ -119,7 +119,7 @@ class ModelRegistry:
         with db_session() as db:
             config = db.query(ModelConfig).filter(ModelConfig.model_id == model_id).first()
             if config and config.chat_params_json:
-                return json.loads(config.chat_params_json)
+                return cast(Dict[str, Any], json.loads(config.chat_params_json))
         return {}
 
     def save_model_chat_params(self, model_id: str, params: Dict[str, Any]) -> None:

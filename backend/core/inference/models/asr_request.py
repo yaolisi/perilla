@@ -4,9 +4,9 @@ V2.8 Inference Gateway Layer - ASR Request Model
 Dedicated request model for ASR transcription (non-chat).
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ASRRequest(BaseModel):
@@ -28,7 +28,7 @@ class ASRRequest(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Observability metadata")
 
     @model_validator(mode="after")
-    def validate_audio(self):
+    def validate_audio(self) -> Self:
         if not isinstance(self.audio, str) or not self.audio.strip():
             raise ValueError("audio must be a non-empty string")
         if not self.audio.startswith("data:"):
@@ -38,6 +38,5 @@ class ASRRequest(BaseModel):
                 raise ValueError("workspace is required when audio is a file path")
         return self
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 

@@ -1,5 +1,4 @@
-import json
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -25,27 +24,30 @@ class HttpGetTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "url": {
-                "type": "string",
-                "description": "The URL to request (e.g., https://api.example.com/data)."
-            },
-            "headers": {
-                "type": "object",
-                "description": "Optional HTTP headers as key-value pairs.",
-                "additionalProperties": {"type": "string"}
-            },
-            "timeout": {
-                "type": "number",
-                "description": "Request timeout in seconds (default: 30).",
-                "default": 30
-            },
-            "params": {
-                "type": "object",
-                "description": "Optional query parameters as key-value pairs.",
-                "additionalProperties": {"type": "string"}
-            }
-        }, required=["url"])
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "url": {
+                    "type": "string",
+                    "description": "The URL to request (e.g., https://api.example.com/data)."
+                },
+                "headers": {
+                    "type": "object",
+                    "description": "Optional HTTP headers as key-value pairs.",
+                    "additionalProperties": {"type": "string"}
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Request timeout in seconds (default: 30).",
+                    "default": 30
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Optional query parameters as key-value pairs.",
+                    "additionalProperties": {"type": "string"}
+                }
+            }, required=["url"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -60,7 +62,7 @@ class HttpGetTool(Tool):
         }
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["net.http"]
 
     @property

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 
 class BackupFrequency(str, Enum):
@@ -60,7 +60,7 @@ class BackupConfig:
     backup_mode: BackupMode = BackupMode.LOCAL_SNAPSHOT
     database_type: DatabaseType = DatabaseType.SQLITE
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """验证配置"""
         if self.retention_count < 1:
             raise ValueError("retention_count must be >= 1")
@@ -79,7 +79,7 @@ class BackupMetadata:
     path: Path
     error_message: Optional[str] = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
             "id": self.id,
@@ -103,7 +103,7 @@ class BackupResult:
     error_message: Optional[str] = None
     duration_seconds: Optional[float] = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
             "success": self.success,
@@ -125,7 +125,7 @@ class RestoreResult:
     duration_seconds: Optional[float] = None
     backup_id: Optional[str] = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
             "success": self.success,

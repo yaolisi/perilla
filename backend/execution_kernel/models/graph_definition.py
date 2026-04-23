@@ -5,7 +5,7 @@ Graph Definition Models (Frozen, Immutable)
 
 from enum import Enum
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import hashlib
 import json
 
@@ -70,8 +70,7 @@ class NodeDefinition(BaseModel):
     # Phase C: 循环节点专用配置
     loop_config: Optional[LoopConfig] = Field(default=None, description="循环配置（仅 LOOP 类型有效）")
     
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
     
     def cache_key(self, input_data: Dict[str, Any]) -> str:
         """生成缓存键"""
@@ -86,8 +85,7 @@ class EdgeDefinition(BaseModel):
     on: EdgeTrigger = Field(default=EdgeTrigger.SUCCESS, description="触发条件")
     condition: Optional[str] = Field(default=None, description="条件表达式")
     
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
 
 class SubgraphDefinition(BaseModel):
@@ -96,8 +94,7 @@ class SubgraphDefinition(BaseModel):
     graph: "GraphDefinition" = Field(..., description="子图定义")
     parent_node_id: str = Field(..., description="父图中对应节点的 ID")
     
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
 
 class GraphDefinition(BaseModel):
@@ -113,8 +110,7 @@ class GraphDefinition(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="图元数据")
     disabled_nodes: List[str] = Field(default_factory=list, description="已禁用节点 ID 列表")
     
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
     
     def get_node(self, node_id: str) -> Optional[NodeDefinition]:
         """获取节点定义"""
@@ -142,32 +138,20 @@ class GraphDefinition(BaseModel):
         incoming = self.get_incoming_edges(node_id)
         # 只考虑 success 触发的边作为依赖
         return [edge.from_node for edge in incoming if edge.on == EdgeTrigger.SUCCESS]
-    
-    def validate(self) -> List[str]:
-        """验证图定义，返回错误列表"""
-        errors = []
-        
-        # 检查节点 ID 唯一性
-        node_ids = [node.id for node in self.nodes]
-        if len(node_ids) != len(set(node_ids)):
-            errors.append("Duplicate node IDs found")
-        
-        # 检查边引用的节点是否存在
-        node_id_set = set(node_ids)
+
+    def _collect_edge_reference_errors(self, node_id_set: set[str]) -> List[str]:
+        errors: List[str] = []
         for edge in self.edges:
             if edge.from_node not in node_id_set:
                 errors.append(f"Edge references non-existent from_node: {edge.from_node}")
             if edge.to_node not in node_id_set:
                 errors.append(f"Edge references non-existent to_node: {edge.to_node}")
-        
-        # 检查是否有入口节点
-        if not self.get_entry_nodes():
-            errors.append("No entry nodes found (possible cycle)")
-        
-        # 检查循环依赖（简单检查）
+        return errors
+
+    def _has_cycle(self, node_ids: List[str]) -> bool:
         visited = set()
         rec_stack = set()
-        
+
         def has_cycle(node_id: str) -> bool:
             visited.add(node_id)
             rec_stack.add(node_id)
@@ -179,12 +163,30 @@ class GraphDefinition(BaseModel):
                     return True
             rec_stack.remove(node_id)
             return False
-        
+
         for node_id in node_ids:
-            if node_id not in visited:
-                if has_cycle(node_id):
-                    errors.append("Cycle detected in graph")
-                    break
+            if node_id not in visited and has_cycle(node_id):
+                return True
+        return False
+    
+    def validate_graph(self) -> List[str]:
+        """验证图定义，返回错误列表。"""
+        errors = []
+        
+        # 检查节点 ID 唯一性
+        node_ids = [node.id for node in self.nodes]
+        if len(node_ids) != len(set(node_ids)):
+            errors.append("Duplicate node IDs found")
+        
+        node_id_set = set(node_ids)
+        errors.extend(self._collect_edge_reference_errors(node_id_set))
+        
+        # 检查是否有入口节点
+        if not self.get_entry_nodes():
+            errors.append("No entry nodes found (possible cycle)")
+        
+        if self._has_cycle(node_ids):
+            errors.append("Cycle detected in graph")
         
         return errors
     

@@ -1,5 +1,4 @@
-import json
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, cast
 from core.tools.base import Tool
 from core.tools.context import ToolContext
 from core.tools.result import ToolResult
@@ -25,31 +24,34 @@ class HttpPostTool(Tool):
 
     @property
     def input_schema(self) -> Dict[str, Any]:
-        return create_input_schema({
-            "url": {
-                "type": "string",
-                "description": "The URL to request (e.g., https://api.example.com/data)."
-            },
-            "body": {
-                "type": ["object", "string"],
-                "description": "Request body: JSON object (auto-serialized) or raw string."
-            },
-            "headers": {
-                "type": "object",
-                "description": "Optional HTTP headers as key-value pairs.",
-                "additionalProperties": {"type": "string"}
-            },
-            "timeout": {
-                "type": "number",
-                "description": "Request timeout in seconds (default: 30).",
-                "default": 30
-            },
-            "json": {
-                "type": "boolean",
-                "description": "Whether to send body as JSON (default: true if body is object, false if string).",
-                "default": None
-            }
-        }, required=["url"])
+        return cast(
+            Dict[str, Any],
+            create_input_schema({
+                "url": {
+                    "type": "string",
+                    "description": "The URL to request (e.g., https://api.example.com/data)."
+                },
+                "body": {
+                    "type": ["object", "string"],
+                    "description": "Request body: JSON object (auto-serialized) or raw string."
+                },
+                "headers": {
+                    "type": "object",
+                    "description": "Optional HTTP headers as key-value pairs.",
+                    "additionalProperties": {"type": "string"}
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Request timeout in seconds (default: 30).",
+                    "default": 30
+                },
+                "json": {
+                    "type": "boolean",
+                    "description": "Whether to send body as JSON (default: true if body is object, false if string).",
+                    "default": None
+                }
+            }, required=["url"]),
+        )
 
     @property
     def output_schema(self) -> Dict[str, Any]:
@@ -64,7 +66,7 @@ class HttpPostTool(Tool):
         }
 
     @property
-    def required_permissions(self):
+    def required_permissions(self) -> List[str]:
         return ["net.http"]
 
     @property

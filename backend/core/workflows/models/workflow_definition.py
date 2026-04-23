@@ -6,11 +6,15 @@ WorkflowDefinition 是不可变的定义快照。
 """
 
 from typing import Dict, Any, Optional
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import UTC, datetime
+from pydantic import BaseModel, ConfigDict, Field
 import uuid
 import hashlib
 import json
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class WorkflowDefinition(BaseModel):
@@ -44,7 +48,7 @@ class WorkflowDefinition(BaseModel):
     
     # 创建信息
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utc_now,
         description="创建时间"
     )
     created_by: Optional[str] = Field(
@@ -58,9 +62,7 @@ class WorkflowDefinition(BaseModel):
         description="基于哪个版本创建（用于 fork）"
     )
     
-    class Config:
-        from_attributes = True
-        frozen = True  # Pydantic 不可变模型
+    model_config = ConfigDict(from_attributes=True, frozen=True)
     
     def get_id(self) -> str:
         """获取定义 ID"""

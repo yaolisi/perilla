@@ -13,15 +13,16 @@ import gc
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Awaitable, Callable, Dict, Optional
+from typing import Annotated, Any, Awaitable, Callable, Dict, Optional, cast
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from log import logger
+from api.errors import APIException, raise_api_error
 from config.settings import settings
 from core.data.base import SessionLocal
 from core.data.models.image_generation import ImageGenerationJobORM, ImageGenerationWarmupORM
@@ -39,6 +40,10 @@ from core.runtimes.image_generation_types import (
 )
 
 router = APIRouter()
+JSONDict = Dict[str, Any]
+DEFAULT_IMAGE_MIME = "image/png"
+JOB_CANCELLED_MSG = "Image generation job cancelled"
+JOB_CANCELLED_BEFORE_START_MSG = "Image generation job cancelled before start"
 
 
 class ImageGenerateRequest(BaseModel):
@@ -93,7 +98,7 @@ def _utcnow() -> datetime:
 
 
 def _clone_request(request: ImageGenerateRequest) -> ImageGenerateRequest:
-    return ImageGenerateRequest.model_validate(request.model_dump())
+    return cast(ImageGenerateRequest, ImageGenerateRequest.model_validate(request.model_dump()))
 
 
 def _is_mps_oom_error(exc: Exception) -> bool:
@@ -105,7 +110,7 @@ def _is_mps_oom_error(exc: Exception) -> bool:
 
 
 async def _force_release_other_image_generation_runtimes(
-    factory,
+    factory: Any,
     *,
     keep_model_id: Optional[str] = None,
     reason: str = "",
@@ -127,7 +132,7 @@ async def _force_release_other_image_generation_runtimes(
             keep_model_id or "-",
             reason or "n/a",
         )
-    return released
+    return cast(int, released)
 
 
 def _db_upsert_job(job: _ImageGenerationJob) -> None:
@@ -254,36 +259,37 @@ def _orm_to_job_response(row: ImageGenerationJobORM, *, include_base64: bool = T
         if not include_base64:
             payload["image_base64"] = ""
         result = ImageGenerationResponse.model_validate(payload)
+    request_json = cast(Dict[str, Any], row.request_json or {})
     return ImageGenerationJobResponse(
-        job_id=row.job_id,
-        status=ImageGenerationJobStatus(row.status),
-        model=row.model,
-        prompt=row.prompt,
-        phase=row.phase,
-        error=row.error,
-        created_at=row.created_at,
-        started_at=row.started_at,
-        finished_at=row.finished_at,
-        queue_position=(row.request_json or {}).get("__queue_position"),
-        current_step=(row.request_json or {}).get("__current_step"),
-        total_steps=(row.request_json or {}).get("__total_steps"),
-        progress=(row.request_json or {}).get("__progress"),
+        job_id=cast(str, row.job_id),
+        status=ImageGenerationJobStatus(cast(str, row.status)),
+        model=cast(str, row.model),
+        prompt=cast(str, row.prompt),
+        phase=cast(Optional[str], row.phase),
+        error=cast(Optional[str], row.error),
+        created_at=cast(datetime, row.created_at),
+        started_at=cast(Optional[datetime], row.started_at),
+        finished_at=cast(Optional[datetime], row.finished_at),
+        queue_position=cast(Optional[int], request_json.get("__queue_position")),
+        current_step=cast(Optional[int], request_json.get("__current_step")),
+        total_steps=cast(Optional[int], request_json.get("__total_steps")),
+        progress=cast(Optional[float], request_json.get("__progress")),
         result=result,
     )
 
 
 def _orm_to_warmup_response(row: ImageGenerationWarmupORM) -> ImageGenerationWarmupResponse:
     return ImageGenerationWarmupResponse(
-        warmup_id=row.warmup_id,
-        model=row.model,
-        status=row.status,
-        started_at=row.started_at,
-        finished_at=row.finished_at,
-        elapsed_ms=row.elapsed_ms,
-        output_path=row.output_path,
-        width=row.width,
-        height=row.height,
-        error=row.error,
+        warmup_id=cast(str, row.warmup_id),
+        model=cast(str, row.model),
+        status=cast(str, row.status),
+        started_at=cast(Optional[datetime], row.started_at),
+        finished_at=cast(Optional[datetime], row.finished_at),
+        elapsed_ms=cast(Optional[int], row.elapsed_ms),
+        output_path=cast(Optional[str], row.output_path),
+        width=cast(Optional[int], row.width),
+        height=cast(Optional[int], row.height),
+        error=cast(Optional[str], row.error),
     )
 
 
@@ -303,8 +309,12 @@ def _persist_image_result(response: ImageGenerationResponse, job_id: Optional[st
     output_path = (_GENERATED_IMAGES_DIR / f"{stem}.{ext}").resolve()
     try:
         output_path.write_bytes(base64.b64decode(response.image_base64))
-    except (binascii.Error, ValueError) as e:
-        raise HTTPException(status_code=500, detail=f"Failed to persist generated image: {e}") from e
+    except binascii.Error as e:
+        raise_api_error(
+            status_code=500,
+            code="image_generation_persist_failed",
+            message=f"Failed to persist generated image: {e}",
+        )
 
     response.output_path = str(output_path)
     if job_id:
@@ -326,11 +336,11 @@ def _persist_image_result(response: ImageGenerationResponse, job_id: Optional[st
 
 def _ensure_thumbnail_for_payload(job_id: str, payload: dict) -> Optional[str]:
     thumbnail_path = payload.get("thumbnail_path")
-    if thumbnail_path and Path(thumbnail_path).resolve().is_file():
+    if isinstance(thumbnail_path, str) and thumbnail_path and Path(thumbnail_path).resolve().is_file():
         return thumbnail_path
 
     output_path = payload.get("output_path")
-    mime_type = payload.get("mime_type") or "image/png"
+    mime_type = payload.get("mime_type") or DEFAULT_IMAGE_MIME
     if not output_path:
         return None
 
@@ -365,7 +375,7 @@ async def _save_job(job: _ImageGenerationJob) -> None:
     await asyncio.to_thread(_db_upsert_job, job)
 
 
-async def _patch_job(job_id: str, **updates) -> Optional[_ImageGenerationJob]:
+async def _patch_job(job_id: str, **updates: Any) -> Optional[_ImageGenerationJob]:
     async with _IMAGE_JOBS_LOCK:
         job = _IMAGE_JOBS.get(job_id)
         if not job:
@@ -446,24 +456,124 @@ def _row_to_response(
     return payload
 
 
+def _extract_result_paths(
+    removed: Optional[_ImageGenerationJob],
+    row: Optional[ImageGenerationJobORM],
+) -> tuple[Optional[str], Optional[str]]:
+    if removed and removed.result:
+        return removed.result.output_path, removed.result.thumbnail_path
+    row_payload = cast(Dict[str, Any], row.result_json or {}) if row else {}
+    return row_payload.get("output_path"), row_payload.get("thumbnail_path")
+
+
+def _is_running_job_status(status: str) -> bool:
+    return status in {ImageGenerationJobStatus.QUEUED.value, ImageGenerationJobStatus.RUNNING.value}
+
+
+def _raise_job_delete_conflict(job_id: str) -> None:
+    raise_api_error(
+        status_code=409,
+        code="image_generation_job_delete_conflict",
+        message="Cannot delete a running image generation job",
+        details={"job_id": job_id},
+    )
+
+
+def _raise_job_not_found(job_id: str) -> None:
+    raise_api_error(
+        status_code=404,
+        code="image_generation_job_not_found",
+        message=f"Image generation job not found: {job_id}",
+        details={"job_id": job_id},
+    )
+
+
+def _cleanup_generated_files(
+    *,
+    job_id: str,
+    output_path: Optional[str],
+    thumbnail_path: Optional[str],
+) -> None:
+    for candidate_path, label in ((output_path, "image"), (thumbnail_path, "thumbnail")):
+        if not candidate_path:
+            continue
+        try:
+            path_obj = Path(candidate_path).resolve()
+            if path_obj.is_file():
+                path_obj.unlink()
+        except Exception:
+            logger.warning(
+                "[ImageGenerateAPI] Failed to delete generated %s for job_id=%s path=%s",
+                label,
+                job_id,
+                candidate_path,
+            )
+
+
+def _raise_thumbnail_not_found(job_id: str) -> None:
+    raise_api_error(
+        status_code=404,
+        code="image_generation_thumbnail_not_found",
+        message=f"Generated thumbnail not found for job: {job_id}",
+        details={"job_id": job_id},
+    )
+
+
+def _load_thumbnail_from_db(
+    *,
+    job_id: str,
+    current_mime_type: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    thumb_path: Optional[str] = None
+    mime_type: Optional[str] = current_mime_type
+    db: Session = SessionLocal()
+    try:
+        row = db.get(ImageGenerationJobORM, job_id)
+        if not row or not row.result_json:
+            _raise_thumbnail_not_found(job_id)
+        assert row is not None
+        payload = dict(row.result_json)
+        thumb_path = _ensure_thumbnail_for_payload(job_id, payload)
+        mime_type = payload.get("mime_type") or mime_type
+        if thumb_path and payload != row.result_json:
+            setattr(row, "result_json", payload)
+            db.commit()
+    finally:
+        db.close()
+    return thumb_path, mime_type
+
+
 def _validate_descriptor(request: ImageGenerateRequest) -> ModelDescriptor:
     registry = get_model_registry()
     descriptor = registry.get_model(request.model)
     if not descriptor:
-        raise HTTPException(status_code=404, detail=f"Model not found: {request.model}")
+        raise_api_error(
+            status_code=404,
+            code="image_generation_model_not_found",
+            message=f"Model not found: {request.model}",
+            details={"model_id": request.model},
+        )
+    assert descriptor is not None
 
     model_type = (getattr(descriptor, "model_type", "") or "").lower()
     if model_type != "image_generation":
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail=f"Model {request.model} is not an image_generation model (model_type={descriptor.model_type})",
+            code="image_generation_model_wrong_type",
+            message=(
+                f"Model {request.model} is not an image_generation model "
+                f"(model_type={descriptor.model_type})"
+            ),
+            details={"model_id": request.model},
         )
 
     capabilities = {str(c).lower().strip() for c in (descriptor.capabilities or [])}
     if "text_to_image" not in capabilities:
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail=f"Model {request.model} does not declare capability text_to_image",
+            code="image_generation_capability_missing",
+            message=f"Model {request.model} does not declare capability text_to_image",
+            details={"model_id": request.model},
         )
 
     return descriptor
@@ -485,6 +595,69 @@ def _build_runtime_request(
         image_format=request.image_format,
         progress_callback=progress_callback,
     )
+
+
+async def _patch_generation_progress(
+    *,
+    job_id: Optional[str],
+    current_step: int,
+    total_steps: int,
+) -> None:
+    if not job_id:
+        return
+    progress = round((current_step / total_steps) * 100, 2) if total_steps > 0 else None
+    await _patch_job(
+        job_id,
+        current_step=current_step,
+        total_steps=total_steps,
+        progress=progress,
+        phase="generating",
+    )
+
+
+async def _generate_with_oom_retry(
+    *,
+    runtime: Any,
+    factory: Any,
+    descriptor: ModelDescriptor,
+    request: ImageGenerateRequest,
+    job_id: Optional[str],
+    progress_callback: Callable[[int, int], Awaitable[None]],
+) -> ImageGenerationResponse:
+    try:
+        if not await runtime.is_loaded():
+            logger.info("[ImageGenerateAPI] runtime_load_start model=%s job_id=%s", descriptor.id, job_id or "-")
+            await runtime.load()
+            logger.info("[ImageGenerateAPI] runtime_load_done model=%s job_id=%s", descriptor.id, job_id or "-")
+
+        if job_id:
+            await _patch_job(job_id, phase="generating")
+        response = await runtime.generate(_build_runtime_request(request, progress_callback=progress_callback))
+        return cast(ImageGenerationResponse, response)
+    except Exception as exc:
+        if not _is_mps_oom_error(exc):
+            raise
+        logger.warning(
+            "[ImageGenerateAPI] mps_oom_retry model=%s job_id=%s err=%s",
+            descriptor.id,
+            job_id or "-",
+            exc,
+        )
+        await factory.unload_image_generation_runtime(descriptor.id)
+        await _force_release_other_image_generation_runtimes(
+            factory,
+            reason="mps_oom_retry",
+        )
+        runtime = factory.create_image_generation_runtime(descriptor)
+        if job_id:
+            await _patch_job(job_id, phase="loading_runtime")
+        logger.info("[ImageGenerateAPI] runtime_load_retry_start model=%s job_id=%s", descriptor.id, job_id or "-")
+        await runtime.load()
+        logger.info("[ImageGenerateAPI] runtime_load_retry_done model=%s job_id=%s", descriptor.id, job_id or "-")
+        if job_id:
+            await _patch_job(job_id, phase="generating")
+        response = await runtime.generate(_build_runtime_request(request, progress_callback=progress_callback))
+        return cast(ImageGenerationResponse, response)
 
 
 async def _run_generation(
@@ -528,15 +701,10 @@ async def _run_generation(
         runtime = factory.create_image_generation_runtime(descriptor)
         async with factory.model_usage(descriptor.id):
             async def _progress_callback(current_step: int, total_steps: int) -> None:
-                if not job_id:
-                    return
-                progress = round((current_step / total_steps) * 100, 2) if total_steps > 0 else None
-                await _patch_job(
-                    job_id,
+                await _patch_generation_progress(
+                    job_id=job_id,
                     current_step=current_step,
                     total_steps=total_steps,
-                    progress=progress,
-                    phase="generating",
                 )
 
             if job_id:
@@ -550,38 +718,14 @@ async def _run_generation(
                 await _recompute_queue_positions(descriptor.id)
             if job_id:
                 await _patch_job(job_id, phase="loading_runtime")
-            try:
-                if not await runtime.is_loaded():
-                    logger.info("[ImageGenerateAPI] runtime_load_start model=%s job_id=%s", descriptor.id, job_id or "-")
-                    await runtime.load()
-                    logger.info("[ImageGenerateAPI] runtime_load_done model=%s job_id=%s", descriptor.id, job_id or "-")
-
-                if job_id:
-                    await _patch_job(job_id, phase="generating")
-                response = await runtime.generate(_build_runtime_request(request, progress_callback=_progress_callback))
-            except Exception as exc:
-                if not _is_mps_oom_error(exc):
-                    raise
-                logger.warning(
-                    "[ImageGenerateAPI] mps_oom_retry model=%s job_id=%s err=%s",
-                    descriptor.id,
-                    job_id or "-",
-                    exc,
-                )
-                await factory.unload_image_generation_runtime(descriptor.id)
-                await _force_release_other_image_generation_runtimes(
-                    factory,
-                    reason="mps_oom_retry",
-                )
-                runtime = factory.create_image_generation_runtime(descriptor)
-                if job_id:
-                    await _patch_job(job_id, phase="loading_runtime")
-                logger.info("[ImageGenerateAPI] runtime_load_retry_start model=%s job_id=%s", descriptor.id, job_id or "-")
-                await runtime.load()
-                logger.info("[ImageGenerateAPI] runtime_load_retry_done model=%s job_id=%s", descriptor.id, job_id or "-")
-                if job_id:
-                    await _patch_job(job_id, phase="generating")
-                response = await runtime.generate(_build_runtime_request(request, progress_callback=_progress_callback))
+            response = await _generate_with_oom_retry(
+                runtime=runtime,
+                factory=factory,
+                descriptor=descriptor,
+                request=request,
+                job_id=job_id,
+                progress_callback=_progress_callback,
+            )
 
             response = _persist_image_result(response, job_id)
             logger.info(
@@ -594,7 +738,8 @@ async def _run_generation(
             )
             return response
 
-    return await queue.run(_run_under_queue())
+    response = await queue.run(_run_under_queue())
+    return cast(ImageGenerationResponse, response)
 
 
 async def _run_generation_job(job_id: str) -> None:
@@ -610,7 +755,7 @@ async def _run_generation_job(job_id: str) -> None:
                 status=ImageGenerationJobStatus.CANCELLED,
                 phase="cancelled",
                 finished_at=_utcnow(),
-                error="Image generation job cancelled before start",
+                error=JOB_CANCELLED_BEFORE_START_MSG,
             )
             return
         response = await _run_generation(job.request, descriptor, job_id=job_id)
@@ -622,16 +767,19 @@ async def _run_generation_job(job_id: str) -> None:
                 phase="cancelled",
                 finished_at=_utcnow(),
                 result=response,
-                error="Image generation job cancelled",
+                error=JOB_CANCELLED_MSG,
             )
+            return
+        current_job = await _get_job(job_id)
+        if current_job is None:
             return
         await _patch_job(
             job_id,
             status=ImageGenerationJobStatus.SUCCEEDED,
             phase="completed",
             finished_at=_utcnow(),
-            current_step=job.request.num_inference_steps,
-            total_steps=job.request.num_inference_steps,
+            current_step=current_job.request.num_inference_steps,
+            total_steps=current_job.request.num_inference_steps,
             progress=100.0,
             result=response,
         )
@@ -642,16 +790,23 @@ async def _run_generation_job(job_id: str) -> None:
             status=ImageGenerationJobStatus.CANCELLED,
             phase="cancelled",
             finished_at=_utcnow(),
-            error="Image generation job cancelled",
+            error=JOB_CANCELLED_MSG,
         )
-    except HTTPException as e:
-        logger.warning("[ImageGenerateAPI] job_failed job_id=%s status=%s detail=%s", job_id, e.status_code, e.detail)
+        raise
+    except APIException as e:
+        err_text = e.message
+        logger.warning(
+            "[ImageGenerateAPI] job_failed job_id=%s status=%s detail=%s",
+            job_id,
+            e.status_code,
+            e.message,
+        )
         await _patch_job(
             job_id,
             status=ImageGenerationJobStatus.FAILED,
             phase="failed",
             finished_at=_utcnow(),
-            error=str(e.detail),
+            error=err_text,
         )
     except Exception as e:
         current = await _get_job(job_id)
@@ -662,7 +817,7 @@ async def _run_generation_job(job_id: str) -> None:
                 status=ImageGenerationJobStatus.CANCELLED,
                 phase="cancelled",
                 finished_at=_utcnow(),
-                error="Image generation job cancelled",
+                error=JOB_CANCELLED_MSG,
             )
             return
         logger.exception("[ImageGenerateAPI] job_failed job_id=%s", job_id)
@@ -677,34 +832,42 @@ async def _run_generation_job(job_id: str) -> None:
         await _recompute_queue_positions(descriptor.id)
 
 
-@router.post(
-    "/api/v1/images/generate",
-    response_model=ImageGenerationResponse | ImageGenerationJobResponse,
-)
+@router.post("/api/v1/images/generate")
 async def generate_image(
     request: ImageGenerateRequest,
-    wait: bool = Query(default=True, description="true=同步等待结果；false=创建异步任务并返回 job"),
-):
+    wait: Annotated[bool, Query(description="true=同步等待结果；false=创建异步任务并返回 job")] = True,
+) -> ImageGenerationResponse | ImageGenerationJobResponse:
     descriptor = _validate_descriptor(request)
 
     if wait:
         try:
             return await _run_generation(request, descriptor)
-        except HTTPException:
+        except APIException:
             raise
         except Exception as e:
             logger.exception("Image generation failed for model=%s", descriptor.id)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise_api_error(
+                status_code=500,
+                code="image_generation_failed",
+                message=str(e),
+                details={"model_id": descriptor.id},
+            )
 
     pending_limit = max(1, int(getattr(settings, "image_generation_max_pending_jobs_per_model", 4)))
     pending_count = await _get_pending_count_for_model(descriptor.id)
     if pending_count >= pending_limit:
-        raise HTTPException(
+        raise_api_error(
             status_code=429,
-            detail=(
+            code="image_generation_queue_full",
+            message=(
                 f"IMAGE_GENERATION_QUEUE_FULL: model={descriptor.id} "
                 f"pending={pending_count} limit={pending_limit}"
             ),
+            details={
+                "model_id": descriptor.id,
+                "pending_count": pending_count,
+                "limit": pending_limit,
+            },
         )
 
     job_id = str(uuid4())
@@ -722,11 +885,19 @@ async def generate_image(
     await _patch_job(job_id, task=task)
     logger.info("[ImageGenerateAPI] job_created job_id=%s model=%s", job_id, descriptor.id)
     saved = await _get_job(job_id)
+    if saved is None:
+        raise_api_error(
+            status_code=500,
+            code="image_generation_job_state_missing",
+            message=f"Image generation job state missing: {job_id}",
+            details={"job_id": job_id},
+        )
+        raise AssertionError("unreachable")
     return _job_to_response(saved)
 
 
-@router.get("/api/v1/images/jobs/{job_id}", response_model=ImageGenerationJobResponse)
-async def get_image_generation_job(job_id: str):
+@router.get("/api/v1/images/jobs/{job_id}")
+async def get_image_generation_job(job_id: str) -> ImageGenerationJobResponse:
     job = await _get_job(job_id)
     if job:
         return _job_to_response(job, include_base64=False)
@@ -734,22 +905,28 @@ async def get_image_generation_job(job_id: str):
     try:
         row = db.get(ImageGenerationJobORM, job_id)
         if not row:
-            raise HTTPException(status_code=404, detail=f"Image generation job not found: {job_id}")
+            raise_api_error(
+                status_code=404,
+                code="image_generation_job_not_found",
+                message=f"Image generation job not found: {job_id}",
+                details={"job_id": job_id},
+            )
+        assert row is not None
         return _orm_to_job_response(row, include_base64=False)
     finally:
         db.close()
 
 
-@router.get("/api/v1/images/jobs", response_model=ImageGenerationJobListResponse)
+@router.get("/api/v1/images/jobs")
 async def list_image_generation_jobs(
-    limit: int = Query(default=20, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    status: str | None = Query(default=None),
-    model: str | None = Query(default=None),
-    q: str | None = Query(default=None, description="search prompt"),
-    sort: str = Query(default="created_at_desc", description="created_at_desc|created_at_asc"),
-    include_result: bool = Query(default=False),
-):
+    limit: Annotated[int, Query(ge=1, le=200)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    status: Annotated[str | None, Query()] = None,
+    model: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query(description="search prompt")] = None,
+    sort: Annotated[str, Query(description="created_at_desc|created_at_asc")] = "created_at_desc",
+    include_result: Annotated[bool, Query()] = False,
+) -> ImageGenerationJobListResponse:
     normalized_status = (status or "").strip().lower()
     normalized_model = (model or "").strip()
     normalized_q = (q or "").strip()
@@ -782,40 +959,31 @@ async def list_image_generation_jobs(
 
 
 @router.delete("/api/v1/images/jobs/{job_id}")
-async def delete_image_generation_job(job_id: str):
+async def delete_image_generation_job(job_id: str) -> JSONDict:
     async with _IMAGE_JOBS_LOCK:
         job = _IMAGE_JOBS.get(job_id)
         model_id = job.request.model if job else None
         if job and job.status in {ImageGenerationJobStatus.QUEUED, ImageGenerationJobStatus.RUNNING}:
-            raise HTTPException(status_code=409, detail="Cannot delete a running image generation job")
+            _raise_job_delete_conflict(job_id)
         removed = _IMAGE_JOBS.pop(job_id, None)
 
+    row: Optional[ImageGenerationJobORM] = None
     db: Session = SessionLocal()
     try:
         row = db.get(ImageGenerationJobORM, job_id)
         if removed is None and row is None:
-            raise HTTPException(status_code=404, detail=f"Image generation job not found: {job_id}")
-        if row is not None and row.status in {ImageGenerationJobStatus.QUEUED.value, ImageGenerationJobStatus.RUNNING.value}:
-            raise HTTPException(status_code=409, detail="Cannot delete a running image generation job")
+            _raise_job_not_found(job_id)
+        if row is not None and _is_running_job_status(cast(str, row.status)):
+            _raise_job_delete_conflict(job_id)
     finally:
         db.close()
 
-    output_path = removed.result.output_path if removed and removed.result else (row.result_json or {}).get("output_path") if row and row.result_json else None
-    thumbnail_path = removed.result.thumbnail_path if removed and removed.result else (row.result_json or {}).get("thumbnail_path") if row and row.result_json else None
-    for candidate_path, label in ((output_path, "image"), (thumbnail_path, "thumbnail")):
-        if not candidate_path:
-            continue
-        try:
-            path_obj = Path(candidate_path).resolve()
-            if path_obj.is_file():
-                path_obj.unlink()
-        except Exception:
-            logger.warning(
-                "[ImageGenerateAPI] Failed to delete generated %s for job_id=%s path=%s",
-                label,
-                job_id,
-                candidate_path,
-            )
+    output_path, thumbnail_path = _extract_result_paths(removed, row)
+    _cleanup_generated_files(
+        job_id=job_id,
+        output_path=output_path,
+        thumbnail_path=thumbnail_path,
+    )
 
     await asyncio.to_thread(_db_delete_job, job_id)
     if model_id:
@@ -824,11 +992,18 @@ async def delete_image_generation_job(job_id: str):
     return {"ok": True, "job_id": job_id}
 
 
-@router.post("/api/v1/images/jobs/{job_id}/cancel", response_model=ImageGenerationJobResponse)
-async def cancel_image_generation_job(job_id: str):
+@router.post("/api/v1/images/jobs/{job_id}/cancel")
+async def cancel_image_generation_job(job_id: str) -> ImageGenerationJobResponse:
     job = await _get_job(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail=f"Image generation job not found: {job_id}")
+        raise_api_error(
+            status_code=404,
+            code="image_generation_job_not_found",
+            message=f"Image generation job not found: {job_id}",
+            details={"job_id": job_id},
+        )
+        raise AssertionError("unreachable")
+    assert job is not None
     if job.status in {ImageGenerationJobStatus.SUCCEEDED, ImageGenerationJobStatus.FAILED, ImageGenerationJobStatus.CANCELLED}:
         return _job_to_response(job)
 
@@ -851,11 +1026,19 @@ async def cancel_image_generation_job(job_id: str):
         cancelled_runtime,
     )
     saved = await _get_job(job_id)
+    if saved is None:
+        raise_api_error(
+            status_code=500,
+            code="image_generation_job_state_missing",
+            message=f"Image generation job state missing: {job_id}",
+            details={"job_id": job_id},
+        )
+        raise AssertionError("unreachable")
     return _job_to_response(saved)
 
 
 @router.get("/api/v1/images/jobs/{job_id}/file")
-async def download_image_generation_job_file(job_id: str):
+async def download_image_generation_job_file(job_id: str) -> FileResponse:
     job = await _get_job(job_id)
     output_path_str = job.result.output_path if job and job.result else None
     mime_type = job.result.mime_type if job and job.result else None
@@ -864,23 +1047,41 @@ async def download_image_generation_job_file(job_id: str):
         try:
             row = db.get(ImageGenerationJobORM, job_id)
             if not row or not row.result_json:
-                raise HTTPException(status_code=404, detail=f"Generated image file not found for job: {job_id}")
-            output_path_str = row.result_json.get("output_path")
-            mime_type = row.result_json.get("mime_type") or mime_type
+                raise_api_error(
+                    status_code=404,
+                    code="image_generation_output_not_found",
+                    message=f"Generated image file not found for job: {job_id}",
+                    details={"job_id": job_id},
+                )
+            assert row is not None
+            result_json = cast(Dict[str, Any], row.result_json)
+            output_path_str = cast(Optional[str], result_json.get("output_path"))
+            mime_type = cast(Optional[str], result_json.get("mime_type")) or mime_type
         finally:
             db.close()
     if not output_path_str:
-        raise HTTPException(status_code=404, detail=f"Generated image file not found for job: {job_id}")
+        raise_api_error(
+            status_code=404,
+            code="image_generation_output_not_found",
+            message=f"Generated image file not found for job: {job_id}",
+            details={"job_id": job_id},
+        )
+    assert output_path_str is not None
 
     output_path = Path(output_path_str).resolve()
     if not output_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Generated image file not found: {output_path}")
+        raise_api_error(
+            status_code=404,
+            code="image_generation_output_not_found",
+            message=f"Generated image file not found: {output_path}",
+            details={"job_id": job_id, "path": str(output_path)},
+        )
 
-    return FileResponse(str(output_path), media_type=mime_type or "image/png", filename=output_path.name)
+    return FileResponse(str(output_path), media_type=mime_type or DEFAULT_IMAGE_MIME, filename=output_path.name)
 
 
 @router.get("/api/v1/images/jobs/{job_id}/thumbnail")
-async def download_image_generation_job_thumbnail(job_id: str):
+async def download_image_generation_job_thumbnail(job_id: str) -> FileResponse:
     job = await _get_job(job_id)
     thumb_path = job.result.thumbnail_path if job and job.result else None
     mime_type = job.result.mime_type if job and job.result else None
@@ -892,38 +1093,43 @@ async def download_image_generation_job_thumbnail(job_id: str):
             await _patch_job(job_id, result=updated_result)
             mime_type = updated_result.mime_type or mime_type
     if not thumb_path:
-        db: Session = SessionLocal()
-        try:
-            row = db.get(ImageGenerationJobORM, job_id)
-            if not row or not row.result_json:
-                raise HTTPException(status_code=404, detail=f"Generated thumbnail not found for job: {job_id}")
-            payload = dict(row.result_json)
-            thumb_path = _ensure_thumbnail_for_payload(job_id, payload)
-            mime_type = payload.get("mime_type") or mime_type
-            if thumb_path and payload != row.result_json:
-                row.result_json = payload
-                db.commit()
-        finally:
-            db.close()
+        thumb_path, mime_type = _load_thumbnail_from_db(
+            job_id=job_id,
+            current_mime_type=mime_type,
+        )
     if not thumb_path:
-        raise HTTPException(status_code=404, detail=f"Generated thumbnail not found for job: {job_id}")
+        _raise_thumbnail_not_found(job_id)
 
+    assert thumb_path is not None
     path = Path(thumb_path).resolve()
     if not path.is_file():
-        raise HTTPException(status_code=404, detail=f"Generated thumbnail file not found: {path}")
-    return FileResponse(str(path), media_type=mime_type or "image/png", filename=path.name)
+        raise_api_error(
+            status_code=404,
+            code="image_generation_thumbnail_not_found",
+            message=f"Generated thumbnail file not found: {path}",
+            details={"job_id": job_id, "path": str(path)},
+        )
+    return FileResponse(str(path), media_type=mime_type or DEFAULT_IMAGE_MIME, filename=path.name)
 
 
-@router.get("/api/v1/images/warmup/latest", response_model=ImageGenerationWarmupResponse)
-async def get_latest_image_generation_warmup(model: str | None = Query(default=None)):
+@router.get("/api/v1/images/warmup/latest")
+async def get_latest_image_generation_warmup(
+    model: Annotated[str | None, Query()] = None,
+) -> ImageGenerationWarmupResponse:
     row = await asyncio.to_thread(_db_get_latest_warmup, model.strip() if model else None)
     if row is None:
-        raise HTTPException(status_code=404, detail="No warmup record found")
+        raise_api_error(
+            status_code=404,
+            code="image_generation_warmup_not_found",
+            message="No warmup record found",
+            details={"model": model},
+        )
+    assert row is not None
     return _orm_to_warmup_response(row)
 
 
 @router.post("/api/v1/images/warmup")
-async def warmup_image_generation_runtime(request: ImageWarmupRequest):
+async def warmup_image_generation_runtime(request: ImageWarmupRequest) -> JSONDict:
     image_request = ImageGenerateRequest(
         model=request.model,
         prompt=request.prompt,
