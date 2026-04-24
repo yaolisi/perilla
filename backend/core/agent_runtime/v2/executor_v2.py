@@ -7,6 +7,7 @@ import json
 import re
 import time
 from pathlib import Path
+from config.settings import settings
 
 from log import logger, log_structured
 from core.agent_runtime.session import AgentSession
@@ -171,6 +172,7 @@ class PlanBasedExecutor:
             "current_plan": plan,  # V2.2: 追踪当前执行的 Plan
             "planner": get_planner(),  # V2.2: Planner 引用，供 REPLAN 使用
             "metrics": metrics,  # 可观测性：性能指标收集
+            "max_parallel_steps": int(getattr(settings, "agent_plan_max_parallel_steps", 4)),
         }
         
         last_skill_output = None  # 保存上一个 skill 的输出

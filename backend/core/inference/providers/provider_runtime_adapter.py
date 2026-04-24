@@ -251,7 +251,7 @@ class ProviderRuntimeAdapter:
         metrics.record_request(model_id_key)
 
         try:
-            text = await queue.run(runtime.chat(descriptor, cc_request))
+            text = await queue.run(runtime.chat(descriptor, cc_request), priority=request.priority)
         except Exception as e:
             metrics.record_request_failed(model_id_key)
             log_structured(
@@ -376,7 +376,7 @@ class ProviderRuntimeAdapter:
                         output_chars += len(token)
                     yield token
 
-            async for token in queue.run_stream(_stream()):
+            async for token in queue.run_stream(_stream(), priority=request.priority):
                 yield token
             completed_normally = True
         except Exception as e:
@@ -454,7 +454,7 @@ class ProviderRuntimeAdapter:
             loop = asyncio.get_running_loop()
             async def _embed_coro() -> Any:
                 return await loop.run_in_executor(None, lambda: rt.embed(texts))
-            embeddings = await queue.run(_embed_coro())
+            embeddings = await queue.run(_embed_coro(), priority=request.priority)
         except Exception as e:
             metrics.record_request_failed(model_id_key)
             raise
@@ -557,7 +557,7 @@ class ProviderRuntimeAdapter:
             async def _transcribe_coro() -> Any:
                 return await runtime.transcribe(audio_path, options=request.options or {})
             try:
-                result = await queue.run(_transcribe_coro())
+                result = await queue.run(_transcribe_coro(), priority=request.priority)
             except Exception:
                 metrics.record_request_failed(model_id_key)
                 raise

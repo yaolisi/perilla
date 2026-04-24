@@ -21,15 +21,21 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
         requests_per_window: int = 120,
         window_seconds: int = 60,
         api_key_header: str = "X-Api-Key",
+        max_concurrent_per_user: int = 5,
     ):
         super().__init__(app)
         self._requests_per_window = max(1, int(requests_per_window))
         self._window_seconds = max(1, int(window_seconds))
         self._api_key_header = api_key_header
+        self._max_concurrent_per_user = max(1, int(max_concurrent_per_user))
         self._lock = Lock()
         self._buckets: Dict[str, Deque[float]] = defaultdict(deque)
+        self._in_flight_by_identity: Dict[str, int] = defaultdict(int)
 
     def _identity(self, request: Request) -> str:
+        user_id = str(getattr(request.state, "user_id", "") or "").strip()
+        if user_id:
+            return f"user:{user_id}"
         api_key = request.headers.get(self._api_key_header, "").strip()
         if api_key:
             return f"key:{api_key}"
@@ -41,6 +47,8 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _identity_type(identity: str) -> str:
+        if identity.startswith("user:"):
+            return "user"
         if identity.startswith("key:"):
             return "api_key"
         if identity.startswith("ip:"):
@@ -59,6 +67,22 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
             q.append(now)
             return True
 
+    def _acquire_concurrency(self, identity: str) -> bool:
+        with self._lock:
+            cur = self._in_flight_by_identity.get(identity, 0)
+            if cur >= self._max_concurrent_per_user:
+                return False
+            self._in_flight_by_identity[identity] = cur + 1
+            return True
+
+    def _release_concurrency(self, identity: str) -> None:
+        with self._lock:
+            cur = self._in_flight_by_identity.get(identity, 0) - 1
+            if cur <= 0:
+                self._in_flight_by_identity.pop(identity, None)
+            else:
+                self._in_flight_by_identity[identity] = cur
+
     async def dispatch(self, request: Request, call_next):
         # 健康检查路径跳过限流，避免探针抖动影响可用性。
         if request.url.path.startswith("/api/health"):
@@ -76,5 +100,17 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
                     "limit": self._requests_per_window,
                 },
             )
-
-        return await call_next(request)
+        if not self._acquire_concurrency(identity):
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "concurrency_limit_exceeded",
+                    "message": "Too many concurrent requests for this user.",
+                    "identity_type": self._identity_type(identity),
+                    "concurrency_limit": self._max_concurrent_per_user,
+                },
+            )
+        try:
+            return await call_next(request)
+        finally:
+            self._release_concurrency(identity)

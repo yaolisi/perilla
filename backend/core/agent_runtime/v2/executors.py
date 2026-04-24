@@ -4,6 +4,7 @@ Agent V2 执行器定义
 """
 from abc import ABC, abstractmethod
 from typing import Any, Dict
+import asyncio
 
 from log import logger
 from .models import AgentState, Step, StepStatus, ExecutorType
@@ -55,7 +56,6 @@ class LLMExecutor(BaseExecutor):
             # 从 context 获取必要信息
             agent = context.get("agent")
             session = context.get("session")
-            workspace = context.get("workspace", ".")
             
             if not agent or not session:
                 raise ValueError("LLMExecutor requires 'agent' and 'session' in context")
@@ -120,6 +120,41 @@ class LLMExecutor(BaseExecutor):
 class SkillExecutor(BaseExecutor):
     """Skill 执行器 - 调用技能（v2 API）"""
 
+    @staticmethod
+    async def _run_one_skill(
+        skill_id: str,
+        skill_inputs: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        from core.skills.registry import SkillRegistry
+        from core.skills.executor import SkillExecutor as V2SkillExecutor
+        from core.skills.contract import SkillExecutionRequest
+
+        definition = SkillRegistry.get(skill_id)
+        if not definition:
+            raise ValueError(f"Skill not found: {skill_id}")
+        request = SkillExecutionRequest(
+            skill_id=skill_id,
+            input=skill_inputs,
+            version=None,
+            trace_id=context.get("trace_id", ""),
+            caller_id=context.get("agent_id", ""),
+            metadata={
+                "workspace": context.get("workspace", "."),
+                "permissions": context.get("permissions", {}),
+                "step_id": context.get("step_id", ""),
+            },
+        )
+        response = await V2SkillExecutor.execute(request)
+        return {
+            "skill_id": skill_id,
+            "version": response.version,
+            "status": response.status,
+            "output": response.output,
+            "metrics": response.metrics,
+            "error": response.error,
+        }
+
     async def execute(
         self,
         step: Step,
@@ -127,66 +162,84 @@ class SkillExecutor(BaseExecutor):
         context: Dict[str, Any]
     ) -> Step:
         """通过 Skill 执行步骤 - 使用 v2 统一执行入口"""
-        from core.skills.registry import SkillRegistry
-        from core.skills.executor import SkillExecutor as V2SkillExecutor
-        from core.skills.contract import SkillExecutionRequest
-
         step.status = StepStatus.RUNNING
         
         try:
-            skill_id = step.inputs.get("skill_id")
-            if not skill_id:
-                raise ValueError("SkillExecutor requires 'skill_id' in step.inputs")
+            parallel_calls = step.inputs.get("parallel_calls")
+            if isinstance(parallel_calls, list) and parallel_calls:
+                max_parallel = int(context.get("max_parallel_steps", 4))
+                sem = asyncio.Semaphore(max(1, max_parallel))
 
-            # 获取技能定义
-            definition = SkillRegistry.get(skill_id)
-            
-            if not definition:
-                raise ValueError(f"Skill not found: {skill_id}")
+                async def _bounded_call(call_item: Dict[str, Any]) -> Dict[str, Any]:
+                    skill_id = str(call_item.get("skill_id") or "").strip()
+                    if not skill_id:
+                        raise ValueError("parallel_calls item missing skill_id")
+                    inputs = call_item.get("inputs", {})
+                    async with sem:
+                        return await self._run_one_skill(
+                            skill_id=skill_id,
+                            skill_inputs=inputs if isinstance(inputs, dict) else {},
+                            context={**context, "step_id": step.step_id},
+                        )
 
-            # 构建执行请求
-            skill_inputs = step.inputs.get("inputs", {})
-            
-            request = SkillExecutionRequest(
-                skill_id=skill_id,
-                input=skill_inputs,
-                version=None,  # 使用 latest version
-                trace_id=context.get("trace_id", ""),
-                caller_id=context.get("agent_id", ""),
-                metadata={
-                    "workspace": context.get("workspace", "."),
-                    "permissions": context.get("permissions", {}),
-                    "step_id": step.step_id,
+                tasks = []
+                for item in parallel_calls:
+                    if isinstance(item, dict):
+                        tasks.append(_bounded_call(item))
+                if not tasks:
+                    raise ValueError("parallel_calls is empty or invalid")
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                normalized_results = []
+                has_error = False
+                for item in results:
+                    if isinstance(item, Exception):
+                        has_error = True
+                        normalized_results.append({"status": "error", "error": {"message": str(item)}})
+                    else:
+                        if item.get("status") != "success":
+                            has_error = True
+                        normalized_results.append(item)
+                step.outputs = {
+                    "mode": "parallel_calls",
+                    "results": normalized_results,
+                    "max_parallel_steps": max(1, max_parallel),
                 }
-            )
-            
-            logger.info(f"[SkillExecutor] Executing skill {skill_id} (type={definition.type}) with inputs: {skill_inputs}")
-            
-            # 使用 v2 统一执行入口
-            response = await V2SkillExecutor.execute(request)
-            
-            logger.info(f"[SkillExecutor] Skill response status: {response.status}")
-
-            # 构建输出
-            step.outputs = {
-                "skill_id": skill_id,
-                "version": response.version,
-                "status": response.status,
-                "output": response.output,
-                "metrics": response.metrics,
-            }
-
-            # 根据响应状态设置步骤状态
-            if response.status == "success":
-                step.status = StepStatus.COMPLETED
-                logger.info(f"[SkillExecutor] Step {step.step_id} completed (skill: {skill_id})")
+                if has_error:
+                    step.status = StepStatus.FAILED
+                    step.error = "One or more parallel skill calls failed"
+                    step.outputs["error"] = {"message": step.error}
+                else:
+                    step.status = StepStatus.COMPLETED
+                logger.info(f"[SkillExecutor] Step {step.step_id} parallel_calls completed: count={len(tasks)}")
             else:
-                step.status = StepStatus.FAILED
-                step.error = response.error.get("message", "Unknown error") if response.error else "Execution failed"
-                step.outputs["error"] = response.error
-                logger.warning(
-                    f"[SkillExecutor] Step {step.step_id} failed (skill: {skill_id}): {step.error}"
+                skill_id = step.inputs.get("skill_id")
+                if not skill_id:
+                    raise ValueError("SkillExecutor requires 'skill_id' in step.inputs")
+                skill_inputs = step.inputs.get("inputs", {})
+                response = await self._run_one_skill(
+                    skill_id=skill_id,
+                    skill_inputs=skill_inputs if isinstance(skill_inputs, dict) else {},
+                    context={**context, "step_id": step.step_id},
                 )
+                step.outputs = {
+                    "skill_id": response.get("skill_id"),
+                    "version": response.get("version"),
+                    "status": response.get("status"),
+                    "output": response.get("output"),
+                    "metrics": response.get("metrics"),
+                }
+                if response.get("status") == "success":
+                    step.status = StepStatus.COMPLETED
+                    logger.info(f"[SkillExecutor] Step {step.step_id} completed (skill: {skill_id})")
+                else:
+                    step.status = StepStatus.FAILED
+                    err = response.get("error")
+                    step.error = err.get("message", "Execution failed") if isinstance(err, dict) else "Execution failed"
+                    step.outputs["error"] = response.get("error")
+                    logger.warning(f"[SkillExecutor] Step {step.step_id} failed (skill: {skill_id}): {step.error}")
+
+            if step.status == StepStatus.COMPLETED:
+                step.status = StepStatus.COMPLETED
             
         except Exception as e:
             logger.error(f"[SkillExecutor] Step {step.step_id} failed: {e}")

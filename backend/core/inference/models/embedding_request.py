@@ -4,7 +4,7 @@ V2.8 Inference Gateway Layer - Embedding Request Model
 Dedicated request model for embedding inference (non-chat).
 """
 
-from typing import Any, Dict, List, Self, Union
+from typing import Any, Dict, List, Self, Union, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -21,6 +21,10 @@ class EmbeddingRequest(BaseModel):
 
     model_alias: str = Field(..., description="Model alias or direct model_id")
     input: Union[str, List[str]] = Field(..., description="Input text(s) to embed")
+    priority: Literal["high", "medium", "low"] = Field(
+        default="medium",
+        description="Queue priority for embedding execution"
+    )
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Observability metadata")
 
     @model_validator(mode="after")

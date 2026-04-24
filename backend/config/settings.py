@@ -226,6 +226,8 @@ class Settings(BaseSettings):
     runtime_release_idle_ttl_seconds: int = 300
     # 自动回收最小触发间隔（秒），用于抑制并发尖峰抖动
     runtime_release_min_interval_seconds: int = 5
+    # Agent Plan 并行工具调用上限（仅对显式 parallel_calls 生效）
+    agent_plan_max_parallel_steps: int = 4
     # V2.9 按 runtime 类型的并发上限覆盖（JSON 对象，如 {"llama.cpp": 1, "ollama": 4}）。为空则使用代码默认 MODEL_RUNTIME_CONFIG。
     runtime_max_concurrency_overrides: str = ""
     # model.json 备份根目录，为空则使用 backend/data/backups（与 DB 备份目录并列时其下为 model_json/）
@@ -332,6 +334,8 @@ class Settings(BaseSettings):
     api_rate_limit_enabled: bool = True
     api_rate_limit_requests: int = 120
     api_rate_limit_window_seconds: int = 60
+    # 单用户并发请求上限（防止个别用户占满资源）
+    api_rate_limit_user_max_concurrent_requests: int = 5
     # 限流身份优先级：API Key Header > X-Forwarded-For > Client IP
     api_rate_limit_api_key_header: str = "X-Api-Key"
 

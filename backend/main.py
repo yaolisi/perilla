@@ -426,6 +426,7 @@ if getattr(settings, "api_rate_limit_enabled", True) and int(getattr(settings, "
         requests_per_window=int(getattr(settings, "api_rate_limit_requests", 120)),
         window_seconds=int(getattr(settings, "api_rate_limit_window_seconds", 60)),
         api_key_header=_api_key_hdr,
+        max_concurrent_per_user=int(getattr(settings, "api_rate_limit_user_max_concurrent_requests", 5)),
     )
 
 app.add_middleware(TenantContextMiddleware)

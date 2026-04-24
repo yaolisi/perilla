@@ -5,12 +5,13 @@ Per-model concurrency limit via asyncio.Semaphore.
 """
 import asyncio
 import threading
-from typing import Dict, TypeVar, AsyncIterator, Optional
+from typing import Dict, TypeVar, AsyncIterator, Optional, Literal
 from log import logger
 
 from core.runtime.config import get_max_concurrency
 
 T = TypeVar("T")
+QueuePriority = Literal["high", "medium", "low"]
 
 
 class InferenceQueue:
@@ -22,10 +23,14 @@ class InferenceQueue:
     def __init__(self, model_id: str, max_concurrency: int):
         self.model_id = model_id
         self._max_concurrency = max(1, max_concurrency)
-        self._semaphore = asyncio.Semaphore(self._max_concurrency)
+        self._available_slots = self._max_concurrency
         self._in_flight = 0
         self._waiting = 0
+        self._waiting_high = 0
+        self._waiting_medium = 0
+        self._waiting_low = 0
         self._lock = asyncio.Lock()
+        self._cond = asyncio.Condition(self._lock)
 
     @property
     def max_concurrency(self) -> int:
@@ -47,7 +52,7 @@ class InferenceQueue:
         if self._in_flight != 0 or self._waiting != 0:
             return False
         self._max_concurrency = new_max
-        self._semaphore = asyncio.Semaphore(self._max_concurrency)
+        self._available_slots = new_max
         return True
 
     async def _inc_usage(self) -> None:
@@ -67,62 +72,92 @@ class InferenceQueue:
         except Exception:
             pass
 
+    @staticmethod
+    def _normalize_priority(priority: str | None) -> QueuePriority:
+        val = (priority or "medium").strip().lower()
+        if val in {"high", "medium", "low"}:
+            return val  # type: ignore[return-value]
+        return "medium"
+
+    async def _acquire_slot(self, priority: QueuePriority) -> None:
+        async with self._cond:
+            self._waiting += 1
+            if priority == "high":
+                self._waiting_high += 1
+            elif priority == "low":
+                self._waiting_low += 1
+            else:
+                self._waiting_medium += 1
+            self._notify_queue_size()
+            try:
+                await self._cond.wait_for(lambda: self._can_run(priority))
+                self._available_slots -= 1
+            finally:
+                self._waiting = max(0, self._waiting - 1)
+                if priority == "high":
+                    self._waiting_high = max(0, self._waiting_high - 1)
+                elif priority == "low":
+                    self._waiting_low = max(0, self._waiting_low - 1)
+                else:
+                    self._waiting_medium = max(0, self._waiting_medium - 1)
+                self._notify_queue_size()
+
+    async def _release_slot(self) -> None:
+        async with self._cond:
+            self._available_slots = min(self._max_concurrency, self._available_slots + 1)
+            self._cond.notify_all()
+
+    def _can_run(self, priority: QueuePriority) -> bool:
+        if self._available_slots <= 0:
+            return False
+        if priority == "high":
+            return True
+        if priority == "medium":
+            return self._waiting_high == 0
+        return self._waiting_high == 0 and self._waiting_medium == 0
+
     def current_usage(self) -> int:
         """Best-effort: in-flight count (waiting not tracked atomically)."""
         return self._in_flight
 
-    async def run(self, coro):
+    async def run(self, coro, priority: str = "medium"):
         """
         Run coroutine with concurrency limit.
         Returns the result of the coroutine.
         """
+        normalized_priority = self._normalize_priority(priority)
         acquired = False
-        async with self._lock:
-            self._waiting += 1
-            self._notify_queue_size()
         try:
-            async with self._semaphore:
-                async with self._lock:
-                    acquired = True
-                    self._waiting = max(0, self._waiting - 1)
-                await self._inc_usage()
-                try:
-                    return await coro
-                finally:
-                    await self._dec_usage()
+            await self._acquire_slot(normalized_priority)
+            acquired = True
+            await self._inc_usage()
+            try:
+                return await coro
+            finally:
+                await self._dec_usage()
         finally:
-            # If we were cancelled/failed before acquiring the semaphore,
-            # decrement waiting here; otherwise waiting was already decremented.
-            if not acquired:
-                async with self._lock:
-                    self._waiting = max(0, self._waiting - 1)
-                    self._notify_queue_size()
+            if acquired:
+                await self._release_slot()
 
-    async def run_stream(self, agen: AsyncIterator[T]) -> AsyncIterator[T]:
+    async def run_stream(self, agen: AsyncIterator[T], priority: str = "medium") -> AsyncIterator[T]:
         """
         Run async generator under the semaphore.
         Semaphore is held for the entire consumption of the stream.
         """
+        normalized_priority = self._normalize_priority(priority)
         acquired = False
-        async with self._lock:
-            self._waiting += 1
-            self._notify_queue_size()
         try:
-            async with self._semaphore:
-                async with self._lock:
-                    acquired = True
-                    self._waiting = max(0, self._waiting - 1)
-                await self._inc_usage()
-                try:
-                    async for item in agen:
-                        yield item
-                finally:
-                    await self._dec_usage()
+            await self._acquire_slot(normalized_priority)
+            acquired = True
+            await self._inc_usage()
+            try:
+                async for item in agen:
+                    yield item
+            finally:
+                await self._dec_usage()
         finally:
-            if not acquired:
-                async with self._lock:
-                    self._waiting = max(0, self._waiting - 1)
-                    self._notify_queue_size()
+            if acquired:
+                await self._release_slot()
 
 
 class InferenceQueueManager:

@@ -4,7 +4,7 @@ V2.8 Inference Gateway Layer - ASR Request Model
 Dedicated request model for ASR transcription (non-chat).
 """
 
-from typing import Any, Dict, Optional, Self
+from typing import Any, Dict, Optional, Self, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -24,6 +24,10 @@ class ASRRequest(BaseModel):
     model_alias: str = Field(..., description="Model alias or direct model_id")
     audio: str = Field(..., description="Audio input: workspace-relative path or data:audio/... base64 URL")
     workspace: Optional[str] = Field(default=None, description="Workspace path used to resolve relative audio paths")
+    priority: Literal["high", "medium", "low"] = Field(
+        default="medium",
+        description="Queue priority for ASR execution"
+    )
     options: Dict[str, Any] = Field(default_factory=dict, description="ASR options")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Observability metadata")
 

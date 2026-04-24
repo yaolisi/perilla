@@ -5,6 +5,7 @@ Primary entry point for Skills and Agents to make inference calls.
 Provides a simple, clean API that hides the complexity of routing and providers.
 """
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
+from typing import Literal
 
 from core.inference.gateway.inference_gateway import (
     InferenceGateway,
@@ -82,7 +83,8 @@ class InferenceClient:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         stop: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        priority: Literal["high", "medium", "low"] = "medium",
     ) -> InferenceResponse:
         """
         Execute non-streaming inference.
@@ -108,6 +110,7 @@ class InferenceClient:
             max_tokens=max_tokens,
             stream=False,
             stop=stop,
+            priority=priority,
             metadata=metadata or {},
         )
         return await self._gateway.generate(request)
@@ -120,7 +123,8 @@ class InferenceClient:
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        stop: Optional[List[str]] = None
+        stop: Optional[List[str]] = None,
+        priority: Literal["high", "medium", "low"] = "medium",
     ) -> AsyncIterator[str]:
         """
         Execute streaming inference.
@@ -145,6 +149,7 @@ class InferenceClient:
             max_tokens=max_tokens,
             stream=True,
             stop=stop,
+            priority=priority,
         )
         async for token in self._gateway.stream(request):
             yield token
@@ -154,10 +159,12 @@ class InferenceClient:
         model: str,
         input_text: Union[str, List[str]],
         metadata: Optional[Dict[str, Any]] = None,
+        priority: Literal["high", "medium", "low"] = "medium",
     ) -> EmbeddingResponse:
         req = EmbeddingRequest(
             model_alias=model,
             input=input_text,
+            priority=priority,
             metadata=metadata or {},
         )
         return await self._gateway.embed(req)
@@ -170,11 +177,13 @@ class InferenceClient:
         workspace: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        priority: Literal["high", "medium", "low"] = "medium",
     ) -> ASRResponse:
         req = ASRRequest(
             model_alias=model,
             audio=audio,
             workspace=workspace,
+            priority=priority,
             options=options or {},
             metadata=metadata or {},
         )
