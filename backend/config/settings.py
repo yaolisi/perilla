@@ -321,6 +321,14 @@ class Settings(BaseSettings):
     chat_input_strip_transport_wrappers: bool = True
     # 输出清洗：剥离推理思维链外显（<think>...</think> / 思维前缀）
     chat_output_strip_reasoning: bool = True
+    # 流式断点续传：断连后继续生成并缓冲 SSE，客户端可携带 chunk_index 恢复拉取
+    chat_stream_resume_enabled: bool = True
+    chat_stream_resume_ttl_seconds: int = 600
+    chat_stream_resume_max_sessions: int = 500
+    chat_stream_resume_wait_timeout_seconds: int = 120
+    # HTTP 响应 GZip（含流式 body；弱网可显著降低体积；前置代理请勿二次 gzip）
+    response_gzip_enabled: bool = True
+    response_gzip_minimum_size: int = 256
     # Auto 选模是否强制本地优先（存在本地候选时仅在本地中选择）
     model_selector_auto_local_first_strict: bool = True
     # 文生图任务队列：每个模型最多允许 queued+running 的任务数

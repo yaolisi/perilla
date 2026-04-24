@@ -12,8 +12,10 @@ import time
 import uuid
 from typing import Optional, Any, Callable, Union, AsyncIterator, Set, cast, Literal
 from log import logger, log_structured
+from pydantic import BaseModel, Field
 
 from api.errors import raise_api_error
+from api.stream_resume_store import get_stream_resume_store, iter_resume_chunks
 from config.settings import settings
 from core.types import ChatCompletionRequest, ChatCompletionResponse, Message as LLMMessage
 from core.agents.router import get_router
@@ -25,6 +27,12 @@ from core.memory.memory_extractor import MemoryExtractor, MemoryExtractorConfig
 from core.system.runtime_settings import get_auto_unload_local_model_on_switch
 
 router = APIRouter()
+
+
+class ChatStreamResumeBody(BaseModel):
+    stream_id: str = Field(..., min_length=8)
+    chunk_index: int = Field(..., ge=0)
+
 
 # 0. 确定统一数据库路径
 _db_path = (
@@ -791,18 +799,42 @@ async def _stream_event_generator(
     stream_start = time.perf_counter()
     log_structured("Chat", "chat_llm_start", model_id=model_id, session_id=session_id, stream=True, completion_id=completion_id)
     logger.info(f"Starting event generator for {completion_id}")
+
+    resume_enabled = bool(getattr(settings, "chat_stream_resume_enabled", True))
+    stream_id: Optional[str] = None
+    disconnected = False
+    resume_store = get_stream_resume_store() if resume_enabled else None
+
+    if resume_enabled and resume_store:
+        stream_id = str(uuid.uuid4())
+        rsess = resume_store.create(stream_id, user_id)
+        rsess.completion_id = completion_id
+        rsess.model_id = model_id
+        rsess.sse_created = int(created_time)
+        meta = {"object": "openvitamin.stream.meta", "stream_id": stream_id, "completion_id": completion_id}
+        meta_sse = f"data: {json.dumps(meta, ensure_ascii=False)}\n\n"
+        await resume_store.append_chunk(stream_id, meta_sse)
+        yield meta_sse
+
     try:
         async for token in agent.stream_chat(req):
             if await request.is_disconnected():
-                logger.info(f"Client disconnected for {completion_id}, stopping stream")
-                break
+                if resume_enabled:
+                    disconnected = True
+                else:
+                    logger.info(f"Client disconnected for {completion_id}, stopping stream")
+                    break
             full_text += token
-            yield _stream_build_chunk(
+            sse = _stream_build_chunk(
                 completion_id=completion_id,
                 created_time=created_time,
                 model_id=model_id,
                 content=token,
             )
+            if resume_enabled and stream_id and resume_store:
+                await resume_store.append_chunk(stream_id, sse)
+            if not disconnected:
+                yield sse
 
         await _stream_on_success(
             req=req,
@@ -816,7 +848,12 @@ async def _stream_event_generator(
             stream_start=stream_start,
             persist_success_turn=persist_success_turn,
         )
-        yield "data: [DONE]\n\n"
+        done_sse = "data: [DONE]\n\n"
+        if resume_enabled and stream_id and resume_store:
+            await resume_store.append_chunk(stream_id, done_sse)
+            await resume_store.finish(stream_id)
+        if not disconnected:
+            yield done_sse
     except Exception as e:
         for chunk in _stream_on_exception(
             req=req,
@@ -832,7 +869,12 @@ async def _stream_event_generator(
             conv_manager=conv_manager,
             err=e,
         ):
-            yield chunk
+            if resume_enabled and stream_id and resume_store:
+                await resume_store.append_chunk(stream_id, chunk)
+            if not disconnected:
+                yield chunk
+        if resume_enabled and stream_id and resume_store:
+            await resume_store.finish(stream_id)
 
 
 async def _handle_nonstream_chat(
@@ -1183,3 +1225,43 @@ async def chat_completions(
         user_id=user_id,
         persist_success_turn=_persist_success_turn,
     )
+
+
+@router.post("/v1/chat/completions/stream/resume")
+async def chat_stream_resume(body: ChatStreamResumeBody, request: Request) -> StreamingResponse:
+    """从已缓冲的 SSE 帧序列按 chunk 下标继续拉取（断点续传）。"""
+    if not bool(getattr(settings, "chat_stream_resume_enabled", True)):
+        raise_api_error(status_code=404, code="stream_resume_disabled", message="断点续传未开启")
+    user_id = _get_user_id(request)
+    store = get_stream_resume_store()
+    sess = store.get(body.stream_id)
+    if not sess or sess.user_id != user_id:
+        raise_api_error(status_code=404, code="stream_not_found", message="流不存在或已过期")
+
+    wait_timeout = float(getattr(settings, "chat_stream_resume_wait_timeout_seconds", 120) or 120)
+
+    stream_headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+
+    async def _gen() -> AsyncIterator[str]:
+        try:
+            async for piece in iter_resume_chunks(
+                store,
+                body.stream_id,
+                body.chunk_index,
+                wait_timeout=wait_timeout,
+            ):
+                yield piece
+        except asyncio.TimeoutError:
+            yield _stream_build_chunk(
+                completion_id=sess.completion_id or "chatcmpl-unknown",
+                created_time=int(sess.sse_created or sess.created_at),
+                model_id=sess.model_id or "unknown",
+                content="\nError: stream resume wait timeout",
+            )
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream", headers=stream_headers)

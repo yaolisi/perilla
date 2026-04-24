@@ -7,7 +7,9 @@ import { ref, computed, watch, type Ref } from 'vue'
 import { 
   chatCompletion, 
   streamChatCompletion, 
-  type Message, 
+  type Message,
+  type ChatStreamChunk,
+  type ChatStreamResponse,
   setSessionId
 } from '@/services/api'
 import { useParameters } from './useParameters'
@@ -287,13 +289,14 @@ export function useChat(options: UseChatOptions = {}) {
               } : undefined,
               signal,
             },
-            (chunk) => {
-              // 处理每个 chunk
-              if (chunk.model) {
-                updateMessageModelName(assistantMsg.id, chunk.model)
+            (chunk: ChatStreamChunk) => {
+              if (chunk.object === 'openvitamin.stream.meta') return
+              const c = chunk as ChatStreamResponse
+              if (c.model) {
+                updateMessageModelName(assistantMsg.id, c.model)
               }
-              if (chunk.choices?.[0]?.delta?.content) {
-                updateMessageContent(assistantMsg.id, assistantMsg.content + chunk.choices[0].delta.content)
+              if (c.choices?.[0]?.delta?.content) {
+                updateMessageContent(assistantMsg.id, assistantMsg.content + c.choices[0].delta.content)
               }
             },
             () => {

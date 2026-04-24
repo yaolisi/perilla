@@ -113,22 +113,60 @@ const stopWatch1 = watch(() => chat.messages.value.length, (newLen, oldLen) => {
   }
 })
 
-// 监听最后一条消息的内容变化（流式更新时跟随到底部，节流避免闪烁）
+// 监听最后一条消息的内容变化（流式更新时跟随到底部；按前若干次更新间隔自适应节流）
+const SCROLL_MS_MIN = 80
+const SCROLL_MS_MAX = 600
+const SCROLL_MS_DEFAULT = 400
+const SCROLL_SAMPLE_CAP = 10
+
 let scrollThrottle: ReturnType<typeof setTimeout> | null = null
-const stopWatch2 = watch(() => {
-  const lastMsg = chat.messages.value[chat.messages.value.length - 1]
-  return lastMsg ? lastMsg.content : ''
-}, () => {
-  if (!userHasScrolledUp.value) {
-    if (scrollThrottle) return
-    scrollThrottle = setTimeout(() => {
-      scrollThrottle = null
-      scrollToBottom('auto')
-    }, 400)
-  } else {
-    showScrollButton.value = true
+let scrollSampleIntervals: number[] = []
+let scrollLastContentTs = 0
+let scrollDynamicMs = SCROLL_MS_DEFAULT
+
+function resetScrollThrottleSampler() {
+  scrollSampleIntervals = []
+  scrollLastContentTs = 0
+  scrollDynamicMs = SCROLL_MS_DEFAULT
+}
+
+const stopWatch2 = watch(
+  () => {
+    const lastMsg = chat.messages.value[chat.messages.value.length - 1]
+    return lastMsg ? { id: lastMsg.id, content: lastMsg.content } : null
+  },
+  (cur, prev) => {
+    if (!cur) return
+    if (prev && cur.id !== prev.id) {
+      resetScrollThrottleSampler()
+    }
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    if (scrollLastContentTs > 0 && scrollSampleIntervals.length < SCROLL_SAMPLE_CAP) {
+      const delta = now - scrollLastContentTs
+      if (delta > 0 && delta < 30000) {
+        scrollSampleIntervals.push(delta)
+      }
+    }
+    scrollLastContentTs = now
+    if (scrollSampleIntervals.length >= 3) {
+      const avg =
+        scrollSampleIntervals.reduce((a, b) => a + b, 0) / scrollSampleIntervals.length
+      scrollDynamicMs = Math.round(
+        Math.min(SCROLL_MS_MAX, Math.max(SCROLL_MS_MIN, avg * 0.85))
+      )
+    }
+
+    if (!userHasScrolledUp.value) {
+      if (scrollThrottle) return
+      scrollThrottle = setTimeout(() => {
+        scrollThrottle = null
+        scrollToBottom('auto')
+      }, scrollDynamicMs)
+    } else {
+      showScrollButton.value = true
+    }
   }
-})
+)
 
 // 监听 activeSessionId 变化，自动加载或清空消息
 const stopWatch3 = watch(

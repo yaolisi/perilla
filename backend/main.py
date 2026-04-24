@@ -23,6 +23,7 @@ except ImportError:
 import uvicorn
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import asyncio
@@ -449,13 +450,25 @@ if getattr(settings, "audit_log_enabled", False):
 # CORS 中间件配置（按顺序要求放在最后）
 _cors_origins = [x.strip() for x in (getattr(settings, "cors_allowed_origins", "") or "").split(",") if x.strip()]
 _cors_allow_credentials = bool(_cors_origins) and "*" not in _cors_origins
+if getattr(settings, "response_gzip_enabled", True):
+    app.add_middleware(
+        GZipMiddleware,
+        minimum_size=int(getattr(settings, "response_gzip_minimum_size", 256) or 256),
+    )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins or ["http://localhost", "http://127.0.0.1"],
     allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Session-Id", "X-Request-Id", "X-Trace-Id", "X-Response-Time-Ms", "X-CSRF-Token"],
+    expose_headers=[
+        "X-Session-Id",
+        "X-Request-Id",
+        "X-Trace-Id",
+        "X-Response-Time-Ms",
+        "X-CSRF-Token",
+        "Content-Encoding",
+    ],
 )
 
 # 包含路由

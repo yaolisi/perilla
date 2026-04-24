@@ -270,6 +270,15 @@ export interface ChatStreamResponse {
   choices: StreamChoice[]
 }
 
+/** 首包元数据：断点续传 stream_id */
+export interface ChatStreamMetaChunk {
+  object: 'openvitamin.stream.meta'
+  stream_id: string
+  completion_id: string
+}
+
+export type ChatStreamChunk = ChatStreamResponse | ChatStreamMetaChunk
+
 // VLM Interfaces
 export interface VLMMessage {
   role: 'system' | 'user' | 'assistant'
@@ -533,14 +542,32 @@ export async function vlmGenerate(
  * @param req 请求参数
  * @param onChunk 每个 chunk 到达时的回调
  * @param onDone 流完成时的回调
+ * @param streamOptions.autoResume 网络中断时尝试断点续传（默认 true）
  */
 export async function streamChatCompletion(
   req: ChatRequest,
-  onChunk: (chunk: ChatStreamResponse) => void,
+  onChunk: (chunk: ChatStreamChunk) => void,
   onDone?: () => void,
-  onError?: (error: Error) => void
+  onError?: (error: Error) => void,
+  streamOptions: { autoResume?: boolean } = {}
 ): Promise<void> {
   const { signal, ...body } = req
+  const autoResume = streamOptions.autoResume !== false
+
+  let sseLineIndex = 0
+  let activeStreamId: string | null = null
+
+  const handleChunk = (chunk: ChatStreamChunk) => {
+    if (chunk.object === 'openvitamin.stream.meta') {
+      activeStreamId = (chunk as ChatStreamMetaChunk).stream_id
+    }
+    onChunk(chunk)
+  }
+
+  const onSSELine = () => {
+    sseLineIndex += 1
+  }
+
   try {
     const headers: Record<string, string> = {}
     if (forceNewSessionOnce) {
@@ -582,7 +609,7 @@ export async function streamChatCompletion(
         if (done) {
           // 彻底完成，处理最后的 buffer
           if (buffer.trim()) {
-            const hasDone = parseSSEBuffer(buffer, onChunk, onDone)
+            const hasDone = parseSSEBuffer(buffer, handleChunk, onDone, onSSELine)
             if (!hasDone) onDone?.()
           } else {
             onDone?.()
@@ -598,7 +625,7 @@ export async function streamChatCompletion(
           const completePart = buffer.substring(0, boundary)
           buffer = buffer.substring(boundary + 2)
           
-          if (parseSSEBuffer(completePart, onChunk, onDone)) {
+          if (parseSSEBuffer(completePart, handleChunk, onDone, onSSELine)) {
             return // 收到 [DONE]
           }
         }
@@ -610,6 +637,85 @@ export async function streamChatCompletion(
     // 如果是 abort 错误，不要调用 onError（避免重复处理）
     if (error instanceof DOMException && error.name === 'AbortError') {
       return // 静默退出
+    }
+    const canResume =
+      autoResume &&
+      Boolean(activeStreamId) &&
+      sseLineIndex > 0 &&
+      signal &&
+      !signal.aborted
+    if (canResume && activeStreamId) {
+      try {
+        await resumeChatStream(activeStreamId, sseLineIndex, handleChunk, onDone, onError, { signal })
+        return
+      } catch {
+        // fall through to onError
+      }
+    }
+    onError?.(error instanceof Error ? error : new Error(String(error)))
+  }
+}
+
+/**
+ * 从服务端缓冲按 chunk 下标继续拉取 SSE（断点续传）
+ */
+export async function resumeChatStream(
+  streamId: string,
+  chunkIndex: number,
+  onChunk: (chunk: ChatStreamChunk) => void,
+  onDone?: () => void,
+  onError?: (error: Error) => void,
+  options: { signal?: AbortSignal } = {}
+): Promise<void> {
+  const { signal } = options
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/v1/chat/completions/stream/resume`, {
+      method: 'POST',
+      body: JSON.stringify({ stream_id: streamId, chunk_index: chunkIndex }),
+      signal,
+    })
+    if (!response.ok) {
+      throw new Error(`API error: ${response.statusText}`)
+    }
+    const reader = response.body?.getReader()
+    if (!reader) {
+      throw new Error('Response body is not readable')
+    }
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const onSSELine = () => {}
+    try {
+      while (true) {
+        if (signal?.aborted) {
+          reader.cancel()
+          throw new DOMException('Request aborted', 'AbortError')
+        }
+        const { done, value } = await reader.read()
+        if (done) {
+          if (buffer.trim()) {
+            const hasDone = parseSSEBuffer(buffer, onChunk, onDone, onSSELine)
+            if (!hasDone) onDone?.()
+          } else {
+            onDone?.()
+          }
+          break
+        }
+        buffer += decoder.decode(value, { stream: true })
+        let boundary = buffer.lastIndexOf('\n\n')
+        if (boundary !== -1) {
+          const completePart = buffer.substring(0, boundary)
+          buffer = buffer.substring(boundary + 2)
+          if (parseSSEBuffer(completePart, onChunk, onDone, onSSELine)) {
+            return
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock()
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return
     }
     onError?.(error instanceof Error ? error : new Error(String(error)))
   }
@@ -2149,8 +2255,9 @@ export function streamLogs(
  */
 function parseSSEBuffer(
   buffer: string, 
-  onChunk: (chunk: ChatStreamResponse) => void, 
-  onDone?: () => void
+  onChunk: (chunk: ChatStreamChunk) => void, 
+  onDone?: () => void,
+  onSSELine?: () => void
 ): boolean {
   const lines = buffer.split('\n')
   let foundDone = false
@@ -2168,7 +2275,8 @@ function parseSSEBuffer(
     }
 
     try {
-      const chunk = JSON.parse(data) as ChatStreamResponse
+      const chunk = JSON.parse(data) as ChatStreamChunk
+      onSSELine?.()
       onChunk(chunk)
     } catch (e) {
       // 忽略部分解析失败，可能是截断了
