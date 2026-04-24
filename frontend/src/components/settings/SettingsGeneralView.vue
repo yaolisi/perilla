@@ -25,15 +25,7 @@ import {
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { Slider } from '@/components/ui/slider'
 import { Input } from '@/components/ui/input'
-import { 
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { 
   getSystemConfig, 
   updateSystemConfig,
@@ -609,12 +601,12 @@ watch(theme, (newTheme) => {
             <div class="space-y-3">
               <div class="flex justify-between items-center text-sm">
                 <span class="font-medium text-muted-foreground">{{ t('settings.monitor.cpu') }}</span>
-                <span class="font-medium text-foreground">{{ metrics?.cpu_usage || 0 }}%</span>
+                <span class="font-medium text-foreground">{{ metrics?.cpu_load || 0 }}%</span>
               </div>
               <div class="h-1.5 w-full bg-muted rounded-full overflow-hidden">
                 <div 
                   class="h-full bg-emerald-600 rounded-full transition-all duration-1000"
-                  :style="{ width: (metrics?.cpu_usage || 0) + '%' }"
+                  :style="{ width: (metrics?.cpu_load || 0) + '%' }"
                 ></div>
               </div>
             </div>

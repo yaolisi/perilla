@@ -27,6 +27,8 @@ interface Props {
     url: string
     file?: File
   }>
+  /** 智能路由解析：resolved_model / resolved_via */
+  routing?: { resolved_model: string; resolved_via: string } | null
 }
 
 const props = defineProps<Props>()
@@ -165,6 +167,13 @@ const vFocus = {
           <span class="font-medium capitalize">{{ role === 'user' ? t('chat.message.user') : t('chat.message.assistant') }}</span>
           <span v-if="role === 'assistant' && formattedModelName" class="px-1.5 py-0.5 rounded-md bg-muted text-[10px] font-medium uppercase tracking-wider">
             {{ formattedModelName }}
+          </span>
+          <span
+            v-if="role === 'assistant' && routing && !loading"
+            class="text-[10px] text-muted-foreground/90 max-w-[min(280px,50vw)] truncate"
+            :title="`${routing.resolved_model} · ${routing.resolved_via}`"
+          >
+            {{ t('chat.message.routing_hint', { model: routing.resolved_model, via: routing.resolved_via }) }}
           </span>
           <span>{{ formatTime(timestamp) }}</span>
           <Loader2 v-if="loading && role === 'assistant'" class="w-3 h-3 animate-spin" />

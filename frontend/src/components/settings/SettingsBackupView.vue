@@ -49,35 +49,12 @@ import {
 // 扩展预留接口（未来企业版功能）
 // ============================================
 
-enum BackupMode {
-  LOCAL = 'local',
-  LOGICAL_DUMP = 'logical_dump',
-  CLOUD = 'cloud'
-}
-
-enum DatabaseType {
-  SQLITE = 'sqlite',
-  POSTGRESQL = 'postgresql',
-  MYSQL = 'mysql'
-}
-
-interface BackupConfig {
-  enabled: boolean
-  frequency: 'on_start' | 'daily' | 'weekly' | 'custom'
-  retentionCount: number
-  autoDelete: boolean
-  backupLocation: string
-  mode: BackupMode
-  databaseType: DatabaseType
-}
-
-interface BackupRecord {
-  id: string
-  date: string
-  size: string
-  type: 'auto' | 'manual'
-  status: 'success' | 'failed' | 'in_progress'
-}
+const DatabaseType = {
+  SQLITE: 'sqlite',
+  POSTGRESQL: 'postgresql',
+  MYSQL: 'mysql',
+} as const
+type DatabaseType = (typeof DatabaseType)[keyof typeof DatabaseType]
 
 const { t } = useI18n()
 const route = useRoute()
@@ -498,7 +475,7 @@ onMounted(() => {
                 </div>
                 <Switch 
                   :checked="enableAutoBackup" 
-                  @update:checked="(val) => { enableAutoBackup = val; isEditing = true }"
+                  @update:checked="(val: boolean) => { enableAutoBackup = val; isEditing = true }"
                 />
               </div>
 
@@ -543,7 +520,7 @@ onMounted(() => {
                     <div class="flex items-center gap-3 pt-8">
                       <Switch 
                         :checked="autoDelete" 
-                        @update:checked="(val) => { autoDelete = val; isEditing = true }"
+                        @update:checked="(val: boolean) => { autoDelete = val; isEditing = true }"
                       />
                       <span class="text-sm text-muted-foreground">{{ t('settings.backup.auto_delete_desc') }}</span>
                     </div>

@@ -203,7 +203,7 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
 }
 
 export interface Message {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | Array<{
     type: 'text' | 'image_url'
     text?: string
@@ -219,6 +219,12 @@ export interface RAGConfig {
   score_threshold?: number
 }
 
+/** 与后端 ChatCompletion 响应 /metadata 对齐（智能路由解析结果） */
+export interface ChatRoutingMetadata {
+  resolved_model: string
+  resolved_via: string
+}
+
 export interface ChatRequest {
   model: string
   messages: Message[]
@@ -229,6 +235,8 @@ export interface ChatRequest {
   system_prompt?: string
   max_history_messages?: number
   rag?: RAGConfig
+  /** 供智能路由分桶等（如 role / is_admin），请求体 metadata */
+  metadata?: Record<string, unknown>
   signal?: AbortSignal
 }
 
@@ -251,6 +259,7 @@ export interface ChatResponse {
   model: string
   choices: Choice[]
   usage: Usage
+  metadata?: ChatRoutingMetadata
 }
 
 export interface DeltaContent {
@@ -260,6 +269,7 @@ export interface DeltaContent {
 export interface StreamChoice {
   index: number
   delta: DeltaContent
+  finish_reason?: 'stop' | 'length' | 'content_filter' | null
 }
 
 export interface ChatStreamResponse {
@@ -268,6 +278,8 @@ export interface ChatStreamResponse {
   created: number
   model: string
   choices: StreamChoice[]
+  /** 流式结束前一包可能携带，与非流式 metadata 同形 */
+  metadata?: ChatRoutingMetadata
 }
 
 /** 首包元数据：断点续传 stream_id */
@@ -476,6 +488,8 @@ export interface VlmGenerateResponse {
   model: string
   text: string
   usage?: Record<string, unknown> | null
+  /** 与 chat completions 一致：智能路由解析结果 */
+  metadata?: ChatRoutingMetadata | null
 }
 
 // ----------------------------
@@ -742,6 +756,7 @@ export interface SessionMessage {
   content: string
   created_at: string
   model?: string | null
+  /** 可能含 routing: { resolved_model, resolved_via }（智能路由落库）等 */
   meta?: Record<string, unknown> | null
 }
 
@@ -1624,7 +1639,7 @@ export interface SkillRecord {
   name: string
   description: string
   category: string
-  type: 'prompt' | 'tool' | 'composite'
+  type: 'prompt' | 'tool' | 'composite' | 'workflow'
   definition: Record<string, unknown>
   input_schema: Record<string, unknown>
   enabled: boolean
@@ -1636,7 +1651,7 @@ export interface CreateSkillRequest {
   name: string
   description?: string
   category?: string
-  type?: 'prompt' | 'tool' | 'composite'
+  type?: 'prompt' | 'tool' | 'composite' | 'workflow'
   input_schema?: Record<string, unknown>
   definition?: Record<string, unknown>
   enabled?: boolean
@@ -1658,7 +1673,7 @@ export interface UpdateSkillRequest {
   name?: string
   description?: string
   category?: string
-  type?: 'prompt' | 'tool' | 'composite'
+  type?: 'prompt' | 'tool' | 'composite' | 'workflow'
   input_schema?: Record<string, unknown>
   definition?: Record<string, unknown>
   enabled?: boolean

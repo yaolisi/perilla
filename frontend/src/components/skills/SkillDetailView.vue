@@ -7,16 +7,10 @@ import {
   Info,
   Code2,
   ListOrdered,
-  Wrench,
   Settings2,
-  Save,
   CheckCircle2,
   Plus,
   Trash2,
-  Globe,
-  FileText,
-  Code,
-  Database,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -117,7 +111,6 @@ function buildInputSchema(): Record<string, unknown> {
 function parseInputSchema(schema: Record<string, unknown> | undefined): SchemaField[] {
   if (!schema || typeof schema !== 'object') return []
   const props = (schema as any).properties || {}
-  const required = (schema as any).required || []
   const fields: SchemaField[] = []
   for (const [key, value] of Object.entries(props)) {
     if (typeof value === 'object' && value !== null) {
@@ -493,7 +486,7 @@ onMounted(() => {
                 <div class="space-y-4">
                   <div class="flex justify-between items-center">
                     <label class="text-sm font-semibold text-foreground">{{ t('skills.create.temperature') }}</label>
-                    <span class="text-xs font-mono text-primary bg-primary/10 px-2 py-0.5 rounded">{{ temperature[0].toFixed(1) }}</span>
+                    <span class="text-xs font-mono text-primary bg-primary/10 px-2 py-0.5 rounded">{{ (temperature[0] ?? 0).toFixed(1) }}</span>
                   </div>
                   <Slider v-model="temperature" :min="0" :max="1" :step="0.1" class="w-full" />
                   <p class="text-[10px] text-muted-foreground">{{ t('skills.create.temperature_hint') }}</p>

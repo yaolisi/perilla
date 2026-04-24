@@ -10,6 +10,7 @@ import {
   type Message,
   type ChatStreamChunk,
   type ChatStreamResponse,
+  type ChatRoutingMetadata,
   setSessionId
 } from '@/services/api'
 import { useParameters } from './useParameters'
@@ -22,6 +23,10 @@ export interface ChatMessage {
   timestamp: number
   loading?: boolean
   modelName?: string
+  /** 与后端同步的 message meta（如 RAG） */
+  meta?: Record<string, unknown> | null
+  /** 智能路由解析元数据（仅 assistant 流式/非流式完成时由 API 返回） */
+  routing?: ChatRoutingMetadata | null
   params?: {
     temperature: number
     top_p: number
@@ -127,7 +132,8 @@ export function useChat(options: UseChatOptions = {}) {
     content: string, 
     modelName?: string, 
     msgParams?: ChatMessage['params'],
-    attachments?: ChatMessage['attachments']
+    attachments?: ChatMessage['attachments'],
+    routing?: ChatMessage['routing'],
   ): ChatMessage {
     const message: ChatMessage = {
       id: generateId(),
@@ -138,6 +144,7 @@ export function useChat(options: UseChatOptions = {}) {
       loading: false,
       params: msgParams,
       attachments,
+      routing: routing ?? undefined,
     }
     messages.value.push(message)
     return message
@@ -170,6 +177,13 @@ export function useChat(options: UseChatOptions = {}) {
     const message = messages.value.find((m) => m.id === id)
     if (message) {
       message.modelName = modelName
+    }
+  }
+
+  function updateMessageRouting(id: string, routing: ChatRoutingMetadata): void {
+    const message = messages.value.find((m) => m.id === id)
+    if (message) {
+      message.routing = routing
     }
   }
 
@@ -298,6 +312,9 @@ export function useChat(options: UseChatOptions = {}) {
               if (c.choices?.[0]?.delta?.content) {
                 updateMessageContent(assistantMsg.id, assistantMsg.content + c.choices[0].delta.content)
               }
+              if (c.metadata?.resolved_model && c.metadata?.resolved_via) {
+                updateMessageRouting(assistantMsg.id, c.metadata)
+              }
             },
             () => {
               // 流完成
@@ -335,7 +352,14 @@ export function useChat(options: UseChatOptions = {}) {
           const content = typeof response.choices[0].message.content === 'string' 
             ? response.choices[0].message.content 
             : ''
-          addMessage('assistant', content, response.model || model.value, currentParams)
+          addMessage(
+            'assistant',
+            content,
+            response.model || model.value,
+            currentParams,
+            undefined,
+            response.metadata,
+          )
         }
       }
     } catch (err) {

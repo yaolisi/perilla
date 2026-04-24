@@ -65,3 +65,15 @@ def test_resolve_generate_cache_ttl_by_model_type_override() -> None:
     ttl = gateway._resolve_generate_cache_ttl(routing)
     assert ttl >= 1
 
+
+def test_apply_request_priority_for_admin() -> None:
+    request = InferenceRequest(
+        model_alias="test-model",
+        prompt="hello",
+        metadata={"role": "admin"},
+        priority="low",
+    )
+    InferenceGateway._apply_request_priority(request)
+    assert request.priority == "high"
+    assert request.metadata.get("priority_source") == "admin"
+

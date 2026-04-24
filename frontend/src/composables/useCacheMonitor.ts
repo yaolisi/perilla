@@ -156,7 +156,7 @@ export function useCacheMonitor() {
           cache_kind: 'generate',
           force_all: true,
           challenge_id: challenge.challenge_id,
-          confirm_text: confirmText.trim(),
+          confirm_text: (confirmText ?? '').trim(),
         })
         clearCacheMessage.value = `清理完成：memory=${resp.memory_deleted}, redis=${resp.redis_deleted}, total=${resp.total_deleted}`
         await loadCacheStats()

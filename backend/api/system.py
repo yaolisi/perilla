@@ -20,6 +20,7 @@ from core.system.settings_store import get_system_settings_store
 from core.system.feature_flags import get_feature_flags, set_feature_flags
 from core.system.queue_summary import build_unified_queue_summary
 from core.system.storage_strategy import storage_readiness
+from core.system.smart_routing_validation import validate_smart_routing_policies_json
 from core.inference.gateway import get_inference_gateway
 from core.cache import get_redis_cache_client
 from core.security.deps import require_authenticated_platform_admin, require_platform_admin
@@ -65,6 +66,8 @@ ALLOWED_SYSTEM_CONFIG_KEYS = {
     "runtimeMaxCachedLocalImageGenerationRuntimes",
     "runtimeReleaseIdleTtlSeconds",
     "runtimeReleaseMinIntervalSeconds",
+    "inferenceSmartRoutingEnabled",
+    "inferenceSmartRoutingPoliciesJson",
     "chaosFailRateWarn",
     "chaosP95WarnMs",
     "chaosNetErrWarn",
@@ -98,6 +101,8 @@ class SystemConfigUpdate(BaseModel):
     runtimeMaxCachedLocalImageGenerationRuntimes: Optional[int] = Field(default=None, ge=1, le=16)
     runtimeReleaseIdleTtlSeconds: Optional[int] = Field(default=None, ge=30, le=86400)
     runtimeReleaseMinIntervalSeconds: Optional[int] = Field(default=None, ge=1, le=3600)
+    inferenceSmartRoutingEnabled: Optional[bool] = None
+    inferenceSmartRoutingPoliciesJson: Optional[str] = Field(default=None, max_length=65535)
     chaosFailRateWarn: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     chaosP95WarnMs: Optional[int] = Field(default=None, ge=1, le=600000)
     chaosNetErrWarn: Optional[int] = Field(default=None, ge=0, le=10000)
@@ -239,6 +244,8 @@ async def _validate_cache_clear_challenge(
     redis_ok = await _validate_cache_clear_challenge_from_redis(cid, code, actor)
     if redis_ok is not None:
         if redis_ok:
+            # Redis 与进程内表双写时须同步删除，避免二次校验仍命中内存中的挑战
+            _INFERENCE_CACHE_CLEAR_CHALLENGES.pop(cid, None)
             _INFERENCE_CACHE_CHALLENGE_METRICS["validate_success_total"] += 1
         else:
             _INFERENCE_CACHE_CHALLENGE_METRICS["validate_failed_total"] += 1
@@ -314,6 +321,8 @@ async def update_config(
 ) -> Dict[str, Any]:
     """更新系统配置"""
     config_data = _validate_system_config_payload(config_data)
+    if "inferenceSmartRoutingPoliciesJson" in config_data:
+        validate_smart_routing_policies_json(str(config_data.get("inferenceSmartRoutingPoliciesJson") or ""))
     store = get_system_settings_store()
     for key, value in config_data.items():
         store.set_setting(key, value)

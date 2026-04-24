@@ -322,11 +322,6 @@ async function runWorkflow() {
   }
 }
 
-function deployWorkflow() {
-  // TODO: deploy action (after create)
-  alert(t('workflow.deploy_coming_soon'))
-}
-
 function onUpdateConfig(nodeId: string, config: Record<string, unknown>) {
   const list = [...editorNodes.value]
   const idx = list.findIndex((n) => n.id === nodeId)

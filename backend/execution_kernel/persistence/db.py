@@ -17,7 +17,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any, AsyncGenerator, Generator, Optional
+from typing import Any, AsyncGenerator, Dict, Generator, Optional
 import os
 import logging
 
@@ -69,6 +69,19 @@ DEFAULT_DATABASE_URL = get_default_database_url()
 # DEFAULT_DATABASE_URL = "postgresql+asyncpg://user:pass@localhost/execution_kernel"
 
 
+def _sqlalchemy_pool_kwargs(database_url: str) -> Dict[str, Any]:
+    """
+    SQLite（含 aiosqlite 内存 / 文件）使用 StaticPool/NullPool 等，不能传 pool_size、max_overflow。
+    """
+    base: Dict[str, Any] = {"pool_pre_ping": True}
+    if database_url.startswith("sqlite"):
+        return base
+    base["pool_recycle"] = max(60, int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")))
+    base["max_overflow"] = max(0, int(os.getenv("DB_MAX_OVERFLOW", "20")))
+    base["pool_size"] = max(1, int(os.getenv("DB_POOL_SIZE", "10")))
+    return base
+
+
 class Database:
     """数据库管理器"""
     
@@ -92,10 +105,7 @@ class Database:
                 echo=False,
                 future=True,
                 connect_args=connect_args,
-                pool_pre_ping=True,
-                pool_recycle=max(60, int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800"))),
-                max_overflow=max(0, int(os.getenv("DB_MAX_OVERFLOW", "20"))),
-                pool_size=max(1, int(os.getenv("DB_POOL_SIZE", "10"))),
+                **_sqlalchemy_pool_kwargs(self.database_url),
             )
             self._configure_sqlite_pragmas(self._async_engine.sync_engine)
         return self._async_engine
@@ -114,10 +124,7 @@ class Database:
                 echo=False,
                 future=True,
                 connect_args=connect_args,
-                pool_pre_ping=True,
-                pool_recycle=max(60, int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800"))),
-                max_overflow=max(0, int(os.getenv("DB_MAX_OVERFLOW", "20"))),
-                pool_size=max(1, int(os.getenv("DB_POOL_SIZE", "10"))),
+                **_sqlalchemy_pool_kwargs(sync_url),
             )
             self._configure_sqlite_pragmas(self._sync_engine)
         return self._sync_engine

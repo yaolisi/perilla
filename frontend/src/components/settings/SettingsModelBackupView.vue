@@ -72,7 +72,8 @@ const loadLocalModels = async () => {
     const list = (res.data || []).filter((m: { id?: string }) => (m.id || '').startsWith('local:'))
     localModels.value = list.map((m: { id: string; name?: string }) => ({ id: m.id, name: m.name || m.id }))
     if (localModels.value.length && !singleBackupModelId.value) {
-      singleBackupModelId.value = localModels.value[0].id
+      const first = localModels.value[0]
+      if (first) singleBackupModelId.value = first.id
     }
   } catch (e) {
     console.error('Failed to load local models', e)

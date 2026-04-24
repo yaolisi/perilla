@@ -458,13 +458,10 @@ async def upload_document(
     kb_id: str,
     file: Annotated[UploadFile, File(...)],
     background_tasks: BackgroundTasks,
-    request: Optional[Request] = None,
+    request: Request,
 ) -> JSONDict:
     """上传文档到知识库并启动索引流程"""
     try:
-        if request is None:
-            raise_api_error(status_code=400, code="knowledge_request_required", message=MSG_REQUEST_REQUIRED)
-        assert request is not None
         user_id = get_user_id(request)
         
         # 验证知识库存在
@@ -622,13 +619,10 @@ async def reindex_document(
     kb_id: str,
     doc_id: str,
     background_tasks: BackgroundTasks,
-    request: Optional[Request] = None,
+    request: Request,
 ) -> JSONDict:
     """重新索引文档"""
     try:
-        if request is None:
-            raise_api_error(status_code=400, code="knowledge_request_required", message=MSG_REQUEST_REQUIRED)
-        assert request is not None
         user_id = get_user_id(request)
         
         # 验证知识库存在
@@ -719,18 +713,15 @@ async def reindex_document(
 @router.get("/knowledge-bases/{kb_id}/chunks")
 async def list_chunks(
     kb_id: str,
+    request: Request,
     limit: int = 50,
     offset: int = 0,
     document_id: Optional[str] = None,
-    request: Optional[Request] = None,
 ) -> JSONDict:
     """列出知识库下的所有 chunks"""
     try:
-        if request is None:
-            raise_api_error(status_code=400, code="knowledge_request_required", message=MSG_REQUEST_REQUIRED)
-        assert request is not None
         user_id = get_user_id(request)
-        
+
         # 验证知识库存在
         kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
         if not kb:
@@ -769,13 +760,10 @@ async def list_chunks(
 async def search_knowledge_base(
     kb_id: str,
     req: SearchRequest,
-    request: Optional[Request] = None,
+    request: Request,
 ) -> JSONDict:
     """检索知识库"""
     try:
-        if request is None:
-            raise_api_error(status_code=400, code="knowledge_request_required", message=MSG_REQUEST_REQUIRED)
-        assert request is not None
         user_id = get_user_id(request)
         
         # 验证知识库存在

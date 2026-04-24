@@ -3,7 +3,6 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { 
   Database, 
@@ -19,7 +18,7 @@ import {
   ChevronUp,
   File
 } from 'lucide-vue-next'
-import { getModelManifest, updateModelManifest, browseModelDir, getSystemMetrics, type ModelManifest, type BrowseResult, type SystemMetrics } from '@/services/api'
+import { getModelManifest, updateModelManifest, browseModelDir, getSystemMetrics, type ModelManifest, type SystemMetrics } from '@/services/api'
 
 const { t } = useI18n()
 

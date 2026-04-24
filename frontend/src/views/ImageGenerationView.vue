@@ -157,7 +157,8 @@ async function fetchModels() {
     const response = await listModels()
     models.value = response.data.filter((item) => item.model_type === 'image_generation')
     if (!form.value.model && models.value.length > 0) {
-      form.value.model = models.value[0].id
+      const first = models.value[0]
+      if (first) form.value.model = first.id
     }
   } catch (e: any) {
     error.value = e?.message || t('image_generation.models_error')

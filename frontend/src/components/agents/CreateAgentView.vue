@@ -19,7 +19,6 @@ import {
   CheckSquare,
   Square,
   Clock,
-  Wrench,
   Settings
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
@@ -84,17 +83,6 @@ const systemConfig = ref<SystemConfig | null>(null)
 // Skills search and filter
 const skillSearchQuery = ref('')
 const expandedCategories = ref<Set<string>>(new Set(['builtin_file', 'builtin_http', 'builtin_text', 'builtin_time', 'builtin_system']))
-
-const iconComponentByName = (icon?: string | null) => {
-  const mapping: Record<string, any> = {
-    Globe,
-    Code2,
-    Database,
-    FileText,
-    Box,
-  }
-  return (icon && mapping[icon]) ? mapping[icon] : Box
-}
 
 const colorByCategory = (category?: string | null) => {
   // Simple palette by category; fallback to blue

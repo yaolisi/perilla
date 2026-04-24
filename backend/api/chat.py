@@ -19,6 +19,8 @@ from api.stream_resume_store import get_stream_resume_store, iter_resume_chunks
 from config.settings import settings
 from core.types import ChatCompletionRequest, ChatCompletionResponse, Message as LLMMessage
 from core.agents.router import get_router
+from core.inference.router.model_router import ModelRouter
+from core.models.selector import get_model_selector
 from core.conversation.manager import ConversationManager, Message as ConvMessage
 from core.conversation.history_store import HistoryStore, HistoryStoreConfig
 from core.memory.memory_store import MemoryStore, MemoryStoreConfig
@@ -355,15 +357,66 @@ def _debug_log_message_shapes(messages_dict: Optional[list[dict]]) -> None:
                 logger.info(f"[Chat]   Item {j}: type={item.get('type')}")
 
 
-def _resolve_model_for_request(req: ChatCompletionRequest, request: Request, user_id: str) -> str:
-    from core.models.selector import get_model_selector
+def _routing_submeta_for_persist(request: Request) -> Optional[dict[str, str]]:
+    """从 request.state 取出可落库到 message.meta['routing'] 的字段。"""
+    raw = getattr(request.state, "chat_routing_metadata", None)
+    if not isinstance(raw, dict):
+        return None
+    rm = raw.get("resolved_model")
+    rv = raw.get("resolved_via")
+    if rm is None or rv is None or str(rm).strip() == "" or str(rv).strip() == "":
+        return None
+    return {"resolved_model": str(rm), "resolved_via": str(rv)}
 
+
+def _chat_routing_request_metadata(req: ChatCompletionRequest, request: Request, user_id: str) -> dict[str, Any]:
+    """供 Inference ModelRouter 分桶/管理员判断等使用的元数据（与 LLM messages 无关）。"""
+    out: dict[str, Any] = {"user_id": user_id, "x_user_id": user_id}
+    rid = (request.headers.get("x-request-id") or request.headers.get("X-Request-Id") or "").strip()
+    if rid:
+        out["request_id"] = rid
+    sid = (request.headers.get("X-Session-Id") or "").strip()
+    if sid:
+        out["session_id"] = sid
+    meta = req.metadata
+    if isinstance(meta, dict):
+        for k in ("routing_key", "request_id", "trace_id", "session_id", "role", "is_admin"):
+            if k in meta and meta[k] is not None:
+                out[k] = meta[k]
+    return out
+
+
+def _resolve_model_for_request(req: ChatCompletionRequest, request: Request, user_id: str) -> str:
     selector = get_model_selector()
     messages_dict = _collect_messages_for_model_selection(req, request, user_id)
     _debug_log_message_shapes(messages_dict)
-    descriptor = selector.resolve(model_id=req.model, model_require=req.model_require, messages=messages_dict)
+
+    raw = (req.model or "").strip() or None
+    routing_meta = _chat_routing_request_metadata(req, request, user_id)
+
+    model_for_selector: Optional[str] = raw
+    inference_via: Optional[str] = None
+    if raw and raw != "auto":
+        rr = ModelRouter().resolve(raw, request_metadata=routing_meta, max_depth=10)
+        model_for_selector = rr.model_id
+        inference_via = rr.resolved_via
+
+    descriptor = selector.resolve(
+        model_id=model_for_selector, model_require=req.model_require, messages=messages_dict
+    )
     actual_model_id = descriptor.id
     req.model = actual_model_id
+
+    resolved_via = "selector"
+    if inference_via is not None:
+        resolved_via = inference_via
+        if model_for_selector and actual_model_id != model_for_selector:
+            resolved_via = f"{inference_via}+registry"
+
+    request.state.chat_routing_metadata = {
+        "resolved_model": actual_model_id,
+        "resolved_via": resolved_via,
+    }
     return actual_model_id
 
 
@@ -670,6 +723,7 @@ async def _stream_on_success(
 def _stream_handle_client_disconnect(
     *,
     req: ChatCompletionRequest,
+    request: Request,
     session_id: Optional[str],
     completion_id: str,
     user_text: str,
@@ -699,17 +753,21 @@ def _stream_handle_client_disconnect(
     try:
         partial_text = _sanitize_assistant_output(full_text)
         if partial_text:
+            rmeta: dict[str, Any] = {
+                "completion_id": completion_id,
+                "stream": True,
+                "incomplete": True,
+                "error": "client_disconnected",
+            }
+            rout = _routing_submeta_for_persist(request)
+            if rout:
+                rmeta["routing"] = rout
             conv_manager.append_assistant_message(
                 user_id=user_id,
                 session_id=session_id,
                 content=partial_text,
                 model_id=model_id,
-                meta={
-                    "completion_id": completion_id,
-                    "stream": True,
-                    "incomplete": True,
-                    "error": "client_disconnected",
-                },
+                meta=rmeta,
                 request_id=f"{request_id}:assistant:incomplete" if request_id else None,
             )
     except Exception as save_error:
@@ -719,6 +777,7 @@ def _stream_handle_client_disconnect(
 def _stream_on_exception(
     *,
     req: ChatCompletionRequest,
+    request: Request,
     session_id: Optional[str],
     completion_id: str,
     created_time: int,
@@ -740,6 +799,7 @@ def _stream_on_exception(
     if is_client_disconnect:
         _stream_handle_client_disconnect(
             req=req,
+            request=request,
             session_id=session_id,
             completion_id=completion_id,
             user_text=user_text,
@@ -848,6 +908,20 @@ async def _stream_event_generator(
             stream_start=stream_start,
             persist_success_turn=persist_success_turn,
         )
+        routing_meta = getattr(request.state, "chat_routing_metadata", None)
+        if routing_meta and not disconnected:
+            final_chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created_time,
+                "model": model_id,
+                "metadata": routing_meta,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            final_sse = f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+            if resume_enabled and stream_id and resume_store:
+                await resume_store.append_chunk(stream_id, final_sse)
+            yield final_sse
         done_sse = "data: [DONE]\n\n"
         if resume_enabled and stream_id and resume_store:
             await resume_store.append_chunk(stream_id, done_sse)
@@ -857,6 +931,7 @@ async def _stream_event_generator(
     except Exception as e:
         for chunk in _stream_on_exception(
             req=req,
+            request=request,
             session_id=session_id,
             completion_id=completion_id,
             created_time=created_time,
@@ -880,6 +955,7 @@ async def _stream_event_generator(
 async def _handle_nonstream_chat(
     *,
     req: ChatCompletionRequest,
+    request: Request,
     response: Response,
     agent: Any,
     session_id: Optional[str],
@@ -938,6 +1014,12 @@ async def _handle_nonstream_chat(
     if session_id:
         response.headers["X-Session-Id"] = session_id
 
+    routing_meta = cast(
+        dict[str, Any],
+        getattr(request.state, "chat_routing_metadata", None)
+        or {"resolved_model": model_id, "resolved_via": "unknown"},
+    )
+
     return ChatCompletionResponse(
         id=completion_id,
         created=created_time,
@@ -950,6 +1032,7 @@ async def _handle_nonstream_chat(
             }
         ],
         usage=None,
+        metadata=routing_meta,
     )
 
 
@@ -1078,6 +1161,7 @@ def _maybe_append_minimal_user_turn(
 def _build_persist_success_turn(
     *,
     req: ChatCompletionRequest,
+    request: Request,
     session_id: Optional[str],
     user_text: str,
     persistence_mode: str,
@@ -1101,22 +1185,26 @@ def _build_persist_success_turn(
             user_text=user_text,
             last_user_msg=last_user_msg,
         )
+        msg_meta: dict[str, Any] = {
+            "completion_id": completion_id,
+            "stream": is_stream,
+            "rag": {"used": bool(trace_id), "trace_id": trace_id, "retrieved_count": retrieved_count if trace_id else 0},
+            "params": {
+                "temperature": req.temperature,
+                "top_p": req.top_p,
+                "max_tokens": req.max_tokens,
+                "system_prompt": req.system_prompt,
+            },
+        }
+        rout = _routing_submeta_for_persist(request)
+        if rout:
+            msg_meta["routing"] = rout
         return conv_manager.append_assistant_message(
             user_id=user_id,
             session_id=session_id,
             content=assistant_text,
             model_id=model_id,
-            meta={
-                "completion_id": completion_id,
-                "stream": is_stream,
-                "rag": {"used": bool(trace_id), "trace_id": trace_id, "retrieved_count": retrieved_count if trace_id else 0},
-                "params": {
-                    "temperature": req.temperature,
-                    "top_p": req.top_p,
-                    "max_tokens": req.max_tokens,
-                    "system_prompt": req.system_prompt,
-                },
-            },
+            meta=msg_meta,
             request_id=f"{request_id}:assistant" if request_id else None,
         )
 
@@ -1186,6 +1274,7 @@ async def chat_completions(
     
     _persist_success_turn = _build_persist_success_turn(
         req=req,
+        request=request,
         session_id=session_id,
         user_text=user_text,
         persistence_mode=persistence_mode,
@@ -1215,6 +1304,7 @@ async def chat_completions(
         )
     return await _handle_nonstream_chat(
         req=req,
+        request=request,
         response=response,
         agent=agent,
         session_id=session_id,

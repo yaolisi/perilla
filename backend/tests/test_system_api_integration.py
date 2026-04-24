@@ -212,6 +212,44 @@ def test_inference_cache_clear_challenge_rate_limited(monkeypatch):
     assert body.get("error", {}).get("code") == "inference_cache_clear_challenge_rate_limited"
 
 
+def test_update_config_accepts_valid_smart_routing_policy(monkeypatch):
+    client = _build_client()
+    captured: dict[str, object] = {}
+
+    class _FakeStore:
+        def set_setting(self, key, value):
+            captured[key] = value
+
+    monkeypatch.setattr(system_api, "get_system_settings_store", lambda: _FakeStore())
+    payload = {
+        "inferenceSmartRoutingEnabled": True,
+        "inferenceSmartRoutingPoliciesJson": '{"reasoning-model":{"strategy":"canary","stable":"stable-v1","canary":"canary-v2","canary_percent":10}}',
+    }
+    resp = client.post("/api/system/config", json=payload)
+    assert resp.status_code == 200
+    assert resp.json().get("success") is True
+    assert captured.get("inferenceSmartRoutingEnabled") is True
+    assert isinstance(captured.get("inferenceSmartRoutingPoliciesJson"), str)
+
+
+def test_update_config_rejects_invalid_smart_routing_policy(monkeypatch):
+    client = _build_client()
+
+    class _FakeStore:
+        def set_setting(self, key, value):
+            raise AssertionError("set_setting should not be called for invalid payload")
+
+    monkeypatch.setattr(system_api, "get_system_settings_store", lambda: _FakeStore())
+    resp = client.post(
+        "/api/system/config",
+        json={
+            "inferenceSmartRoutingPoliciesJson": '{"reasoning-model":{"strategy":"canary","stable":"stable-v1"}}'
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json().get("error", {}).get("code") == "system_config_invalid_smart_routing_policies_json"
+
+
 def test_consume_cache_clear_challenge_rate_uses_redis(monkeypatch):
     class _FakeRedisCache:
         def __init__(self):

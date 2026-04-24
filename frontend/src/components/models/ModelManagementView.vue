@@ -6,7 +6,6 @@ import {
   Search, 
   RotateCw, 
   Plus, 
-  Settings, 
   Cpu, 
   Bot, 
   Zap, 

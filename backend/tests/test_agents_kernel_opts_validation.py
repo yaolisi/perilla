@@ -4,9 +4,9 @@ API 层对 execution_strategy / max_parallel_nodes 与 model_params 一致性的
 """
 
 import pytest
-from fastapi import HTTPException
 
 from api.agents import _validate_kernel_opts_consistency
+from api.errors import APIException
 
 
 def test_no_raise_when_only_model_params_or_only_top():
@@ -29,34 +29,34 @@ def test_no_raise_when_both_match():
 
 
 def test_raises_on_execution_strategy_mismatch():
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(APIException) as exc:
         _validate_kernel_opts_consistency(
             "serial",
             None,
             {"execution_strategy": "parallel_kernel"},
         )
     assert exc.value.status_code == 400
-    assert "execution_strategy conflicts" in exc.value.detail
+    assert "execution_strategy conflicts" in exc.value.message
 
 
 def test_raises_on_max_parallel_mismatch():
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(APIException) as exc:
         _validate_kernel_opts_consistency(
             None,
             2,
             {"max_parallel_nodes": 4},
         )
     assert exc.value.status_code == 400
-    assert "max_parallel_nodes conflicts" in exc.value.detail
+    assert "max_parallel_nodes conflicts" in exc.value.message
 
 
 def test_raises_on_invalid_execution_strategy_in_model_params():
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(APIException) as exc:
         _validate_kernel_opts_consistency(None, None, {"execution_strategy": "invalid"})
     assert exc.value.status_code == 400
 
 
 def test_raises_on_max_parallel_out_of_range_in_model_params():
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(APIException) as exc:
         _validate_kernel_opts_consistency(None, None, {"max_parallel_nodes": 99})
     assert exc.value.status_code == 400

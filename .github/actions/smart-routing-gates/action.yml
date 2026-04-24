@@ -1,0 +1,94 @@
+name: Smart routing gates
+description: >-
+  Smoke tests for inference smart routing (canary + admin stable bias, then least_loaded).
+  Expects a reachable API; use GitHub Environments so matrix jobs get per-env URL and keys.
+
+inputs:
+  base_url:
+    description: API root URL (no trailing slash), e.g. https://api.example.com
+    required: true
+
+  model_alias:
+    description: Logical model alias configured for canary policy
+    required: true
+  stable_model:
+    required: true
+  canary_model:
+    required: true
+  canary_percent:
+    required: false
+    default: "10"
+  canary_tolerance_pct:
+    required: false
+    default: "5"
+  admin_stable_min_pct:
+    required: false
+    default: "95"
+  max_fail_rate_pct:
+    required: false
+    default: "3"
+  max_p95_ms:
+    required: false
+    default: "5000"
+
+  least_alias:
+    description: Logical model alias for least_loaded policy
+    required: true
+  least_worker_a:
+    required: true
+  least_worker_b:
+    required: true
+  least_total:
+    description: Number of chat requests for least_loaded gate
+    required: false
+    default: "120"
+  least_min_via_pct:
+    description: Minimum share of successful responses whose metadata mentions least_loaded
+    required: false
+    default: "80"
+
+  admin_key:
+    description: Platform admin API key (must be allowed to PATCH system config)
+    required: true
+  user_key:
+    description: Normal user API key for chat/completions
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Canary + admin gate
+      shell: bash
+      env:
+        BASE_URL: ${{ inputs.base_url }}
+        ADMIN_KEY: ${{ inputs.admin_key }}
+        USER_KEY: ${{ inputs.user_key }}
+        MODEL_ALIAS: ${{ inputs.model_alias }}
+        STABLE_MODEL: ${{ inputs.stable_model }}
+        CANARY_MODEL: ${{ inputs.canary_model }}
+        CANARY_PERCENT: ${{ inputs.canary_percent }}
+        CANARY_TOLERANCE_PCT: ${{ inputs.canary_tolerance_pct }}
+        ADMIN_STABLE_MIN_PCT: ${{ inputs.admin_stable_min_pct }}
+        MAX_FAIL_RATE_PCT: ${{ inputs.max_fail_rate_pct }}
+        MAX_P95_MS: ${{ inputs.max_p95_ms }}
+      run: bash "${GITHUB_ACTION_PATH}/canary_admin_gate.sh"
+
+    - name: Least-loaded gate
+      shell: bash
+      env:
+        BASE_URL: ${{ inputs.base_url }}
+        ADMIN_KEY: ${{ inputs.admin_key }}
+        USER_KEY: ${{ inputs.user_key }}
+        LEAST_ALIAS: ${{ inputs.least_alias }}
+        WORKER_A: ${{ inputs.least_worker_a }}
+        WORKER_B: ${{ inputs.least_worker_b }}
+        TOTAL: ${{ inputs.least_total }}
+        MIN_LEAST_LOADED_VIA_PCT: ${{ inputs.least_min_via_pct }}
+        MAX_FAIL_RATE_PCT: ${{ inputs.max_fail_rate_pct }}
+        MAX_P95_MS: ${{ inputs.max_p95_ms }}
+      run: bash "${GITHUB_ACTION_PATH}/least_loaded_gate.sh"

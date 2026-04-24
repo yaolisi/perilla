@@ -9,7 +9,6 @@ import {
   ListOrdered,
   Wrench,
   Settings2,
-  Play,
   Plus,
   Trash2,
   Save,
@@ -631,7 +630,7 @@ onMounted(async () => {
                 <div class="space-y-4">
                   <div class="flex justify-between items-center">
                     <label class="text-sm font-semibold text-foreground">{{ t('skills.create.temperature') }}</label>
-                    <span class="text-xs font-mono text-primary bg-primary/10 px-2 py-0.5 rounded">{{ temperature[0].toFixed(1) }}</span>
+                    <span class="text-xs font-mono text-primary bg-primary/10 px-2 py-0.5 rounded">{{ (temperature[0] ?? 0).toFixed(1) }}</span>
                   </div>
                   <Slider v-model="temperature" :min="0" :max="1" :step="0.1" class="w-full" />
                   <p class="text-[10px] text-muted-foreground">{{ t('skills.create.temperature_hint') }}</p>

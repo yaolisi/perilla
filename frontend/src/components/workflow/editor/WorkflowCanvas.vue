@@ -72,17 +72,6 @@ watch(
 
 const nodeTypes = { workflow: markRaw(WorkflowNode) }
 
-function inferEditorTypeFromNodeId(nodeId: string): WorkflowNodeData['type'] {
-  const m = /^node_([a-z_]+)_\d+$/i.exec(nodeId || '')
-  const t = (m?.[1] || '').toLowerCase()
-  const allow: WorkflowNodeData['type'][] = [
-    'start', 'llm', 'agent', 'embedding', 'prompt_template', 'system_prompt',
-    'input', 'output', 'variable', 'condition', 'loop', 'parallel', 'skill',
-    'http_request', 'python', 'shell',
-  ]
-  return (allow.includes(t as WorkflowNodeData['type']) ? (t as WorkflowNodeData['type']) : 'skill')
-}
-
 function defaultDataForType(type: WorkflowNodeData['type']): WorkflowNodeData {
   return {
     type,

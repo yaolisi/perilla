@@ -6,9 +6,8 @@ VLM API 端点
 import json
 import base64
 import time
-from typing import cast
+from typing import cast, Optional, Any
 from pathlib import Path
-from typing import Optional, Any
 from fastapi import APIRouter, UploadFile, Form, File, Request, Response
 from pydantic import BaseModel, Field
 from log import logger
@@ -17,8 +16,9 @@ from config.settings import settings
 
 from core.models.descriptor import ModelDescriptor
 from core.runtimes.vlm_runtime import VLMRuntime
-from core.models.registry import get_model_registry
 from core.runtimes.factory import get_runtime_factory
+from core.inference.router.model_router import ModelRouter
+from core.models.selector import get_model_selector
 from core.conversation.history_store import HistoryStore, HistoryStoreConfig
 from core.runtime.queue.inference_queue import get_inference_queue_manager
 from core.runtime.manager.runtime_metrics import get_runtime_metrics
@@ -91,6 +91,90 @@ def _sniff_mime(b: bytes, fallback: str = "image/jpeg") -> str:
     return fallback
 
 
+def _vlm_routing_request_metadata(request: Request, user_id: str) -> dict[str, Any]:
+    """与 chat 的 _chat_routing_request_metadata 对齐：供 ModelRouter 分桶 / 策略使用。"""
+    out: dict[str, Any] = {"user_id": user_id, "x_user_id": user_id}
+    rid = (request.headers.get("x-request-id") or request.headers.get("X-Request-Id") or "").strip()
+    if rid:
+        out["request_id"] = rid
+    sid = (request.headers.get("X-Session-Id") or "").strip()
+    if sid:
+        out["session_id"] = sid
+    return out
+
+
+def _routing_submeta_for_persist_vlm(request: Request) -> Optional[dict[str, str]]:
+    """从 request.state 取可落库到 message.meta['routing'] 的字段（与 chat 一致）。"""
+    raw = getattr(request.state, "chat_routing_metadata", None)
+    if not isinstance(raw, dict):
+        return None
+    rm = raw.get("resolved_model")
+    rv = raw.get("resolved_via")
+    if rm is None or rv is None or str(rm).strip() == "" or str(rv).strip() == "":
+        return None
+    return {"resolved_model": str(rm), "resolved_via": str(rv)}
+
+
+def _vlm_messages_for_model_selection(*, user_prompt: str) -> list[dict[str, Any]]:
+    """
+    供 ModelSelector 在 auto/模糊路径下使用：带「显式含图」的 OpenAI 多模态结构，
+    使 _has_image_content 为 True，从而在 model=auto 时优先 VLM（与真实本接口始终带图一致）。
+
+    仅占位，不参与真实 ChatCompletion；无额外 IO。
+    """
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt or ""},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                    },
+                },
+            ],
+        }
+    ]
+
+
+def _resolve_vlm_model_descriptor(
+    request: Request,
+    user_id: str,
+    raw_model: str,
+    user_prompt: str,
+) -> ModelDescriptor:
+    """
+    与 /v1/chat/completions 一致：Inference ModelRouter + ModelSelector，并写入 request.state.chat_routing_metadata。
+    """
+    selector = get_model_selector()
+    messages = _vlm_messages_for_model_selection(user_prompt=user_prompt)
+    raw = (raw_model or "").strip() or None
+    routing_meta = _vlm_routing_request_metadata(request, user_id)
+    model_for_selector: Optional[str] = raw
+    inference_via: Optional[str] = None
+    if raw and raw != "auto":
+        rr = ModelRouter().resolve(raw, request_metadata=routing_meta, max_depth=10)
+        model_for_selector = rr.model_id
+        inference_via = rr.resolved_via
+    descriptor = selector.resolve(
+        model_id=model_for_selector,
+        model_require=None,
+        messages=messages,
+    )
+    actual_model_id = descriptor.id
+    resolved_via = "selector"
+    if inference_via is not None:
+        resolved_via = inference_via
+        if model_for_selector and actual_model_id != model_for_selector:
+            resolved_via = f"{inference_via}+registry"
+    request.state.chat_routing_metadata = {
+        "resolved_model": actual_model_id,
+        "resolved_via": resolved_via,
+    }
+    return descriptor
+
+
 class VLMGenerateRequest(BaseModel):
     """
     VLM 生成请求模型
@@ -113,6 +197,10 @@ class VLMGenerateResponse(BaseModel):
     model: str = Field(..., description="使用的模型 ID")
     text: str = Field(..., description="生成的文本结果")
     usage: Optional[dict] = Field(default=None, description="使用统计信息")
+    metadata: Optional[dict[str, str]] = Field(
+        default=None,
+        description="与 /v1/chat/completions 对齐：智能路由结果 resolved_model / resolved_via",
+    )
 
 
 @router.post("/v1/vlm/generate", response_model=VLMGenerateResponse)
@@ -163,49 +251,42 @@ async def vlm_generate(
         req_obj.model, len(req_obj.prompt or ""), req_obj.temperature, req_obj.max_tokens,
     )
 
-    # 1. 验证模型是否存在且为 VLM 类型
-    model_registry = get_model_registry()
-    # Some registries expose get_model(); keep a small compatibility shim here.
-    model_descriptor = None
-    if hasattr(model_registry, "get_model"):
-        model_descriptor = model_registry.get_model(req_obj.model)
-    elif hasattr(model_registry, "get"):
-        model_descriptor = model_registry.get(req_obj.model)
-    
-    if not model_descriptor:
+    user_id = _get_user_id(request)
+    try:
+        model_descriptor = _resolve_vlm_model_descriptor(
+            request, user_id, req_obj.model, req_obj.prompt
+        )
+    except ValueError as e:
         raise_api_error(
-            status_code=404,
-            code="vlm_model_not_found",
-            message=f"Model '{req_obj.model}' not found",
+            status_code=400,
+            code="vlm_model_resolve_failed",
+            message=str(e),
             details={"model_id": req_obj.model},
         )
-    assert model_descriptor is not None
-    
-    # 2. 验证模型类型（应为 VLM 或包含 vision 能力）
-    # 这里可以根据你的模型描述符结构调整验证逻辑
     if not _is_vlm_model(model_descriptor):
         raise_api_error(
             status_code=400,
             code="vlm_model_not_vlm",
-            message=f"Model '{req_obj.model}' is not a VLM model",
-            details={"model_id": req_obj.model},
+            message=f"Model '{model_descriptor.id}' is not a VLM model",
+            details={"model_id": model_descriptor.id},
         )
-    
+    model_id = model_descriptor.id
+
     # 3. 获取对应的 VLM Runtime（使用单例工厂以复用 VLM runtime 缓存）
     runtime_factory = get_runtime_factory()
     await runtime_factory.auto_release_unused_local_runtimes(
-        keep_model_ids={req_obj.model},
+        keep_model_ids={model_id},
         reason="vlm_api",
     )
     try:
         vlm_runtime = await _get_vlm_runtime(model_descriptor, runtime_factory)
     except Exception as e:
-        logger.error(f"[VLM API] Failed to get VLM runtime for model {req_obj.model}: {e}")
+        logger.error(f"[VLM API] Failed to get VLM runtime for model {model_id}: {e}")
         raise_api_error(
             status_code=500,
             code="vlm_runtime_init_failed",
             message=f"Failed to initialize VLM runtime: {str(e)}",
-            details={"model_id": req_obj.model},
+            details={"model_id": model_id},
         )
     
     # 4. 读取并验证图像数据（结构化错误需在 ``except Exception`` 之外抛出，避免被误判为读取失败）
@@ -227,28 +308,24 @@ async def vlm_generate(
     logger.info("[VLM API] image bytes read size=%s", len(image_content))
     
     # Session persistence (so /chat sessions won't lose VLM turns)
-    # Session persistence (so /chat sessions won't lose VLM turns)
-    user_id = "default"
-    session_id = None
+    session_id: Optional[str] = None
     try:
-        if isinstance(request, Request):
-            user_id = _get_user_id(request)
-            session_id = _get_or_create_session_id(
+        session_id = _get_or_create_session_id(
+            store=store,
+            req=request,
+            user_id=user_id,
+            title_hint=req_obj.prompt,
+            model_id=model_id,
+        )
+        if isinstance(response, Response):
+            response.headers["X-Session-Id"] = session_id
+        if session_id and get_auto_unload_local_model_on_switch():
+            await _maybe_unload_previous_model(
                 store=store,
-                req=request,
                 user_id=user_id,
-                title_hint=req_obj.prompt,
-                model_id=req_obj.model,
+                session_id=session_id,
+                current_model_id=model_id,
             )
-            if isinstance(response, Response):
-                response.headers["X-Session-Id"] = session_id
-            if session_id and get_auto_unload_local_model_on_switch():
-                await _maybe_unload_previous_model(
-                    store=store,
-                    user_id=user_id,
-                    session_id=session_id,
-                    current_model_id=req_obj.model,
-                )
     except Exception as e:
         logger.warning(f"[VLM API] Failed to get/create session: {e}")
     logger.info("[VLM API] session resolved user_id=%s session_id=%s", user_id, session_id)
@@ -261,22 +338,26 @@ async def vlm_generate(
     # Persist user message
     if session_id:
         try:
+            rout = _routing_submeta_for_persist_vlm(request)
+            umeta: dict[str, Any] = {"attachments": attachments_meta, "vlm": True}
+            if rout:
+                umeta["routing"] = rout
             store.append_message(
                 session_id=session_id,
                 role="user",
                 content=req_obj.prompt,
-                meta={"attachments": attachments_meta, "vlm": True},
+                meta=umeta,
             )
-            store.touch_session(user_id=user_id, session_id=session_id, last_model=req_obj.model)
+            store.touch_session(user_id=user_id, session_id=session_id, last_model=model_id)
         except Exception as e:
             logger.warning(f"[VLM API] Failed to persist user message: {e}")
 
     # 5. 执行推理
     try:
-        async with runtime_factory.model_usage(req_obj.model):
+        async with runtime_factory.model_usage(model_id):
             # 确保运行时已初始化
             if not vlm_runtime.is_loaded:
-                logger.info("[VLM API] initializing VLM runtime model=%s runtime=%s", req_obj.model, getattr(model_descriptor, "runtime", None))
+                logger.info("[VLM API] initializing VLM runtime model=%s runtime=%s", model_id, getattr(model_descriptor, "runtime", None))
                 descriptor_meta = model_descriptor.metadata or {}
                 model_path = (
                     descriptor_meta.get("model_path")
@@ -286,10 +367,10 @@ async def vlm_generate(
                 )
                 await vlm_runtime.initialize(model_path=model_path)
             else:
-                logger.info("[VLM API] runtime cache hit model=%s", req_obj.model)
+                logger.info("[VLM API] runtime cache hit model=%s", model_id)
             
             # 执行多模态推理
-            logger.info("[VLM API] infer start model=%s", req_obj.model)
+            logger.info("[VLM API] infer start model=%s", model_id)
             default_system_prompt = (
             "你是一个视觉语言助手。图像已经直接输入到你的视觉编码器中，你可以完全看到图像内容。\n"
             "用户消息中的图像是你当前可以直接观察和理解的视觉输入，不是外部附件或链接。\n"
@@ -301,11 +382,11 @@ async def vlm_generate(
             queue_manager = get_inference_queue_manager()
             metrics = get_runtime_metrics()
             runtime_type = str(getattr(model_descriptor, "runtime", "") or "default")
-            queue = queue_manager.get_queue(req_obj.model, runtime_type)
+            queue = queue_manager.get_queue(model_id, runtime_type)
 
             start_infer = time.time()
-            metrics.record_request(req_obj.model)
-            log_structured("RuntimeStabilization", "inference_started", model_id=req_obj.model, runtime=runtime_type)
+            metrics.record_request(model_id)
+            log_structured("RuntimeStabilization", "inference_started", model_id=model_id, runtime=runtime_type)
 
             result_text = await queue.run(vlm_runtime.infer(
                 image=image_content,  # 传递 bytes 数据
@@ -315,58 +396,64 @@ async def vlm_generate(
                 max_tokens=req_obj.max_tokens
             ))
             latency_ms = (time.time() - start_infer) * 1000
-            metrics.record_latency(req_obj.model, latency_ms)
+            metrics.record_latency(model_id, latency_ms)
             tokens_est = estimate_tokens(result_text or "")
-            metrics.record_tokens(req_obj.model, tokens_est)
-            record_inference(tokens=tokens_est, latency_ms=latency_ms, model=req_obj.model, provider=getattr(model_descriptor, "provider", ""))
+            metrics.record_tokens(model_id, tokens_est)
+            record_inference(tokens=tokens_est, latency_ms=latency_ms, model=model_id, provider=getattr(model_descriptor, "provider", ""))
             log_structured(
                 "RuntimeStabilization",
                 "inference_completed",
-                model_id=req_obj.model,
+                model_id=model_id,
                 runtime=runtime_type,
                 latency_ms=round(latency_ms, 2),
                 tokens=tokens_est,
             )
-        logger.info("[VLM API] infer done model=%s output_len=%s", req_obj.model, len(result_text or ""))
+        logger.info("[VLM API] infer done model=%s output_len=%s", model_id, len(result_text or ""))
         
-        logger.info(f"[VLM API] Generated text for model {req_obj.model}, prompt length: {len(req_obj.prompt)}")
+        logger.info(f"[VLM API] Generated text for model {model_id}, prompt length: {len(req_obj.prompt)}")
         
     except Exception as e:
         try:
-            get_runtime_metrics().record_request_failed(req_obj.model)
-            log_structured("RuntimeStabilization", "inference_error", level="error", model_id=req_obj.model, error=str(e)[:300])
+            get_runtime_metrics().record_request_failed(model_id)
+            log_structured("RuntimeStabilization", "inference_error", level="error", model_id=model_id, error=str(e)[:300])
         except Exception:
             pass
-        logger.error(f"[VLM API] Inference failed for model {req_obj.model}: {e}", exc_info=True)
+        logger.error(f"[VLM API] Inference failed for model {model_id}: {e}", exc_info=True)
         raise_api_error(
             status_code=500,
             code="vlm_inference_failed",
             message=f"Inference failed: {str(e)}",
-            details={"model_id": req_obj.model},
+            details={"model_id": model_id},
         )
 
     # Persist assistant message
     if session_id:
         try:
+            rout = _routing_submeta_for_persist_vlm(request)
+            ameta: dict[str, Any] = {"vlm": True}
+            if rout:
+                ameta["routing"] = rout
             store.append_message(
                 session_id=session_id,
                 role="assistant",
                 content=result_text,
-                model=req_obj.model,
-                meta={"vlm": True},
+                model=model_id,
+                meta=ameta,
             )
-            store.touch_session(user_id=user_id, session_id=session_id, last_model=req_obj.model)
+            store.touch_session(user_id=user_id, session_id=session_id, last_model=model_id)
         except Exception as e:
             logger.warning(f"[VLM API] Failed to persist assistant message: {e}")
     
-    # 6. 返回结果
+    # 6. 返回结果（metadata 与 chat 侧一致，便于前端展示智能路由说明）
+    _rout = _routing_submeta_for_persist_vlm(request)
     return VLMGenerateResponse(
-        model=req_obj.model,
+        model=model_id,
         text=result_text,
         usage={
             "prompt_tokens": len(req_obj.prompt.split()),  # 简单估算
             "completion_tokens": len(result_text.split()),
-        }
+        },
+        metadata=_rout,
     )
 
 

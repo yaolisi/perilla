@@ -1,0 +1,72 @@
+# Smart routing smoke gates against a live deployment.
+#
+# Setup (per GitHub Environment, e.g. staging / production):
+#   Variables: SMART_ROUTING_BASE_URL
+#   Secrets:   SMART_ROUTING_ADMIN_KEY, SMART_ROUTING_USER_KEY
+#
+# Model aliases / worker names below are placeholders — set matrix `include`
+# entries to match your deployment registry.
+
+name: smart-routing-gates-matrix
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - "backend/core/inference/**"
+      - "backend/core/system/runtime_settings.py"
+      - "backend/core/system/smart_routing_validation.py"
+      - "backend/api/system.py"
+      - "backend/config/settings.py"
+      - ".github/actions/smart-routing-gates/**"
+      - ".github/workflows/smart-routing-gates-matrix.yml"
+
+jobs:
+  gates:
+    name: ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: smart-routing-gates-${{ matrix.environment }}-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: staging
+            canary_tolerance_pct: "8"
+            admin_stable_min_pct: "90"
+          - environment: production
+            canary_tolerance_pct: "5"
+            admin_stable_min_pct: "95"
+
+    environment: ${{ matrix.environment }}
+
+    # Skip when this environment has no URL (fork PRs / repos not wired yet).
+    if: ${{ vars.SMART_ROUTING_BASE_URL != '' && secrets.SMART_ROUTING_ADMIN_KEY != '' && secrets.SMART_ROUTING_USER_KEY != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run smart routing gates
+        uses: ./.github/actions/smart-routing-gates
+        with:
+          base_url: ${{ vars.SMART_ROUTING_BASE_URL }}
+
+          model_alias: reasoning-model
+          stable_model: reasoning-v1
+          canary_model: reasoning-v2
+          canary_percent: "10"
+          canary_tolerance_pct: ${{ matrix.canary_tolerance_pct }}
+          admin_stable_min_pct: ${{ matrix.admin_stable_min_pct }}
+
+          least_alias: chat-fast
+          least_worker_a: chat-fast-a
+          least_worker_b: chat-fast-b
+
+          admin_key: ${{ secrets.SMART_ROUTING_ADMIN_KEY }}
+          user_key: ${{ secrets.SMART_ROUTING_USER_KEY }}

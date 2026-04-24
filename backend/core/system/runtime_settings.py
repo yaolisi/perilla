@@ -70,3 +70,14 @@ def get_runtime_release_idle_ttl_seconds() -> int:
 def get_runtime_release_min_interval_seconds() -> int:
     fallback = getattr(settings, "runtime_release_min_interval_seconds", 5)
     return _get_int("runtimeReleaseMinIntervalSeconds", fallback, 1, 3600)
+
+
+def get_inference_smart_routing_enabled() -> bool:
+    return _get_bool("inferenceSmartRoutingEnabled", getattr(settings, "inference_smart_routing_enabled", True))
+
+
+def get_inference_smart_routing_policies_json() -> str:
+    value = get_system_settings_store().get_setting("inferenceSmartRoutingPoliciesJson")
+    if value is None:
+        value = getattr(settings, "inference_smart_routing_policies_json", "")
+    return str(value or "")

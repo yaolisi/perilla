@@ -249,7 +249,7 @@ const handleSendMessageWithFiles = async (content: string, files: File[]) => {
     }))
 
     // 1) 先把用户消息写入 UI（带附件预览）
-    const userMsg = chat.addMessage('user', content, undefined, undefined, attachments)
+    chat.addMessage('user', content, undefined, undefined, attachments)
 
     // 2) 添加助手占位消息
     const assistantMsg = chat.addMessage('assistant', '', chat.model.value, {
@@ -275,6 +275,9 @@ const handleSendMessageWithFiles = async (content: string, files: File[]) => {
         { signal: abortController.value.signal }
       )
       assistantMsg.content = res.text || ''
+      if (res.metadata) {
+        assistantMsg.routing = res.metadata
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       assistantMsg.content = `Error: ${getFriendlyErrorMessage(msg)}`
@@ -341,6 +344,7 @@ async function loadMessagesForActiveSession() {
         loading: false,
         modelName: m.modelName,
         meta: m.meta,
+        routing: m.routing,
         params: m.params,
         attachments: m.attachments,
       }))
@@ -484,6 +488,7 @@ onUnmounted(() => {
                 :model-name="item.modelName"
                 :timestamp="item.timestamp"
                 :meta="item.meta"
+                :routing="item.routing"
                 :params="item.params"
                 :attachments="item.attachments"
                 :is-last="index === chat.messages.value.length - 1"

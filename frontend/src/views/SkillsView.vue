@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { defineOptions } from 'vue'
 import SkillsRegistryView from '@/components/skills/SkillsRegistryView.vue'
 
 defineOptions({ name: 'SkillsView' })

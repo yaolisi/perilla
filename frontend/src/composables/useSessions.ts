@@ -9,6 +9,7 @@ import {
   setSessionId,
   type Session,
   type SessionMessage,
+  type ChatRoutingMetadata,
 } from '@/services/api'
 
 export interface ChatMessageForUI {
@@ -19,6 +20,8 @@ export interface ChatMessageForUI {
   modelName?: string
   loading?: boolean
   meta?: Record<string, unknown> | null
+  /** 来自落库 meta.routing（智能路由） */
+  routing?: ChatRoutingMetadata | null
   params?: {
     temperature: number
     top_p: number
@@ -62,6 +65,17 @@ function extractAttachmentsFromContent(content: unknown): Array<{type: 'image', 
     }))
 }
 
+function routingFromMeta(meta: unknown): ChatRoutingMetadata | undefined {
+  if (!meta || typeof meta !== 'object') return undefined
+  const r = (meta as { routing?: unknown }).routing
+  if (!r || typeof r !== 'object') return undefined
+  const o = r as { resolved_model?: unknown; resolved_via?: unknown }
+  if (typeof o.resolved_model === 'string' && typeof o.resolved_via === 'string') {
+    return { resolved_model: o.resolved_model, resolved_via: o.resolved_via }
+  }
+  return undefined
+}
+
 function mapMessagesToUI(messages: SessionMessage[]): ChatMessageForUI[] {
   return messages
     .filter((m) => m.role === 'user' || m.role === 'assistant')
@@ -92,6 +106,7 @@ function mapMessagesToUI(messages: SessionMessage[]): ChatMessageForUI[] {
         modelName: m.model ?? undefined,
         loading: false,
         meta: (m.meta as any) ?? null,
+        routing: routingFromMeta(m.meta) ?? null,
         params: meta?.params,
         attachments
       };

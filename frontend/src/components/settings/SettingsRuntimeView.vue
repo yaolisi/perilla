@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onActivated, computed } from 'vue'
+import { ref, onMounted, onActivated, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -18,6 +18,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import {
   CacheMonitorToolbar,
   ChallengeSecurityMetrics,
@@ -33,6 +34,25 @@ const router = useRouter()
 const settingsSection = computed(() => route.name as string)
 const navCollapsed = ref(false)
 const advancedOpen = ref(false)
+const canaryAlias = ref('reasoning-model')
+const canaryStable = ref('reasoning-v1')
+const canaryCandidate = ref('reasoning-v2')
+const canaryPercent = ref(10)
+const leastLoadedAlias = ref('chat-fast')
+const leastLoadedCandidates = ref('chat-fast-a, chat-fast-b')
+const weightedAlias = ref('chat-balanced')
+const weightedPairs = ref('chat-a:70, chat-b:30')
+const removeAlias = ref('')
+const expandedDiffAliases = ref<string[]>([])
+const diffOnlyChangedLines = ref(false)
+const smartRoutingBuilderOpen = ref(true)
+const smartRoutingJsonOpen = ref(true)
+const smartRoutingPreviewOpen = ref(true)
+const smartRoutingSnapshotOpen = ref(false)
+const smartRoutingDiffOpen = ref(false)
+const SMART_ROUTING_GROUP_STATE_KEY = 'runtime.smartRouting.groupState.v1'
+const SMART_ROUTING_DIFF_VIEW_STATE_KEY = 'runtime.smartRouting.diffViewState.v1'
+const filteredSnapshotDiff = computed(() => getFilteredSnapshotDiff())
 
 const {
   autoUnloadLocalModelOnSwitch,
@@ -43,12 +63,38 @@ const {
   runtimeMaxCachedLocalImageGenerationRuntimes,
   runtimeReleaseIdleTtlSeconds,
   runtimeReleaseMinIntervalSeconds,
+  inferenceSmartRoutingEnabled,
+  inferenceSmartRoutingPoliciesJson,
+  fillSmartRoutingTemplate,
+  clearSmartRoutingPolicies,
+  upsertCanaryPolicy,
+  upsertLeastLoadedPolicy,
+  upsertWeightedPolicy,
+  formatSmartRoutingPoliciesJson,
+  removePolicyByAlias,
+  exportPoliciesToClipboard,
+  importPoliciesFromClipboard,
   isSaving,
   saveSuccess,
   saveError,
+  smartRoutingJsonError,
+  smartRoutingBuilderError,
+  smartRoutingBuilderInfo,
+  smartRoutingPreview,
+  smartRoutingPreviewError,
+  smartRoutingSnapshots,
+  smartRoutingSnapshotDiff,
+  smartRoutingSnapshotDiffError,
+  smartRoutingSnapshotDiffAliasFilter,
   isEditing,
   loadConfig,
   handleSave,
+  refreshSmartRoutingPreview,
+  restoreSnapshotById,
+  compareSnapshotById,
+  getFilteredSnapshotDiff,
+  copyFilteredSnapshotDiffReport,
+  exportFilteredSnapshotDiffAsMarkdown,
 } = useRuntimeSettings()
 const {
   cacheStats,
@@ -73,6 +119,8 @@ const {
 } = useCacheMonitor()
 
 onMounted(() => {
+  loadSmartRoutingGroupState()
+  loadSmartRoutingDiffViewState()
   void loadConfig()
 })
 
@@ -83,6 +131,124 @@ onActivated(() => {
 const handleSaveWithCacheRefresh = async () => {
   await handleSave(loadCacheStats)
 }
+
+const applyCanaryPreset = () => {
+  upsertCanaryPolicy({
+    alias: canaryAlias.value,
+    stable: canaryStable.value,
+    canary: canaryCandidate.value,
+    percent: canaryPercent.value,
+  })
+}
+
+const applyLeastLoadedPreset = () => {
+  upsertLeastLoadedPolicy({
+    alias: leastLoadedAlias.value,
+    candidatesText: leastLoadedCandidates.value,
+  })
+}
+
+const applyWeightedPreset = () => {
+  upsertWeightedPolicy({
+    alias: weightedAlias.value,
+    pairsText: weightedPairs.value,
+  })
+}
+
+const handleRemoveAliasPolicy = () => {
+  removePolicyByAlias(removeAlias.value)
+}
+
+const formatSnapshotTime = (ts: number) => {
+  const d = new Date(ts)
+  return d.toLocaleString()
+}
+
+const toggleDiffAlias = (alias: string) => {
+  if (expandedDiffAliases.value.includes(alias)) {
+    expandedDiffAliases.value = expandedDiffAliases.value.filter((x) => x !== alias)
+    return
+  }
+  expandedDiffAliases.value = [...expandedDiffAliases.value, alias]
+}
+
+const loadSmartRoutingGroupState = () => {
+  try {
+    const raw = localStorage.getItem(SMART_ROUTING_GROUP_STATE_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    smartRoutingBuilderOpen.value = typeof parsed.builder === 'boolean' ? parsed.builder : smartRoutingBuilderOpen.value
+    smartRoutingJsonOpen.value = typeof parsed.json === 'boolean' ? parsed.json : smartRoutingJsonOpen.value
+    smartRoutingPreviewOpen.value = typeof parsed.preview === 'boolean' ? parsed.preview : smartRoutingPreviewOpen.value
+    smartRoutingSnapshotOpen.value = typeof parsed.snapshot === 'boolean' ? parsed.snapshot : smartRoutingSnapshotOpen.value
+    smartRoutingDiffOpen.value = typeof parsed.diff === 'boolean' ? parsed.diff : smartRoutingDiffOpen.value
+  } catch {
+    // Ignore invalid stored state.
+  }
+}
+
+const loadSmartRoutingDiffViewState = () => {
+  try {
+    const raw = localStorage.getItem(SMART_ROUTING_DIFF_VIEW_STATE_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    diffOnlyChangedLines.value =
+      typeof parsed.onlyChanged === 'boolean' ? parsed.onlyChanged : diffOnlyChangedLines.value
+    smartRoutingSnapshotDiffAliasFilter.value =
+      typeof parsed.aliasFilter === 'string' ? parsed.aliasFilter : smartRoutingSnapshotDiffAliasFilter.value
+  } catch {
+    // Ignore invalid stored state.
+  }
+}
+
+const resetSmartRoutingPanelPreferences = () => {
+  localStorage.removeItem(SMART_ROUTING_GROUP_STATE_KEY)
+  localStorage.removeItem(SMART_ROUTING_DIFF_VIEW_STATE_KEY)
+
+  smartRoutingBuilderOpen.value = true
+  smartRoutingJsonOpen.value = true
+  smartRoutingPreviewOpen.value = true
+  smartRoutingSnapshotOpen.value = false
+  smartRoutingDiffOpen.value = false
+
+  diffOnlyChangedLines.value = false
+  smartRoutingSnapshotDiffAliasFilter.value = ''
+}
+
+watch(
+  [
+    smartRoutingBuilderOpen,
+    smartRoutingJsonOpen,
+    smartRoutingPreviewOpen,
+    smartRoutingSnapshotOpen,
+    smartRoutingDiffOpen,
+  ],
+  () => {
+    localStorage.setItem(
+      SMART_ROUTING_GROUP_STATE_KEY,
+      JSON.stringify({
+        builder: smartRoutingBuilderOpen.value,
+        json: smartRoutingJsonOpen.value,
+        preview: smartRoutingPreviewOpen.value,
+        snapshot: smartRoutingSnapshotOpen.value,
+        diff: smartRoutingDiffOpen.value,
+      }),
+    )
+  },
+)
+
+watch(
+  [diffOnlyChangedLines, smartRoutingSnapshotDiffAliasFilter],
+  () => {
+    localStorage.setItem(
+      SMART_ROUTING_DIFF_VIEW_STATE_KEY,
+      JSON.stringify({
+        onlyChanged: diffOnlyChangedLines.value,
+        aliasFilter: smartRoutingSnapshotDiffAliasFilter.value,
+      }),
+    )
+  },
+)
 
 </script>
 
@@ -293,6 +459,266 @@ const handleSaveWithCacheRefresh = async () => {
                   @update:modelValue="isEditing = true"
                 />
                 <p class="text-xs text-muted-foreground">{{ t('settings.runtime.min_interval_desc') }}</p>
+              </div>
+              <div class="rounded-2xl border border-border/60 bg-background/40 p-5 space-y-5">
+                <div class="flex items-center justify-between gap-4">
+                  <div class="space-y-1">
+                    <p class="text-sm font-medium text-foreground">{{ t('settings.runtime.smart_routing_enabled') }}</p>
+                    <p class="text-xs text-muted-foreground">{{ t('settings.runtime.smart_routing_enabled_desc') }}</p>
+                  </div>
+                  <Switch
+                    :checked="inferenceSmartRoutingEnabled"
+                    @update:checked="(v: boolean) => { inferenceSmartRoutingEnabled = v; isEditing = true }"
+                  />
+                </div>
+                <div class="space-y-2">
+                  <div class="flex items-center justify-end">
+                    <Button variant="outline" size="sm" class="h-8" @click="resetSmartRoutingPanelPreferences">
+                      {{ t('settings.runtime.smart_routing_reset_preferences') }}
+                    </Button>
+                  </div>
+                  <button class="w-full text-left text-xs font-semibold text-foreground" @click="smartRoutingBuilderOpen = !smartRoutingBuilderOpen">
+                    {{ t('settings.runtime.smart_routing_group_builder') }} · {{ smartRoutingBuilderOpen ? t('settings.runtime.smart_routing_group_hide') : t('settings.runtime.smart_routing_group_show') }}
+                  </button>
+                  <div v-if="smartRoutingBuilderOpen" class="rounded-xl border border-border/60 bg-background/60 p-4 space-y-3">
+                    <p class="text-xs font-semibold text-foreground">{{ t('settings.runtime.smart_routing_quick_builder') }}</p>
+                    <div class="grid gap-3 md:grid-cols-2">
+                      <Input v-model="canaryAlias" :placeholder="t('settings.runtime.smart_routing_alias_placeholder')" class="h-10" />
+                      <div class="grid grid-cols-3 gap-2">
+                        <Input v-model="canaryStable" :placeholder="t('settings.runtime.smart_routing_stable_placeholder')" class="h-10" />
+                        <Input v-model="canaryCandidate" :placeholder="t('settings.runtime.smart_routing_candidate_placeholder')" class="h-10" />
+                        <Input v-model.number="canaryPercent" type="number" min="0" max="100" class="h-10" />
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <Button variant="outline" size="sm" class="h-8" @click="applyCanaryPreset">
+                        {{ t('settings.runtime.smart_routing_apply_canary') }}
+                      </Button>
+                    </div>
+                    <div class="grid gap-3 md:grid-cols-2">
+                      <Input v-model="leastLoadedAlias" :placeholder="t('settings.runtime.smart_routing_alias_placeholder')" class="h-10" />
+                      <Input v-model="leastLoadedCandidates" :placeholder="t('settings.runtime.smart_routing_candidates_placeholder')" class="h-10" />
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <Button variant="outline" size="sm" class="h-8" @click="applyLeastLoadedPreset">
+                        {{ t('settings.runtime.smart_routing_apply_least_loaded') }}
+                      </Button>
+                    </div>
+                    <div class="grid gap-3 md:grid-cols-2">
+                      <Input v-model="weightedAlias" :placeholder="t('settings.runtime.smart_routing_alias_placeholder')" class="h-10" />
+                      <Input v-model="weightedPairs" :placeholder="t('settings.runtime.smart_routing_weighted_pairs_placeholder')" class="h-10" />
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <Button variant="outline" size="sm" class="h-8" @click="applyWeightedPreset">
+                        {{ t('settings.runtime.smart_routing_apply_weighted') }}
+                      </Button>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <Button variant="outline" size="sm" class="h-8" @click="formatSmartRoutingPoliciesJson">
+                        {{ t('settings.runtime.smart_routing_format_json') }}
+                      </Button>
+                      <Button variant="outline" size="sm" class="h-8" @click="exportPoliciesToClipboard">
+                        {{ t('settings.runtime.smart_routing_export_clipboard') }}
+                      </Button>
+                      <Button variant="outline" size="sm" class="h-8" @click="importPoliciesFromClipboard">
+                        {{ t('settings.runtime.smart_routing_import_clipboard') }}
+                      </Button>
+                    </div>
+                    <div class="grid gap-3 md:grid-cols-2">
+                      <Input v-model="removeAlias" :placeholder="t('settings.runtime.smart_routing_remove_alias_placeholder')" class="h-10" />
+                      <div class="flex items-center gap-2">
+                        <Button variant="outline" size="sm" class="h-8" @click="handleRemoveAliasPolicy">
+                          {{ t('settings.runtime.smart_routing_remove_alias') }}
+                        </Button>
+                      </div>
+                    </div>
+                    <p v-if="smartRoutingBuilderError" class="text-xs text-red-300">
+                      {{ smartRoutingBuilderError }}
+                    </p>
+                    <p v-if="smartRoutingBuilderInfo" class="text-xs text-emerald-300">
+                      {{ smartRoutingBuilderInfo }}
+                    </p>
+                  </div>
+                  <button class="w-full text-left text-xs font-semibold text-foreground" @click="smartRoutingJsonOpen = !smartRoutingJsonOpen">
+                    {{ t('settings.runtime.smart_routing_group_json') }} · {{ smartRoutingJsonOpen ? t('settings.runtime.smart_routing_group_hide') : t('settings.runtime.smart_routing_group_show') }}
+                  </button>
+                  <div v-if="smartRoutingJsonOpen" class="space-y-2">
+                  <div class="flex items-center justify-between gap-3">
+                    <label for="smart-routing-policies" class="text-sm font-medium text-foreground">{{ t('settings.runtime.smart_routing_policy_json') }}</label>
+                    <div class="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        class="h-8"
+                        @click="fillSmartRoutingTemplate"
+                      >
+                        {{ t('settings.runtime.smart_routing_fill_template') }}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        class="h-8"
+                        @click="clearSmartRoutingPolicies"
+                      >
+                        {{ t('settings.runtime.smart_routing_clear') }}
+                      </Button>
+                    </div>
+                  </div>
+                  <Textarea
+                    id="smart-routing-policies"
+                    v-model="inferenceSmartRoutingPoliciesJson"
+                    class="min-h-[180px] bg-background border-border text-foreground rounded-xl"
+                    placeholder='{"reasoning-model":{"strategy":"blue_green","stable":"reasoning-v1","candidate":"reasoning-v2","candidate_percent":10}}'
+                    @update:modelValue="() => { isEditing = true; refreshSmartRoutingPreview() }"
+                  />
+                  <p class="text-xs text-muted-foreground">
+                    {{ t('settings.runtime.smart_routing_supported_strategies') }}
+                  </p>
+                  <p v-if="smartRoutingJsonError" class="text-xs text-red-300">
+                    {{ smartRoutingJsonError }}
+                  </p>
+                  </div>
+                  <button class="w-full text-left text-xs font-semibold text-foreground" @click="smartRoutingPreviewOpen = !smartRoutingPreviewOpen">
+                    {{ t('settings.runtime.smart_routing_group_preview') }} · {{ smartRoutingPreviewOpen ? t('settings.runtime.smart_routing_group_hide') : t('settings.runtime.smart_routing_group_show') }}
+                  </button>
+                  <div v-if="smartRoutingPreviewOpen" class="rounded-xl border border-border/60 bg-background/60 p-3 space-y-2">
+                    <p class="text-xs font-semibold text-foreground">{{ t('settings.runtime.smart_routing_preview_title') }}</p>
+                    <p v-if="smartRoutingPreviewError" class="text-xs text-red-300">{{ smartRoutingPreviewError }}</p>
+                    <p v-else-if="smartRoutingPreview.length === 0" class="text-xs text-muted-foreground">
+                      {{ t('settings.runtime.smart_routing_preview_empty') }}
+                    </p>
+                    <div v-else class="space-y-2">
+                      <div
+                        v-for="item in smartRoutingPreview"
+                        :key="item.alias"
+                        class="rounded-lg border border-border/50 px-3 py-2 text-xs"
+                      >
+                        <div class="font-semibold text-foreground">{{ item.alias }} · {{ item.strategy }}</div>
+                        <div class="mt-1 text-muted-foreground break-words">{{ item.summary }}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <button class="w-full text-left text-xs font-semibold text-foreground" @click="smartRoutingSnapshotOpen = !smartRoutingSnapshotOpen">
+                    {{ t('settings.runtime.smart_routing_group_snapshot') }} · {{ smartRoutingSnapshotOpen ? t('settings.runtime.smart_routing_group_hide') : t('settings.runtime.smart_routing_group_show') }}
+                  </button>
+                  <div v-if="smartRoutingSnapshotOpen" class="rounded-xl border border-border/60 bg-background/60 p-3 space-y-2">
+                    <p class="text-xs font-semibold text-foreground">{{ t('settings.runtime.smart_routing_snapshot_title') }}</p>
+                    <p v-if="smartRoutingSnapshots.length === 0" class="text-xs text-muted-foreground">
+                      {{ t('settings.runtime.smart_routing_snapshot_empty') }}
+                    </p>
+                    <div v-else class="space-y-2">
+                      <div
+                        v-for="snapshot in smartRoutingSnapshots"
+                        :key="snapshot.id"
+                        class="rounded-lg border border-border/50 px-3 py-2 flex items-center justify-between gap-3"
+                      >
+                        <div class="min-w-0">
+                          <div class="text-xs font-medium text-foreground">{{ formatSnapshotTime(snapshot.createdAt) }}</div>
+                          <div class="text-[11px] text-muted-foreground truncate">{{ snapshot.text }}</div>
+                        </div>
+                        <Button variant="outline" size="sm" class="h-7 shrink-0" @click="restoreSnapshotById(snapshot.id)">
+                          {{ t('settings.runtime.smart_routing_snapshot_restore') }}
+                        </Button>
+                        <Button variant="outline" size="sm" class="h-7 shrink-0" @click="compareSnapshotById(snapshot.id)">
+                          {{ t('settings.runtime.smart_routing_snapshot_compare') }}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                  <button class="w-full text-left text-xs font-semibold text-foreground" @click="smartRoutingDiffOpen = !smartRoutingDiffOpen">
+                    {{ t('settings.runtime.smart_routing_group_diff') }} · {{ smartRoutingDiffOpen ? t('settings.runtime.smart_routing_group_hide') : t('settings.runtime.smart_routing_group_show') }}
+                  </button>
+                  <div v-if="smartRoutingDiffOpen && smartRoutingSnapshotDiffError" class="text-xs text-red-300">
+                      {{ smartRoutingSnapshotDiffError }}
+                    </div>
+                    <div v-else-if="smartRoutingDiffOpen && smartRoutingSnapshotDiff" class="rounded-lg border border-border/50 p-3 space-y-2">
+                      <p class="text-xs font-semibold text-foreground">{{ t('settings.runtime.smart_routing_snapshot_diff_title') }}</p>
+                      <div class="flex items-center justify-end">
+                        <Button variant="outline" size="sm" class="h-8" @click="copyFilteredSnapshotDiffReport">
+                          {{ t('settings.runtime.smart_routing_snapshot_copy_report') }}
+                        </Button>
+                        <Button variant="outline" size="sm" class="h-8 ml-2" @click="exportFilteredSnapshotDiffAsMarkdown">
+                          {{ t('settings.runtime.smart_routing_snapshot_export_md') }}
+                        </Button>
+                      </div>
+                      <div class="flex items-center justify-between gap-3">
+                        <p class="text-xs text-muted-foreground">{{ t('settings.runtime.smart_routing_snapshot_diff_only_changed') }}</p>
+                        <Switch :checked="diffOnlyChangedLines" @update:checked="(v: boolean) => { diffOnlyChangedLines = v }" />
+                      </div>
+                      <Input
+                        v-model="smartRoutingSnapshotDiffAliasFilter"
+                        :placeholder="t('settings.runtime.smart_routing_snapshot_diff_filter_placeholder')"
+                        class="h-9"
+                      />
+                      <p class="text-xs text-muted-foreground">
+                        {{ t('settings.runtime.smart_routing_snapshot_diff_added') }}:
+                        {{ filteredSnapshotDiff?.addedAliases.length ? filteredSnapshotDiff.addedAliases.join(', ') : '-' }}
+                      </p>
+                      <p class="text-xs text-muted-foreground">
+                        {{ t('settings.runtime.smart_routing_snapshot_diff_removed') }}:
+                        {{ filteredSnapshotDiff?.removedAliases.length ? filteredSnapshotDiff.removedAliases.join(', ') : '-' }}
+                      </p>
+                      <p class="text-xs text-muted-foreground">
+                        {{ t('settings.runtime.smart_routing_snapshot_diff_changed') }}:
+                        {{ filteredSnapshotDiff?.changedAliases.length ? filteredSnapshotDiff.changedAliases.join(', ') : '-' }}
+                      </p>
+                      <div v-if="filteredSnapshotDiff?.changedDetails.length" class="space-y-2 pt-1">
+                        <div
+                          v-for="detail in filteredSnapshotDiff.changedDetails"
+                          :key="detail.alias"
+                          class="rounded-lg border border-border/50 p-2"
+                        >
+                          <button
+                            class="w-full flex items-center justify-between text-left text-xs font-medium text-foreground"
+                            @click="toggleDiffAlias(detail.alias)"
+                          >
+                            <span>{{ detail.alias }}</span>
+                            <span class="text-muted-foreground">
+                              {{
+                                expandedDiffAliases.includes(detail.alias)
+                                  ? t('settings.runtime.smart_routing_snapshot_diff_hide_detail')
+                                  : t('settings.runtime.smart_routing_snapshot_diff_show_detail')
+                              }}
+                            </span>
+                          </button>
+                          <div v-if="expandedDiffAliases.includes(detail.alias)" class="grid gap-2 md:grid-cols-2 mt-2">
+                            <div>
+                              <p class="text-[11px] text-muted-foreground mb-1">
+                                {{ t('settings.runtime.smart_routing_snapshot_diff_current') }}
+                              </p>
+                              <div class="text-[11px] rounded border border-border/40 bg-background/70 p-2 space-y-1">
+                                <div
+                                  v-for="(row, idx) in detail.lines"
+                                  :key="`${detail.alias}-c-${idx}`"
+                                  v-show="!diffOnlyChangedLines || row.currentChanged"
+                                  class="whitespace-pre-wrap break-words px-1 rounded"
+                                  :class="row.currentChanged ? 'bg-amber-500/10 text-amber-100' : ''"
+                                >
+                                  {{ row.current || ' ' }}
+                                </div>
+                              </div>
+                            </div>
+                            <div>
+                              <p class="text-[11px] text-muted-foreground mb-1">
+                                {{ t('settings.runtime.smart_routing_snapshot_diff_snapshot') }}
+                              </p>
+                              <div class="text-[11px] rounded border border-border/40 bg-background/70 p-2 space-y-1">
+                                <div
+                                  v-for="(row, idx) in detail.lines"
+                                  :key="`${detail.alias}-s-${idx}`"
+                                  v-show="!diffOnlyChangedLines || row.snapshotChanged"
+                                  class="whitespace-pre-wrap break-words px-1 rounded"
+                                  :class="row.snapshotChanged ? 'bg-sky-500/10 text-sky-100' : ''"
+                                >
+                                  {{ row.snapshot || ' ' }}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                  </div>
+                </div>
               </div>
               <div class="rounded-2xl border border-border/60 bg-background/40 p-5">
                 <p class="text-xs leading-6 text-muted-foreground">

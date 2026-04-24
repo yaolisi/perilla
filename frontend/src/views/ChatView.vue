@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { defineOptions } from 'vue'
 import HistorySidebar from '@/components/layout/HistorySidebar.vue'
 import ChatWindow from '@/components/chat/ChatWindow.vue'
 import ParametersPanel from '@/components/parameters/ParametersPanel.vue'

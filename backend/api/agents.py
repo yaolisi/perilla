@@ -995,8 +995,8 @@ async def run_agent(agent_id: str, req: RunAgentRequest, request: Request) -> An
 async def run_agent_with_files(
     agent_id: str,
     messages: Annotated[str, Form(..., description="JSON array of Message objects")],
-    session_id: Annotated[Optional[str], Form(None)] = None,
-    files: Annotated[List[UploadFile], File(default=[])] = [],
+    session_id: Annotated[Optional[str], Form()] = None,
+    files: Annotated[List[UploadFile], File()] = [],
 ) -> Any:
     """Run agent with uploaded files. Files are saved to session workspace so file.read can access them."""
     registry = get_agent_registry()

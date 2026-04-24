@@ -20,4 +20,5 @@ def test_agent_trace_mermaid_svg_is_sanitized():
         _repo_root() / "frontend" / "src" / "components" / "agents" / "AgentExecutionTraceView.vue"
     ).read_text(encoding="utf-8")
     assert "securityLevel: 'strict'" in content
-    assert "dagMermaidSvg.value = sanitizeHtml(svg)" in content
+    # Mermaid SVG 经专门收敛后再通用 HTML 消毒（与 utils/security 中实现一致）
+    assert "dagMermaidSvg.value = sanitizeMermaidSvg(svg)" in content

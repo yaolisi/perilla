@@ -223,6 +223,11 @@ class Settings(BaseSettings):
     inference_cache_memory_max_entries: int = 2048
     # 相同模型+相同请求缓存 5 分钟
     inference_cache_ttl_seconds: int = 300
+    # 智能路由（负载感知 + 灰度/蓝绿）
+    inference_smart_routing_enabled: bool = True
+    # 示例：
+    # {"reasoning-model":{"strategy":"blue_green","stable":"deepseek-r1","candidate":"deepseek-r1-v2","candidate_percent":10}}
+    inference_smart_routing_policies_json: str = ""
     # 按模型类型覆盖 TTL（JSON），例如 {"llm":900,"vlm":300}
     inference_cache_ttl_by_model_type_json: str = "{\"llm\":900,\"vlm\":300,\"embedding\":86400}"
     # 全量清理挑战码有效期（秒）

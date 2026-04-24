@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Save, Play, Rocket, Undo2, Redo2, Loader2, ChevronDown } from 'lucide-vue-next'
@@ -61,7 +61,6 @@ const lastSnapshotSignature = ref('')
 const lastSavedSignature = ref('')
 const lastBackendDraftSignature = ref('')
 let autosaveTimer: number | null = null
-const backendDraftSaving = ref(false)
 const saveInProgress = ref(false)
 const EDIT_DRAFT_KEY = `workflow:edit:${workflowId}:draft`
 const validationErrors = ref<Array<{ nodeId: string; nodeLabel?: string; message: string }>>([])
@@ -131,47 +130,6 @@ function saveDraftToLocal() {
     snapshot: captureSnapshot(),
   }
   localStorage.setItem(EDIT_DRAFT_KEY, JSON.stringify(payload))
-}
-
-/**
- * 已停用：autosave 仅写本地草稿，不创建 version，避免版本膨胀。
- * 保留本函数仅供将来若恢复「服务端草稿」时复用；当前流程不调用。
- */
-async function saveDraftToBackend() {
-  if (backendDraftSaving.value) return
-  const snapshot = captureSnapshot()
-  const sig = snapshotSignature(snapshot)
-  if (sig === lastBackendDraftSignature.value) return
-  backendDraftSaving.value = true
-  try {
-    await createWorkflowVersion(workflowId, {
-      description: `[auto-draft] ${new Date().toISOString()}`,
-      dag: {
-        nodes: snapshot.nodes.map((n) => ({
-          id: n.id,
-          type: n.data?.type === 'skill' ? 'tool' : (n.data?.type || 'input'),
-          name: n.data?.label || n.id,
-          config: (n.data?.config || {}) as Record<string, any>,
-          position: n.position,
-        })),
-        edges: snapshot.edges.map((e) => ({
-          from_node: e.source,
-          to_node: e.target,
-          condition: ((e.data as Record<string, unknown> | undefined)?.condition as string) || null,
-          label: typeof e.label === 'string' ? e.label : null,
-          source_handle: typeof e.sourceHandle === 'string' ? e.sourceHandle : null,
-          target_handle: typeof e.targetHandle === 'string' ? e.targetHandle : null,
-        })),
-        entry_node: snapshot.nodes[0]?.id || null,
-        global_config: {},
-      },
-    })
-    lastBackendDraftSignature.value = sig
-  } catch {
-    // best effort autosave
-  } finally {
-    backendDraftSaving.value = false
-  }
 }
 
 /** 仅本地草稿，不创建 version，避免版本膨胀；仅手动 Save/Publish 创建新 version */
@@ -305,10 +263,6 @@ function runWorkflowPublishedOnly() {
   router.push({ name: 'workflow-run', params: { id: workflowId } })
 }
 
-function deployWorkflow() {
-  // 能力未闭环，禁用并提示
-}
-
 function onUpdateConfig(nodeId: string, config: Record<string, unknown>) {
   const list = [...editorNodes.value]
   const idx = list.findIndex((n) => n.id === nodeId)
@@ -350,9 +304,11 @@ function onNodesUpdate(incoming: Node<WorkflowNodeData>[]) {
   if (added.length) {
     editorNodes.value = [...merged, ...added]
     selectedEdge.value = null
-    const addedId = added[added.length - 1].id
-    // 同步设选中，避免与画布 onNodesChange 竞争导致配置面板一闪而过
-    selectedNodeId.value = addedId
+    const lastAdded = added[added.length - 1]
+    if (lastAdded) {
+      // 同步设选中，避免与画布 onNodesChange 竞争导致配置面板一闪而过
+      selectedNodeId.value = lastAdded.id
+    }
   } else {
     editorNodes.value = merged
   }

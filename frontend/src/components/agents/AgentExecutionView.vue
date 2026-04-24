@@ -7,7 +7,6 @@ import {
   Bell, 
   Bot, 
   User, 
-  RefreshCw, 
   Terminal, 
   Globe, 
   Activity, 
@@ -43,8 +42,6 @@ import {
 } from '@/components/ui/select'
 import { renderMarkdown } from '@/utils/markdown'
 import EventStreamViewer from './EventStreamViewer.vue'
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 import { 
   getAgent, 
   runAgent, 
@@ -62,6 +59,20 @@ import {
   type Message,
   type ModelInfo
 } from '@/services/api'
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+function messageContentToString(content: Message['content'] | undefined | null): string {
+  if (content == null) return ''
+  if (typeof content === 'string') return content
+  return content
+    .map((part) => {
+      if (part.type === 'text' && part.text) return part.text
+      if (part.type === 'image_url' && part.image_url?.url) return part.image_url.url
+      return ''
+    })
+    .join('')
+}
 
 const i18n = useI18n()
 const { t } = i18n
@@ -86,7 +97,6 @@ const modelInfo = ref<ModelInfo | null>(null)
 // File upload state
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const uploadedFiles = ref<Array<{ file: File; preview?: string }>>([])
-const isUploading = ref(false)
 const messageAttachments = ref<Record<string, Array<{ name: string; url?: string; kind: 'image' | 'file' }>>>({})
 
 // Voice input (ASR)
@@ -162,8 +172,10 @@ const formatTime = (iso?: string) => {
 
 const getSessionPreview = (s: AgentSession) => {
   const last = [...(s.messages || [])].reverse().find(m => m.role !== 'system')
-  if (!last?.content) return ''
-  return last.content.replace(/\s+/g, ' ').slice(0, 48)
+  if (!last) return ''
+  const text = messageContentToString(last.content)
+  if (!text) return ''
+  return text.replace(/\s+/g, ' ').slice(0, 48)
 }
 
 const getRouteSessionId = (): string | null => {
@@ -682,32 +694,40 @@ const displayItems = computed(() => {
   const messages = session.value?.messages ?? []
   const items: DisplayItem[] = []
   const visionTraces = (traces.value || [])
-    .filter(t => (t.event_type === 'tool_call' || t.event_type === 'skill_call') && t.tool_id === 'builtin_vision.detect_objects')
-    .map(t => {
-      const data = t.output_data as any
+    .filter(
+      (ev) =>
+        (ev.event_type === 'tool_call' || ev.event_type === 'skill_call') &&
+        ev.tool_id === 'builtin_vision.detect_objects'
+    )
+    .map((ev) => {
+      const data = ev.output_data as any
       const url = data && typeof data === 'object' ? data.annotated_image : null
       const objects = data && typeof data === 'object' ? data.objects : null
       let summary = undefined as string | undefined
       if (Array.isArray(objects) && objects.length > 0) {
         const counts: Record<string, number> = {}
         for (const o of objects) {
-          const label = (o && o.label) ? String(o.label) : 'unknown'
+          const label = o && o.label ? String(o.label) : 'unknown'
           counts[label] = (counts[label] || 0) + 1
         }
         const parts = Object.entries(counts)
-          .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
           .map(([k, v]) => `${k}×${v}`)
         summary = `${t('agents.execution.detection_summary_prefix')}：${parts.join('，')}`
       } else if (Array.isArray(objects) && objects.length === 0) {
         summary = `${t('agents.execution.detection_summary_prefix')}：${t('agents.execution.detection_summary_none')}`
       }
-      return typeof url === 'string' && url.startsWith('data:image/') ? { url, step: t.step, summary } : null
+      return typeof url === 'string' && url.startsWith('data:image/') ? { url, step: ev.step, summary } : null
     })
-    .filter(Boolean) as Array<{ url: string; step?: number }>
+    .filter(Boolean) as Array<{ url: string; step?: number; summary?: string }>
   const vlmTexts = (traces.value || [])
-    .filter(t => (t.event_type === 'tool_call' || t.event_type === 'skill_call') && t.tool_id === 'builtin_vlm.generate')
-    .map(t => {
-      const data = t.output_data as any
+    .filter(
+      (ev) =>
+        (ev.event_type === 'tool_call' || ev.event_type === 'skill_call') &&
+        ev.tool_id === 'builtin_vlm.generate'
+    )
+    .map((ev) => {
+      const data = ev.output_data as any
       const text = data && typeof data === 'object' ? data.text : null
       return typeof text === 'string' && text.trim() ? text.trim() : null
     })
@@ -717,7 +737,8 @@ const displayItems = computed(() => {
   
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
-    const content = (msg.content ?? '').trim()
+    if (!msg) continue
+    const content = messageContentToString(msg.content).trim()
 
     // Intercept vision tool calls and insert annotated image into conversation
     const isVisionCallMessage =
@@ -949,8 +970,9 @@ const renderMessageContent = (content: string, role?: string) => {
 
 const parseAttachmentNames = (content: string) => {
   const m = content.match(/\[Attachments:\s*([^\]]+)\]/i)
-  if (!m) return []
-  return m[1]
+  const cap = m?.[1]
+  if (!cap) return []
+  return cap
     .split('|')
     .map((s) => s.trim())
     .filter(Boolean)
@@ -1144,7 +1166,7 @@ watch(() => {
                     >
                       <div class="absolute top-2 right-2 opacity-0 group-hover/msg:opacity-100 transition-opacity flex gap-1 z-10 bg-background/80 backdrop-blur-sm rounded-lg p-1">
                         <button
-                          @click="handleCopyMessage(item.message.content || '', item.messageIndex)"
+                          @click="handleCopyMessage(messageContentToString(item.message.content), item.messageIndex)"
                           class="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                           :title="copiedMessageIndex === item.messageIndex ? t('chat.message.copied') : t('chat.message.copy')"
                         >
@@ -1162,10 +1184,10 @@ watch(() => {
                       </div>
                       <div 
                         class="prose prose-sm dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:p-0 prose-pre:bg-transparent prose-code:text-blue-400 prose-code:bg-blue-500/10 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none pt-10"
-                        v-html="renderMessageContent(item.message.content, item.message.role)"
+                        v-html="renderMessageContent(messageContentToString(item.message.content), item.message.role)"
                       ></div>
-                      <div v-if="getMessageAttachments(item.message.content, item.message.role, item.messageIndex).length > 0" class="mt-3 flex flex-wrap gap-2">
-                        <template v-for="(att, aidx) in getMessageAttachments(item.message.content, item.message.role, item.messageIndex)" :key="`att-${idx}-${aidx}`">
+                      <div v-if="getMessageAttachments(messageContentToString(item.message.content), item.message.role, item.messageIndex).length > 0" class="mt-3 flex flex-wrap gap-2">
+                        <template v-for="(att, aidx) in getMessageAttachments(messageContentToString(item.message.content), item.message.role, item.messageIndex)" :key="`att-${idx}-${aidx}`">
                           <div v-if="att.kind === 'image' && att.url" class="rounded-lg border border-border/50 bg-muted/40 p-2">
                             <img :src="att.url" :alt="att.name" class="max-w-[240px] max-h-40 object-contain rounded-md" />
                             <div class="mt-1 text-[10px] text-muted-foreground truncate max-w-[240px]">{{ att.name }}</div>

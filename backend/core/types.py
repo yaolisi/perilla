@@ -1,4 +1,4 @@
-from typing import AsyncIterator, List, Literal, Optional, Self, Union
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Self, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -63,6 +63,12 @@ class ChatCompletionRequest(BaseModel):
     # RAG 配置（可选）
     rag: Optional[RAGConfig] = Field(default=None, description="RAG 知识库检索配置")
 
+    # 客户端可选透传（如 role / is_admin 供智能路由分桶；不参与 LLM 拼接）
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="请求侧元数据（路由分桶等），与 assistant 输出无关",
+    )
+
 
 class ChatCompletionResponse(BaseModel):
     """聊天完成响应"""
@@ -72,6 +78,10 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: List[dict]
     usage: Optional[dict] = None
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="解析元数据，如 resolved_model、resolved_via（智能路由/注册表）",
+    )
 
 
 # =========================

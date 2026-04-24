@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -100,8 +100,6 @@ const handleSave = async () => {
     saving.value = false
   }
 }
-
-const isLocalModel = computed(() => ['local', 'llama.cpp'].includes(props.model?.backend || ''))
 
 const handleBackupModelJson = async () => {
   if (!props.model?.id || backupLoading.value) return

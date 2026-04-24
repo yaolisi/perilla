@@ -32,7 +32,7 @@ import {
   SelectTrigger, 
   SelectValue 
 } from '@/components/ui/select'
-import { getSystemConfig, listAgents, listModels, getAgent, deleteAgent, type ModelInfo, type SystemConfig, type AgentDefinition } from '@/services/api'
+import { getSystemConfig, listAgents, listModels, deleteAgent, type ModelInfo, type SystemConfig } from '@/services/api'
 import { useSystemMetrics } from '@/composables/useSystemMetrics'
 
 // Loading State

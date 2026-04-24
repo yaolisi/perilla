@@ -55,6 +55,19 @@ class InferenceGateway:
         self.model_registry = get_model_registry()
 
     @staticmethod
+    def _is_admin_request(metadata: dict[str, Any]) -> bool:
+        role = str(metadata.get("role") or metadata.get("user_role") or "").strip().lower()
+        return bool(metadata.get("is_admin")) or role in {"admin", "platform_admin"}
+
+    @staticmethod
+    def _apply_request_priority(request: Any) -> None:
+        meta = getattr(request, "metadata", {}) or {}
+        if InferenceGateway._is_admin_request(meta):
+            request.priority = "high"
+            meta.setdefault("priority_source", "admin")
+            request.metadata = meta
+
+    @staticmethod
     def _hash_payload(payload: dict[str, Any]) -> str:
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -286,8 +299,9 @@ class InferenceGateway:
             InferenceResponse with generated text
         """
         self._validate_messages(request)
+        self._apply_request_priority(request)
         # 1. Route alias to provider + model_id
-        routing = self.router.resolve(request.model_alias)
+        routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
         meta = getattr(request, "metadata", {}) or {}
         logger.info(
             "[InferenceGateway] Routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
@@ -345,7 +359,8 @@ class InferenceGateway:
         return response
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
-        routing = self.router.resolve(request.model_alias)
+        self._apply_request_priority(request)
+        routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
         meta = getattr(request, "metadata", {}) or {}
         logger.info(
             "[InferenceGateway] Embed routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
@@ -384,7 +399,10 @@ class InferenceGateway:
         return response
 
     async def transcribe(self, request: ASRRequest) -> ASRResponse:
-        routing = self.router.resolve(request.model_alias)
+        routing = self.router.resolve(
+            request.model_alias,
+            request_metadata=getattr(request, "metadata", {}) or {},
+        )
         meta = getattr(request, "metadata", {}) or {}
         logger.info(
             "[InferenceGateway] ASR routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
@@ -411,8 +429,9 @@ class InferenceGateway:
             Token strings
         """
         self._validate_messages(request)
+        self._apply_request_priority(request)
         # 1. Route alias to provider + model_id
-        routing = self.router.resolve(request.model_alias)
+        routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
         
         meta = getattr(request, "metadata", {}) or {}
         logger.info(

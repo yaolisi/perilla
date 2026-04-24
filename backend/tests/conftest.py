@@ -4,6 +4,9 @@ import os
 from collections.abc import Iterator
 
 import pytest
+
+# 与 requirements/base.txt 中 pytest-asyncio 配套，支持 @pytest.mark.asyncio
+pytest_plugins = ("pytest_asyncio",)
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
