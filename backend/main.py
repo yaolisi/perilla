@@ -48,6 +48,7 @@ from api.images import router as images_router
 from api.backup import router as backup_router
 from api.model_backups import router as model_backups_router
 from api.events import router as events_router
+from api.collaboration import router as collaboration_router
 from api.workflows import router as workflows_router
 from api.audit import router as audit_router
 from api.errors import register_error_handlers
@@ -490,6 +491,7 @@ app.include_router(images_router)
 app.include_router(backup_router)
 app.include_router(model_backups_router)
 app.include_router(events_router)
+app.include_router(collaboration_router)
 app.include_router(workflows_router)
 app.include_router(audit_router)
 

@@ -13,6 +13,11 @@ from pydantic import BaseModel, Field
 
 from core.agent_runtime.definition import AgentDefinition, get_agent_registry
 from core.agent_runtime.session import AgentSession, get_agent_session_store
+from core.agent_runtime.collaboration import (
+    build_api_root_collaboration,
+    merge_collaboration_into_state,
+    parse_invoked_from_form,
+)
 from core.agent_runtime.trace import AgentTraceEvent, get_agent_trace_store
 from core.agent_runtime.executor import get_agent_executor
 from core.agent_runtime.loop import AgentLoop
@@ -243,6 +248,10 @@ def _apply_response_mode(
 class RunAgentRequest(BaseModel):
     messages: List[Message]
     session_id: Optional[str] = None
+    # 多 Agent 协作（Phase 0）：写入 session.state["collaboration"] 与 Kernel initial_context
+    correlation_id: Optional[str] = None
+    orchestrator_agent_id: Optional[str] = None
+    invoked_from: Optional[Dict[str, Any]] = None
 
 def _normalize_id_list(items: List[str]) -> List[str]:
     """Normalize user-provided id lists: strip, drop empty, de-duplicate (preserve order)."""
@@ -798,6 +807,7 @@ def _prepare_run_with_files_session(
     messages_objs: List[Message],
     saved_names: List[str],
     workspace_dir_str: str,
+    collaboration: Optional[Dict[str, Any]] = None,
 ) -> AgentSession:
     session = cast(Optional[AgentSession], session_store.get_session(session_id))
     if not session:
@@ -817,6 +827,9 @@ def _prepare_run_with_files_session(
         state["last_uploaded_images"] = saved_names
         state["last_uploaded_image"] = saved_names[0]
         session.state = state
+
+    if collaboration:
+        session.state = merge_collaboration_into_state(session.state, collaboration)
 
     session.workspace_dir = workspace_dir_str
     session.status = "running"
@@ -842,6 +855,9 @@ def _claim_run_idempotency(
             "agent_id": agent_id,
             "session_id": req.session_id,
             "messages": [m.model_dump(mode="json") for m in (req.messages or [])],
+            "correlation_id": req.correlation_id,
+            "orchestrator_agent_id": req.orchestrator_agent_id,
+            "invoked_from": req.invoked_from,
         }
     )
     claim = idem_service.claim(
@@ -879,6 +895,7 @@ def _prepare_run_session(
     agent_id: str,
     messages: List[Message],
     agent: AgentDefinition,
+    collaboration: Optional[Dict[str, Any]] = None,
 ) -> tuple[AgentSession, str]:
     session = session_store.get_session(session_id)
     if not session:
@@ -892,6 +909,9 @@ def _prepare_run_session(
         session.messages.extend(messages)
         session.status = "idle"
         session.step = 0
+
+    if collaboration:
+        session.state = merge_collaboration_into_state(session.state, collaboration)
 
     workspace = _resolve_agent_runtime_workspace(agent, session_id)
     session.workspace_dir = workspace
@@ -976,12 +996,19 @@ async def run_agent(agent_id: str, req: RunAgentRequest, request: Request) -> An
             return idem_claim_or_session
         idem_record = idem_claim_or_session
 
+        collab = build_api_root_collaboration(
+            agent_id,
+            correlation_id=req.correlation_id,
+            orchestrator_agent_id=req.orchestrator_agent_id,
+            invoked_from=req.invoked_from,
+        )
         session, workspace = _prepare_run_session(
             session_store=session_store,
             session_id=session_id,
             agent_id=agent_id,
             messages=req.messages,
             agent=agent,
+            collaboration=collab,
         )
         return await _execute_run_runtime(
             executor=executor,
@@ -1005,6 +1032,12 @@ async def run_agent_with_files(
     messages: Annotated[str, Form(..., description="JSON array of Message objects")],
     session_id: Annotated[Optional[str], Form()] = None,
     files: Annotated[List[UploadFile], File()] = [],
+    correlation_id: Annotated[Optional[str], Form()] = None,
+    orchestrator_agent_id: Annotated[Optional[str], Form()] = None,
+    invoked_from_json: Annotated[
+        Optional[str],
+        Form(description="Optional JSON object for invoked_from (same as POST /run body)"),
+    ] = None,
 ) -> Any:
     """Run agent with uploaded files. Files are saved to session workspace so file.read can access them."""
     registry = get_agent_registry()
@@ -1040,6 +1073,13 @@ async def run_agent_with_files(
         finally:
             _upload_semaphore.release()
     _attach_upload_hint(messages_objs, saved_names, agent)
+    inv = parse_invoked_from_form(invoked_from_json)
+    collab = build_api_root_collaboration(
+        agent_id,
+        correlation_id=correlation_id,
+        orchestrator_agent_id=orchestrator_agent_id,
+        invoked_from=inv,
+    )
     session = _prepare_run_with_files_session(
         session_store=session_store,
         session_id=session_id,
@@ -1047,6 +1087,7 @@ async def run_agent_with_files(
         messages_objs=messages_objs,
         saved_names=saved_names,
         workspace_dir_str=workspace_dir_str,
+        collaboration=collab,
     )
 
     try:

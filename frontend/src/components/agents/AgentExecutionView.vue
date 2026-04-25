@@ -29,6 +29,8 @@ import {
   Copy,
   Check,
   Wrench,
+  Share2,
+  ExternalLink,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -53,11 +55,13 @@ import {
   deleteAgentSession,
   listModels,
   asrTranscribe,
+  getCollaborationSessionsByCorrelation,
   type AgentDefinition, 
   type AgentSession, 
   type AgentTraceEvent,
   type Message,
-  type ModelInfo
+  type ModelInfo,
+  type CorrelationSummaryResponse
 } from '@/services/api'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -93,6 +97,83 @@ const isLoading = ref(true)
 const isRunning = ref(false)
 const isLoadingSession = ref(false)
 const modelInfo = ref<ModelInfo | null>(null)
+
+/** 多 Agent 协作：同链续跑时透传 POST /run */
+function existingCollaborationForRun(): {
+  correlation_id?: string
+  orchestrator_agent_id?: string
+  invoked_from?: Record<string, unknown>
+} {
+  const st = session.value?.state
+  if (!st || typeof st !== 'object') return {}
+  const c = (st as Record<string, unknown>)['collaboration']
+  if (!c || typeof c !== 'object') return {}
+  const o = c as Record<string, unknown>
+  const out: {
+    correlation_id?: string
+    orchestrator_agent_id?: string
+    invoked_from?: Record<string, unknown>
+  } = {}
+  if (typeof o.correlation_id === 'string' && o.correlation_id.trim()) out.correlation_id = o.correlation_id
+  if (typeof o.orchestrator_agent_id === 'string' && o.orchestrator_agent_id.trim()) {
+    out.orchestrator_agent_id = o.orchestrator_agent_id
+  }
+  if (o.invoked_from && typeof o.invoked_from === 'object' && !Array.isArray(o.invoked_from)) {
+    out.invoked_from = o.invoked_from as Record<string, unknown>
+  }
+  return out
+}
+
+const sessionCollaboration = computed(() => {
+  const st = session.value?.state
+  if (!st || typeof st !== 'object') return null
+  const c = (st as Record<string, unknown>)['collaboration']
+  if (!c || typeof c !== 'object') return null
+  return c as { correlation_id?: string; orchestrator_agent_id?: string; invoked_from?: Record<string, unknown> }
+})
+const collaborationInvokedFromText = computed(() => {
+  const inv = sessionCollaboration.value?.invoked_from
+  if (!inv || typeof inv !== 'object') return ''
+  try {
+    return JSON.stringify(inv, null, 2)
+  } catch {
+    return ''
+  }
+})
+const relatedByCorrelation = ref<CorrelationSummaryResponse | null>(null)
+const relatedByCorrelationLoading = ref(false)
+async function loadRelatedSessionsByCorrelation(filterByOrchestrator = false) {
+  const cid = sessionCollaboration.value?.correlation_id
+  if (!cid) return
+  const orch =
+    filterByOrchestrator && sessionCollaboration.value?.orchestrator_agent_id
+      ? sessionCollaboration.value.orchestrator_agent_id
+      : undefined
+  relatedByCorrelationLoading.value = true
+  try {
+    relatedByCorrelation.value = await getCollaborationSessionsByCorrelation(cid, 200, orch)
+  } catch {
+    relatedByCorrelation.value = null
+  } finally {
+    relatedByCorrelationLoading.value = false
+  }
+}
+async function copyCollaborationCorrelationId() {
+  const t = sessionCollaboration.value?.correlation_id
+  if (!t) return
+  try {
+    await navigator.clipboard.writeText(t)
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+function openAgentSessionInRun(targetAgentId: string, targetSessionId: string) {
+  const aid = (targetAgentId || '').trim()
+  const sid = (targetSessionId || '').trim()
+  if (!aid || !sid) return
+  void router.push({ name: 'agents-run', params: { id: aid }, query: { session: sid } })
+}
 
 // File upload state
 const fileInputRef = ref<HTMLInputElement | null>(null)
@@ -361,11 +442,20 @@ const handleSendMessage = async () => {
       }
     }
     
+    const collab = existingCollaborationForRun()
+    const hasCollab = Object.keys(collab).length > 0
     const res = filesToUpload.length > 0
-      ? await runAgentWithFiles(agentId, [userMessage], session.value?.session_id || undefined, filesToUpload)
+      ? await runAgentWithFiles(
+          agentId,
+          [userMessage],
+          session.value?.session_id || undefined,
+          filesToUpload,
+          hasCollab ? collab : undefined
+        )
       : await runAgent(agentId, {
           messages: [userMessage],
-          session_id: session.value?.session_id || undefined
+          session_id: session.value?.session_id || undefined,
+          ...collab
         })
     
     // 后端应该返回完整的消息历史（包括所有之前的消息 + 新用户消息 + AI 回复）
@@ -411,6 +501,12 @@ const fetchTraces = async () => {
 
 // Polling for updates if running
 let pollInterval: any = null
+watch(
+  () => session.value?.session_id,
+  () => {
+    relatedByCorrelation.value = null
+  }
+)
 watch(() => session.value?.status, (newStatus) => {
   if (newStatus === 'running') {
     if (!pollInterval) {
@@ -1436,6 +1532,108 @@ watch(() => {
             </div>
           </section>
 
+          <!-- Multi-agent collaboration -->
+          <section
+            v-if="session"
+            class="space-y-3 p-4 rounded-xl bg-card/50 border border-border/30"
+          >
+            <div class="flex items-center gap-2">
+              <Share2 class="w-3.5 h-3.5 text-muted-foreground" />
+              <h3 class="text-[11px] font-black text-muted-foreground uppercase tracking-[0.2em]">
+                {{ t('agents.execution.collaboration_title') }}
+              </h3>
+            </div>
+            <template v-if="sessionCollaboration">
+              <div class="space-y-1.5">
+                <div class="text-[10px] text-muted-foreground font-bold uppercase tracking-wide">
+                  {{ t('agents.execution.collaboration_correlation') }}
+                </div>
+                <div class="flex items-start gap-1">
+                  <code class="text-[10px] leading-snug break-all flex-1 rounded-md bg-muted/50 px-2 py-1.5 border border-border/40">{{
+                    sessionCollaboration.correlation_id
+                  }}</code>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    class="h-7 w-7 shrink-0"
+                    :title="t('agents.execution.collaboration_copy')"
+                    @click="copyCollaborationCorrelationId"
+                  >
+                    <Copy class="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+              <div
+                v-if="sessionCollaboration.orchestrator_agent_id"
+                class="flex justify-between gap-2 text-xs"
+              >
+                <span class="text-muted-foreground">{{ t('agents.execution.collaboration_orchestrator') }}</span>
+                <span class="font-semibold text-foreground truncate max-w-[140px]">{{ sessionCollaboration.orchestrator_agent_id }}</span>
+              </div>
+              <pre
+                v-if="collaborationInvokedFromText"
+                class="text-[10px] leading-relaxed max-h-28 overflow-auto rounded-md bg-muted/40 border border-border/30 p-2 font-mono"
+                >{{ collaborationInvokedFromText }}</pre
+              >
+              <div class="flex flex-col gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  class="w-full h-9 rounded-xl text-xs font-bold"
+                  :disabled="relatedByCorrelationLoading"
+                  @click="loadRelatedSessionsByCorrelation(false)"
+                >
+                  <Loader2 v-if="relatedByCorrelationLoading" class="w-3.5 h-3.5 mr-2 animate-spin" />
+                  {{ t('agents.execution.collaboration_load_chain') }}
+                </Button>
+                <Button
+                  v-if="sessionCollaboration.orchestrator_agent_id"
+                  type="button"
+                  variant="outline"
+                  class="w-full h-8 rounded-xl text-[11px] font-semibold"
+                  :disabled="relatedByCorrelationLoading"
+                  @click="loadRelatedSessionsByCorrelation(true)"
+                >
+                  {{ t('agents.execution.collaboration_load_chain_same_orch') }}
+                </Button>
+              </div>
+              <ul
+                v-if="relatedByCorrelation?.sessions?.length"
+                class="text-[10px] space-y-1 max-h-32 overflow-auto text-muted-foreground"
+              >
+                <li
+                  v-for="s in relatedByCorrelation.sessions"
+                  :key="s.session_id"
+                  class="flex items-center gap-1 border-b border-border/20 pb-1"
+                >
+                  <div class="min-w-0 flex-1 flex flex-col gap-0.5">
+                    <span class="font-mono truncate text-foreground/90" :title="s.session_id">{{
+                      s.session_id
+                    }}</span>
+                    <span class="text-[10px] text-muted-foreground">{{ s.agent_id }}</span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    class="h-7 w-7 shrink-0"
+                    :title="t('agents.execution.open_session_in_run')"
+                    @click="openAgentSessionInRun(s.agent_id, s.session_id)"
+                  >
+                    <ExternalLink class="w-3.5 h-3.5" />
+                  </Button>
+                </li>
+              </ul>
+              <p v-if="relatedByCorrelation" class="text-[10px] text-muted-foreground/80 leading-relaxed">
+                {{ relatedByCorrelation.note }}
+              </p>
+            </template>
+            <p v-else class="text-xs text-muted-foreground/80 leading-relaxed">
+              {{ t('agents.execution.collaboration_empty') }}
+            </p>
+          </section>
+
           <!-- Capabilities -->
           <section class="space-y-4 p-4 rounded-xl bg-card/50 border border-border/30">
             <h3 class="text-[11px] font-black text-muted-foreground uppercase tracking-[0.2em]">{{ t('agents.execution.capabilities') }}</h3>
@@ -1458,7 +1656,11 @@ watch(() => {
 
           <!-- Debug Event Stream -->
           <section class="space-y-2 rounded-xl bg-card/50 border border-border/30 overflow-hidden">
-            <EventStreamViewer :kernel-instance-id="session?.kernel_instance_id" />
+            <EventStreamViewer
+              :kernel-instance-id="session?.kernel_instance_id"
+              :correlation-id="sessionCollaboration?.correlation_id"
+              :orchestrator-agent-id="sessionCollaboration?.orchestrator_agent_id"
+            />
           </section>
         </div>
       </aside>

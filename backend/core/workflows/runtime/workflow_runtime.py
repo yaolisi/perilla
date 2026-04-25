@@ -31,6 +31,7 @@ from core.tools.context import ToolContext
 from core.agent_runtime.definition import get_agent_registry
 from core.agent_runtime.executor import get_agent_executor
 from core.agent_runtime.session import AgentSession
+from core.agent_runtime.collaboration import build_workflow_collaboration, merge_collaboration_into_state
 from core.agent_runtime.v2.runtime import get_agent_runtime
 from core.types import Message
 from execution_kernel.engine.control_flow import execute_condition_node
@@ -599,6 +600,12 @@ class WorkflowRuntime:
             max_call_depth=self.AGENT_NODE_MAX_CALL_DEPTH,
             default_max_calls=self.AGENT_NODE_DEFAULT_MAX_CALLS,
         )
+        orchestrator_filled_here = False
+        if not str(global_ctx.get("orchestrator_agent_id") or "").strip():
+            global_ctx["orchestrator_agent_id"] = (call_chain[0] if call_chain else agent_id)
+            orchestrator_filled_here = True
+        if orchestrator_filled_here and workflow_execution_id:
+            self._persist_orchestrator_agent_id_to_execution(workflow_execution_id, global_ctx)
         prompt = self._resolve_agent_prompt(
             cfg=cfg,
             input_data=input_data,
@@ -622,6 +629,7 @@ class WorkflowRuntime:
             node_id=str(node_def.id),
             call_chain=call_chain,
             agent_id=agent_id,
+            global_ctx=global_ctx,
         )
 
         result_session = await self._run_agent_runtime_session(
@@ -635,6 +643,25 @@ class WorkflowRuntime:
         self._validate_agent_output_schema(agent_output, cfg, node_def)
         self._ensure_execution_not_cancelled(context)
         return agent_output
+
+    def _persist_orchestrator_agent_id_to_execution(
+        self, workflow_execution_id: str, global_ctx: Dict[str, Any]
+    ) -> None:
+        """首次确定 orchestrator 时写回 DB，与 API 中 global_context 展示一致。"""
+        oid = str(global_ctx.get("orchestrator_agent_id") or "").strip()
+        if not workflow_execution_id or not oid:
+            return
+        try:
+            cur = self.execution_repository.get_by_id(workflow_execution_id)
+            if cur is None:
+                return
+            merged = {**(cur.global_context or {}), "orchestrator_agent_id": oid}
+            self.execution_repository.update_global_context(workflow_execution_id, merged)
+        except Exception as e:
+            logger.warning(
+                "[WorkflowRuntime] Failed to persist orchestrator_agent_id to global_context: %s",
+                e,
+            )
 
     def _apply_agent_run_overrides(
         self, run_agent: Any, cfg: Dict[str, Any], coerce_int: Callable[[Any, int], int]
@@ -656,6 +683,7 @@ class WorkflowRuntime:
         node_id: str,
         call_chain: List[str],
         agent_id: str,
+        global_ctx: Dict[str, Any],
     ) -> AgentSession:
         node_session_id = (
             f"wf_{workflow_execution_id}_{node_id}"
@@ -669,14 +697,25 @@ class WorkflowRuntime:
             status="idle",
         )
         session.workspace_dir = workspace
-        session.state = {
-            "workflow_agent_context": {
-                "workflow_execution_id": workflow_execution_id,
-                "source_node_id": node_id,
-                "call_depth": len(call_chain) + 1,
-                "call_chain": call_chain + [agent_id],
-            }
+        wfc = {
+            "workflow_execution_id": workflow_execution_id,
+            "source_node_id": node_id,
+            "call_depth": len(call_chain) + 1,
+            "call_chain": call_chain + [agent_id],
         }
+        collab = build_workflow_collaboration(
+            global_ctx=global_ctx,
+            workflow_execution_id=workflow_execution_id,
+            node_id=node_id,
+            call_chain=call_chain,
+            agent_id=agent_id,
+        )
+        session.state = merge_collaboration_into_state(
+            {
+                "workflow_agent_context": wfc,
+            },
+            collab,
+        )
         return session
 
     @staticmethod
@@ -994,14 +1033,21 @@ class WorkflowRuntime:
             Path("data/workflow_workspaces").joinpath(execution.execution_id).resolve()
         )
         Path(workspace_dir).mkdir(parents=True, exist_ok=True)
+        base_gc = dict(execution.global_context or {})
+        if not str(base_gc.get("correlation_id") or "").strip():
+            base_gc["correlation_id"] = f"wfex_{execution.execution_id}"
         global_context = {
             "workflow_id": execution.workflow_id,
             "version_id": execution.version_id,
             "execution_id": execution.execution_id,
             "input_data": execution.input_data or {},
             "workspace": workspace_dir,
-            **(execution.global_context or {})
+            **base_gc,
         }
+        # 将归一化后的 correlation_id 写回 DB，使 GET execution / 前端与调度时 global_context 一致
+        persisted_gc = {**(execution.global_context or {}), "correlation_id": global_context["correlation_id"]}
+        self.execution_repository.update_global_context(execution.execution_id, persisted_gc)
+
         self.execution_repository.update_graph_instance_id(
             execution.execution_id,
             instance_id

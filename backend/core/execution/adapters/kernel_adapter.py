@@ -40,6 +40,7 @@ from execution_kernel.optimization import (
 )
 from execution_kernel.optimization.scheduler.policy_base import SchedulerPolicy
 
+from core.agent_runtime.collaboration import get_collaboration_persist_dict
 from core.agent_runtime.v2.models import Plan, AgentState, ExecutionTrace, StepLog, StepStatus
 from core.agent_runtime.v2.agent_graph_adapter import AgentGraphAdapter
 from core.execution.adapters.plan_compiler import compile_plan
@@ -399,6 +400,9 @@ class ExecutionKernelAdapter:
             "permissions": permissions or {},
             "user_id": getattr(session, "user_id", "default") or "default",
         }
+        collab = get_collaboration_persist_dict(session)
+        if collab:
+            persisted_context.update(collab)
         
         # 3. 创建 Scheduler 和 Executor（在 context 设置之前）
         async with self.db.async_session() as db_session:

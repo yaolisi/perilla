@@ -189,7 +189,15 @@
       "vision_preview_alt": "Annotated detection",
       "tool_preview_alt": "Tool result preview",
       "detection_summary_prefix": "Detection Summary",
-      "detection_summary_none": "No obvious object detected"
+      "detection_summary_none": "No obvious object detected",
+      "collaboration_title": "Collaboration",
+      "collaboration_correlation": "Correlation ID",
+      "collaboration_orchestrator": "Orchestrator",
+      "collaboration_empty": "No collaboration metadata on this session yet. It is set on first run (or when invoked from a workflow). The next turns reuse the same correlation in this session.",
+      "collaboration_load_chain": "List sessions with same ID",
+      "collaboration_load_chain_same_orch": "Same ID + same orchestrator",
+      "collaboration_copy": "Copy correlation id",
+      "open_session_in_run": "Open in Agent run"
     },
     "footer": {
       "cpu_load": "CPU Load",
@@ -271,7 +279,11 @@
       "duration": "Duration",
       "nodes": "Nodes",
       "state_at_step": "State at Step #{n}",
-      "retries": "retries"
+      "retries": "retries",
+      "collaboration_context": "Collaboration",
+      "collaboration_correlation": "Correlation",
+      "collaboration_orchestrator": "Orchestrator",
+      "copy_value": "Copy"
     },
     "loading": "Loading agents...",
     "delete_confirm": "Delete agent \"{name}\"? This cannot be undone.",
@@ -1475,6 +1487,10 @@
   },
   "workflow_run": {
     "run_id": "Run ID",
+    "correlation_id": "Collaboration correlation",
+    "correlation_default": "default if unset in global_context",
+    "correlation_hint": "Runtime uses wfex_{execution_id} for Agent node handoff when not set in global_context.",
+    "orchestrator": "Orchestrator",
     "title_default": "Workflow Execution",
     "graph": "Graph",
     "timeline": "Timeline",
@@ -1509,7 +1525,15 @@
     "no_artifacts": "No artifacts found.",
     "raw_output": "Raw Output",
     "error": "Error",
-    "execution_logs": "Execution Logs"
+    "execution_logs": "Execution Logs",
+    "agent_handoff_title": "Sub-agent run (collaboration)",
+    "open_agent_run": "Open in Agent run",
+    "copy_session_id": "Copy session id",
+    "collaboration_query_title": "Collaboration chain (API)",
+    "copy_correlation_id": "Copy correlation id",
+    "query_same_chain": "List sessions (same correlation)",
+    "query_same_chain_orch": "Same + same orchestrator",
+    "open_session_in_run": "Open this session in Agent run"
   },
   "workflow": {
     "title": "Workflow",

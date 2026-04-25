@@ -1484,9 +1484,22 @@ export interface CreateAgentRequest {
   model_params?: Record<string, any>
 }
 
+/** 多 Agent 协作埋点：与 POST /api/agents/{id}/run 及 session.state.collaboration 一致 */
+export interface AgentCollaborationContext {
+  correlation_id: string
+  orchestrator_agent_id: string
+  invoked_from: Record<string, unknown>
+}
+
 export interface RunAgentRequest {
   messages: Message[]
   session_id?: string
+  /** 可选；缺省时后端生成 corr_* */
+  correlation_id?: string
+  /** 可选；缺省为当前 agent_id */
+  orchestrator_agent_id?: string
+  /** 可选；缺省为 { type: 'api', agent_id } */
+  invoked_from?: Record<string, unknown>
 }
 
 export interface AgentSession {
@@ -1498,6 +1511,8 @@ export interface AgentSession {
   step: number
   status: 'running' | 'finished' | 'error' | 'idle'
   error_message?: string | null
+  /** 结构化状态；含 collaboration、workflow_agent_context 等 */
+  state?: Record<string, unknown>
   /** V2.6: Execution Kernel instance ID for event stream replay/debug */
   kernel_instance_id?: string | null
   created_at: string
@@ -1579,6 +1594,44 @@ export async function runAgent(agentId: string, data: RunAgentRequest): Promise<
   return response.json()
 }
 
+export interface CorrelationSummaryResponse {
+  correlation_id: string
+  sessions: Array<{
+    session_id: string
+    agent_id: string
+    status: string
+    kernel_instance_id?: string | null
+    collaboration: Record<string, unknown>
+  }>
+  note: string
+}
+
+/** 按 correlation_id 列出当前用户下携带该协作 id 的最近会话（与后端 Phase 0 行为一致） */
+export async function getCollaborationSessionsByCorrelation(
+  correlationId: string,
+  limit = 200,
+  orchestratorAgentId?: string | null
+): Promise<CorrelationSummaryResponse> {
+  const q = new URLSearchParams({ limit: String(limit) })
+  const o = orchestratorAgentId?.trim()
+  if (o) {
+    q.set('orchestrator_agent_id', o)
+  }
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/collaboration/correlation/${encodeURIComponent(correlationId)}?${q}`,
+    { method: 'GET' }
+  )
+  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  return response.json()
+}
+
+/** 与 run/with-files 表单项一致，续跑同协作链时可传入 */
+export type RunAgentWithFilesCollaboration = {
+  correlation_id?: string
+  orchestrator_agent_id?: string
+  invoked_from?: Record<string, unknown>
+}
+
 /**
  * 运行智能体（带上传文件）。文件会保存到会话工作目录，file.read 可读取。
  */
@@ -1586,11 +1639,21 @@ export async function runAgentWithFiles(
   agentId: string,
   messages: Message[],
   sessionId: string | undefined,
-  files: File[]
+  files: File[],
+  collaboration?: RunAgentWithFilesCollaboration
 ): Promise<AgentSession> {
   const form = new FormData()
   form.append('messages', JSON.stringify(messages))
   form.append('session_id', sessionId ?? '')
+  if (collaboration?.correlation_id) {
+    form.append('correlation_id', collaboration.correlation_id)
+  }
+  if (collaboration?.orchestrator_agent_id) {
+    form.append('orchestrator_agent_id', collaboration.orchestrator_agent_id)
+  }
+  if (collaboration?.invoked_from && Object.keys(collaboration.invoked_from).length) {
+    form.append('invoked_from_json', JSON.stringify(collaboration.invoked_from))
+  }
   files.forEach((file) => form.append('files', file))
   const response = await apiFetch(`${API_BASE_URL}/api/agents/${agentId}/run/with-files`, {
     method: 'POST',

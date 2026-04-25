@@ -1,8 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ArrowLeft, Play, Square, RotateCcw, Loader2, Network, RefreshCw, ListTree, Rows3 } from 'lucide-vue-next'
+import {
+  ArrowLeft,
+  Play,
+  Square,
+  RotateCcw,
+  Loader2,
+  Network,
+  RefreshCw,
+  ListTree,
+  Rows3,
+  ExternalLink,
+  Copy,
+} from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -11,6 +23,7 @@ import {
   getWorkflowVersion,
   getWorkflowExecution,
   getWorkflowExecutionStatus,
+  getCollaborationSessionsByCorrelation,
   listWorkflowExecutions,
   reconcileWorkflowExecution,
   runWorkflow,
@@ -18,6 +31,7 @@ import {
   type WorkflowExecutionStatusRecord,
   type WorkflowExecutionRecord,
   type WorkflowRecord,
+  type CorrelationSummaryResponse,
 } from '@/services/api'
 import { normalizeExecutionStatus, normalizeNodeStatus, statusBadgeClass } from './status'
 
@@ -95,6 +109,22 @@ const selectedNode = computed<any | null>(() => {
   }
 })
 
+/** Agent 节点：output_data.type === agent_result 时的子会话，可跳转运行页 */
+const selectedNodeAgentHandoff = computed(() => {
+  const out = selectedNode.value?.output_data
+  if (!out || typeof out !== 'object' || Array.isArray(out)) return null
+  const o = out as Record<string, unknown>
+  if (String(o.type || '').toLowerCase() !== 'agent_result') return null
+  const sid = typeof o.agent_session_id === 'string' ? o.agent_session_id.trim() : ''
+  const aid = typeof o.agent_id === 'string' ? o.agent_id.trim() : ''
+  if (!sid || !aid) return null
+  return {
+    agentSessionId: sid,
+    agentId: aid,
+    workflowNodeId: typeof o.workflow_node_id === 'string' ? o.workflow_node_id : '',
+  }
+})
+
 const executionElapsedMs = computed(() => {
   const exec = currentExecution.value
   if (!exec) return 0
@@ -139,6 +169,21 @@ const executionSummary = computed(() => {
   const completed = nodes.filter((n) => normalizeNodeStatus(n.state) === 'succeeded').length
   const failed = nodes.filter((n) => normalizeNodeStatus(n.state) === 'failed').length
   return { total: nodes.length, completed, failed }
+})
+
+/** 与后端 global_context / wfex_{execution_id} 约定对齐的协作关联展示 */
+const executionCollaboration = computed(() => {
+  const exec = currentExecution.value
+  if (!exec?.execution_id) {
+    return { correlationId: null as string | null, orchestrator: null as string | null, isImplicit: true }
+  }
+  const gc = exec.global_context
+  const g = gc && typeof gc === 'object' && !Array.isArray(gc) ? (gc as Record<string, unknown>) : null
+  const raw = g && typeof g['correlation_id'] === 'string' ? (g['correlation_id'] as string).trim() : ''
+  const fallback = `wfex_${exec.execution_id}`
+  const cid = raw || fallback
+  const orch = g && typeof g['orchestrator_agent_id'] === 'string' ? (g['orchestrator_agent_id'] as string) : null
+  return { correlationId: cid, orchestrator: orch, isImplicit: !raw }
 })
 
 const deliveryData = computed(() => {
@@ -200,6 +245,61 @@ function prettyJson(value: unknown): string {
     return String(value)
   }
 }
+
+async function copyWorkflowInspectorText(text: string) {
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+function openAgentRunForHandoff(h: { agentId: string; agentSessionId: string }) {
+  void router.push({
+    name: 'agents-run',
+    params: { id: h.agentId },
+    query: { session: h.agentSessionId },
+  })
+}
+
+function openAgentRunForSession(agentId: string, sessionId: string) {
+  const aid = (agentId || '').trim()
+  const sid = (sessionId || '').trim()
+  if (!aid || !sid) return
+  void router.push({ name: 'agents-run', params: { id: aid }, query: { session: sid } })
+}
+
+const collabChainLoading = ref(false)
+const collabChainResult = ref<CorrelationSummaryResponse | null>(null)
+const collabChainError = ref<string | null>(null)
+
+async function queryCollaborationChain(sameOrchestratorOnly: boolean) {
+  const cid = executionCollaboration.value.correlationId
+  if (!cid) return
+  collabChainLoading.value = true
+  collabChainError.value = null
+  try {
+    const orch =
+      sameOrchestratorOnly && executionCollaboration.value.orchestrator
+        ? executionCollaboration.value.orchestrator
+        : undefined
+    collabChainResult.value = await getCollaborationSessionsByCorrelation(cid, 200, orch)
+  } catch (e) {
+    collabChainError.value = e instanceof Error ? e.message : String(e)
+    collabChainResult.value = null
+  } finally {
+    collabChainLoading.value = false
+  }
+}
+
+watch(
+  () => currentExecution.value?.execution_id,
+  () => {
+    collabChainResult.value = null
+    collabChainError.value = null
+  }
+)
 
 function parseServerTime(v: string | null | undefined): number {
   if (!v) return NaN
@@ -710,6 +810,26 @@ onUnmounted(() => {
           <div class="text-xs text-slate-400 mt-0.5">
             {{ t('workflow_run.run_id') }}: {{ currentExecution?.execution_id || '-' }}
           </div>
+          <div
+            v-if="currentExecution?.execution_id"
+            class="text-[11px] text-slate-500 mt-1 max-w-3xl flex flex-wrap items-baseline gap-x-2 gap-y-0.5"
+          >
+            <span class="shrink-0 text-slate-500">{{ t('workflow_run.correlation_id') }}:</span>
+            <code class="text-slate-300 break-all select-all" :title="executionCollaboration.correlationId || ''">{{
+              executionCollaboration.correlationId
+            }}</code>
+            <span
+              v-if="executionCollaboration.isImplicit"
+              class="text-slate-500 shrink-0"
+              :title="t('workflow_run.correlation_hint')"
+              >({{ t('workflow_run.correlation_default') }})</span
+            >
+            <template v-if="executionCollaboration.orchestrator">
+              <span class="text-slate-600">·</span>
+              <span class="text-slate-500 shrink-0">{{ t('workflow_run.orchestrator') }}:</span>
+              <span class="text-slate-300 font-medium">{{ executionCollaboration.orchestrator }}</span>
+            </template>
+          </div>
         </div>
         <div class="ml-auto flex items-center gap-2">
           <div class="inline-flex rounded-lg border border-slate-700 bg-slate-900/70 p-1">
@@ -874,6 +994,124 @@ onUnmounted(() => {
           <div v-if="selectedNode" class="rounded border border-slate-800 bg-slate-900/60 p-3">
             <div class="text-sm font-semibold">{{ selectedNode.node_id }}</div>
             <div class="text-xs text-slate-400 mt-1">{{ normalizeNodeStatus(selectedNode.state) }}</div>
+          </div>
+
+          <div
+            v-if="executionCollaboration.correlationId"
+            class="rounded border border-emerald-500/25 bg-emerald-950/30 p-3 text-xs space-y-2"
+          >
+            <div class="text-slate-200 font-medium flex items-center gap-1.5">
+              <ListTree class="w-3.5 h-3.5 text-emerald-400" />
+              {{ t('workflow_run.collaboration_query_title') }}
+            </div>
+            <div class="flex items-start gap-1 text-slate-500">
+              <span class="shrink-0">correlation</span>
+              <code class="text-emerald-200/90 break-all text-[10px] leading-snug flex-1">{{
+                executionCollaboration.correlationId
+              }}</code>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                class="h-7 w-7 shrink-0 text-slate-300"
+                :title="t('workflow_run.copy_correlation_id')"
+                @click="copyWorkflowInspectorText(executionCollaboration.correlationId || '')"
+              >
+                <Copy class="w-3.5 h-3.5" />
+              </Button>
+            </div>
+            <div class="flex flex-col gap-1.5">
+              <Button
+                type="button"
+                variant="outline"
+                class="h-8 text-[11px] border-emerald-500/40 text-emerald-100 hover:bg-emerald-500/10"
+                :disabled="collabChainLoading"
+                @click="queryCollaborationChain(false)"
+              >
+                <Loader2 v-if="collabChainLoading" class="w-3.5 h-3.5 mr-2 animate-spin" />
+                {{ t('workflow_run.query_same_chain') }}
+              </Button>
+              <Button
+                v-if="executionCollaboration.orchestrator"
+                type="button"
+                variant="outline"
+                class="h-7 text-[10px] border-emerald-500/30 text-slate-300"
+                :disabled="collabChainLoading"
+                @click="queryCollaborationChain(true)"
+              >
+                {{ t('workflow_run.query_same_chain_orch') }}
+              </Button>
+            </div>
+            <p v-if="collabChainError" class="text-red-400 text-[11px]">{{ collabChainError }}</p>
+            <ul
+              v-if="collabChainResult?.sessions?.length"
+              class="max-h-32 overflow-auto space-y-1 border-t border-emerald-500/20 pt-2 text-slate-400"
+            >
+              <li
+                v-for="s in collabChainResult.sessions"
+                :key="s.session_id"
+                class="flex items-center gap-1 border-b border-slate-800/60 pb-1"
+              >
+                <div class="min-w-0 flex-1 flex flex-col gap-0.5">
+                  <span class="font-mono truncate text-[10px] text-slate-300" :title="s.session_id">{{
+                    s.session_id
+                  }}</span>
+                  <span class="text-[10px] text-slate-500">{{ s.agent_id }}</span>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  class="h-7 w-7 shrink-0 text-emerald-300/90 hover:text-emerald-200"
+                  :title="t('workflow_run.open_session_in_run')"
+                  @click="openAgentRunForSession(s.agent_id, s.session_id)"
+                >
+                  <ExternalLink class="w-3.5 h-3.5" />
+                </Button>
+              </li>
+            </ul>
+            <p v-if="collabChainResult" class="text-[10px] text-slate-500 leading-relaxed">
+              {{ collabChainResult.note }}
+            </p>
+          </div>
+
+          <div
+            v-if="selectedNodeAgentHandoff"
+            class="rounded border border-sky-500/30 bg-sky-500/10 p-3 text-xs space-y-2"
+          >
+            <div class="text-slate-300 font-medium">{{ t('workflow_run.agent_handoff_title') }}</div>
+            <div class="flex items-center justify-between gap-2 text-slate-400">
+              <span class="shrink-0">agent_id</span>
+              <code class="text-sky-200 truncate text-[11px] max-w-[180px]" :title="selectedNodeAgentHandoff.agentId">{{
+                selectedNodeAgentHandoff.agentId
+              }}</code>
+            </div>
+            <div class="flex items-start justify-between gap-2 text-slate-400">
+              <span class="shrink-0 pt-0.5">session</span>
+              <div class="min-w-0 flex-1 flex items-start gap-1">
+                <code class="text-sky-200 break-all text-[10px] leading-snug flex-1">{{
+                  selectedNodeAgentHandoff.agentSessionId
+                }}</code>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  class="h-7 w-7 shrink-0 text-slate-300"
+                  :title="t('workflow_run.copy_session_id')"
+                  @click="copyWorkflowInspectorText(selectedNodeAgentHandoff.agentSessionId)"
+                >
+                  <Copy class="w-3.5 h-3.5" />
+                </Button>
+              </div>
+            </div>
+            <Button
+              type="button"
+              class="w-full h-8 gap-2 text-xs bg-sky-600 hover:bg-sky-500 text-white"
+              @click="openAgentRunForHandoff(selectedNodeAgentHandoff)"
+            >
+              <ExternalLink class="w-3.5 h-3.5" />
+              {{ t('workflow_run.open_agent_run') }}
+            </Button>
           </div>
 
           <div class="rounded border border-slate-800 bg-slate-900/60 p-3 text-xs">

@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Layers,
   Zap,
+  Copy,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -29,6 +30,9 @@ import {
 
 const props = defineProps<{
   kernelInstanceId: string | null | undefined
+  /** 来自 session.state.collaboration，优先于从 graph_started 事件解析 */
+  correlationId?: string | null
+  orchestratorAgentId?: string | null
 }>()
 
 const i18n = useI18n()
@@ -48,6 +52,51 @@ const expandedNodes = ref<Set<string>>(new Set())
 const hasInstanceId = computed(() => !!props.kernelInstanceId)
 
 const nodeStates = computed(() => rebuiltState.value?.nodes || {})
+
+/** 从首条 graph_started 的 initial_context 解析（与 Kernel persisted_context 一致） */
+const collaborationFromGraphStarted = computed(() => {
+  const ev = events.value.find((x) => String(x.event_type).toLowerCase() === 'graph_started')
+  if (!ev?.payload || typeof ev.payload !== 'object') {
+    return { correlation: '', orchestrator: '' }
+  }
+  const p = ev.payload as Record<string, unknown>
+  const initial = p.initial_context
+  if (!initial || typeof initial !== 'object' || Array.isArray(initial)) {
+    return { correlation: '', orchestrator: '' }
+  }
+  const ic = initial as Record<string, unknown>
+  return {
+    correlation: String(ic.correlation_id ?? '').trim(),
+    orchestrator: String(ic.orchestrator_agent_id ?? '').trim(),
+  }
+})
+
+const effectiveCorrelation = computed(
+  () =>
+    (String(props.correlationId || '').trim() ||
+      collaborationFromGraphStarted.value.correlation) ||
+    null
+)
+
+const effectiveOrchestrator = computed(
+  () =>
+    (String(props.orchestratorAgentId || '').trim() ||
+      collaborationFromGraphStarted.value.orchestrator) ||
+    null
+)
+
+const showCollaborationContext = computed(
+  () => !!(effectiveCorrelation.value || effectiveOrchestrator.value)
+)
+
+async function copyContextValue(value: string) {
+  if (!value) return
+  try {
+    await navigator.clipboard.writeText(value)
+  } catch (e) {
+    console.error('clipboard', e)
+  }
+}
 
 // Format helpers
 const formatTimestamp = (ts: number) => {
@@ -217,6 +266,44 @@ onMounted(() => {
       >
         <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': loading }" />
       </Button>
+    </div>
+
+    <!-- 协作上下文：来自父组件 session 或 graph_started.payload.initial_context -->
+    <div
+      v-if="hasInstanceId && showCollaborationContext"
+      class="px-3 py-2 border-b border-border bg-muted/15 space-y-1.5"
+    >
+      <div class="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">
+        {{ t('agents.debug.collaboration_context') }}
+      </div>
+      <div v-if="effectiveCorrelation" class="flex items-start gap-1.5 text-[11px]">
+        <span class="text-muted-foreground shrink-0 pt-0.5">{{ t('agents.debug.collaboration_correlation') }}:</span>
+        <code class="break-all flex-1 text-foreground/90 leading-snug">{{ effectiveCorrelation }}</code>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          class="h-7 w-7 shrink-0"
+          :title="t('agents.debug.copy_value')"
+          @click="copyContextValue(effectiveCorrelation)"
+        >
+          <Copy class="w-3.5 h-3.5" />
+        </Button>
+      </div>
+      <div v-if="effectiveOrchestrator" class="flex items-start gap-1.5 text-[11px]">
+        <span class="text-muted-foreground shrink-0 pt-0.5">{{ t('agents.debug.collaboration_orchestrator') }}:</span>
+        <code class="break-all flex-1 text-foreground/90 leading-snug">{{ effectiveOrchestrator }}</code>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          class="h-7 w-7 shrink-0"
+          :title="t('agents.debug.copy_value')"
+          @click="copyContextValue(effectiveOrchestrator)"
+        >
+          <Copy class="w-3.5 h-3.5" />
+        </Button>
+      </div>
     </div>
 
     <!-- Content -->

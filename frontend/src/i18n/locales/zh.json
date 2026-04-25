@@ -189,7 +189,15 @@
       "vision_preview_alt": "检测标注图",
       "tool_preview_alt": "工具结果预览",
       "detection_summary_prefix": "检测摘要",
-      "detection_summary_none": "未检测到明显目标"
+      "detection_summary_none": "未检测到明显目标",
+      "collaboration_title": "协作",
+      "collaboration_correlation": "关联 ID (correlation)",
+      "collaboration_orchestrator": "编排者 Agent",
+      "collaboration_empty": "本会话尚无语义化协作信息。首次运行后由后端写入，或由工作流触发的子 Agent 运行会带上。同一会话后续发消息会复用同一条 correlation。",
+      "collaboration_load_chain": "列出同 ID 的会话",
+      "collaboration_load_chain_same_orch": "同 ID 且同编排者",
+      "collaboration_copy": "复制关联 ID",
+      "open_session_in_run": "在运行页打开"
     },
     "footer": {
       "cpu_load": "CPU 负载",
@@ -271,7 +279,11 @@
       "duration": "耗时",
       "nodes": "节点",
       "state_at_step": "第 #{n} 步时的状态",
-      "retries": "次重试"
+      "retries": "次重试",
+      "collaboration_context": "协作上下文",
+      "collaboration_correlation": "关联 ID",
+      "collaboration_orchestrator": "编排者",
+      "copy_value": "复制"
     },
     "loading": "加载智能体中...",
     "delete_confirm": "确定删除智能体“{name}”吗？此操作无法撤销。",
@@ -1475,6 +1487,10 @@
   },
   "workflow_run": {
     "run_id": "运行 ID",
+    "correlation_id": "协作关联 ID",
+    "correlation_default": "与运行时默认 wfex 一致",
+    "correlation_hint": "未在 global_context 中指定时，运行时使用 wfex_{execution_id}，与 Agent 节点上下文一致。",
+    "orchestrator": "编排者",
     "title_default": "工作流执行",
     "graph": "图",
     "timeline": "时间线",
@@ -1509,7 +1525,15 @@
     "no_artifacts": "未发现产物。",
     "raw_output": "原始输出",
     "error": "错误",
-    "execution_logs": "执行日志"
+    "execution_logs": "执行日志",
+    "agent_handoff_title": "子 Agent 运行（协作）",
+    "open_agent_run": "在智能体运行页打开",
+    "copy_session_id": "复制 session id",
+    "collaboration_query_title": "协作链（API 查询）",
+    "copy_correlation_id": "复制 correlation",
+    "query_same_chain": "列出同链会话",
+    "query_same_chain_orch": "同链且同编排者",
+    "open_session_in_run": "在智能体运行页打开此会话"
   },
   "workflow": {
     "title": "工作流",
