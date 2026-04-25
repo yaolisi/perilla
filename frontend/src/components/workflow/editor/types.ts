@@ -4,6 +4,7 @@
 
 export type EditorNodeType =
   | 'start'
+  | 'group'
   | 'llm'
   | 'agent'
   | 'embedding'

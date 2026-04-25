@@ -4,6 +4,8 @@
  */
 type SelectById = (nodeId: string) => void
 let selectById: SelectById | null = null
+type GroupResizeStart = (nodeId: string, clientX: number, clientY: number) => void
+let groupResizeStart: GroupResizeStart | null = null
 
 export function registerWorkflowCanvasSelect(fn: SelectById | null) {
   selectById = fn
@@ -13,4 +15,12 @@ export function registerWorkflowCanvasSelect(fn: SelectById | null) {
 export function requestWorkflowNodeSelect(nodeId: string) {
   console.log('[canvasSelection] requestWorkflowNodeSelect:', nodeId, 'handler exists:', !!selectById)
   selectById?.(nodeId)
+}
+
+export function registerWorkflowGroupResizeStart(fn: GroupResizeStart | null) {
+  groupResizeStart = fn
+}
+
+export function requestWorkflowGroupResizeStart(nodeId: string, clientX: number, clientY: number) {
+  groupResizeStart?.(nodeId, clientX, clientY)
 }

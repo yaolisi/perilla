@@ -4,6 +4,7 @@ import type { EditorNodeType, WorkflowNodeData } from './types'
 
 const EDITOR_TO_RUNTIME_TYPE: Record<EditorNodeType, string> = {
   start: 'input',
+  group: 'group',
   llm: 'llm',
   agent: 'agent',
   embedding: 'embedding',

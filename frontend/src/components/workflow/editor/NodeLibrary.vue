@@ -24,6 +24,7 @@ const { t } = useI18n()
 
 const iconMap: Record<EditorNodeType, typeof Brain> = {
   start: Brain,
+  group: Copy,
   llm: Brain,
   agent: User,
   embedding: Layers,

@@ -47,6 +47,17 @@ const selectedNode = computed(() =>
     : null
 )
 
+function isCanvasGroupNode(node: Node<WorkflowNodeData>): boolean {
+  return node.data?.type === 'group' || (node.data?.config as Record<string, unknown> | undefined)?.__canvasGroup === true
+}
+
+function getPersistableGraph() {
+  const nodes = editorNodes.value.filter((node) => !isCanvasGroupNode(node))
+  const nodeIdSet = new Set(nodes.map((node) => node.id))
+  const edges = editorEdges.value.filter((edge) => nodeIdSet.has(edge.source) && nodeIdSet.has(edge.target))
+  return { nodes, edges }
+}
+
 type EditorSnapshot = {
   workflowName: string
   nodes: Node<WorkflowNodeData>[]
@@ -207,7 +218,8 @@ function goBack() {
 
 async function saveWorkflow() {
   if (saveInProgress.value) return
-  const { valid, errors } = validateWorkflowNodes(editorNodes.value)
+  const { nodes, edges } = getPersistableGraph()
+  const { valid, errors } = validateWorkflowNodes(nodes)
   if (!valid) {
     validationErrors.value = errors
     return
@@ -217,7 +229,7 @@ async function saveWorkflow() {
   saveInProgress.value = true
   try {
     await updateWorkflow(workflowId, { name: (snapshot.workflowName || 'Untitled Workflow').trim() })
-    const dag = toWorkflowDag(editorNodes.value, editorEdges.value)
+    const dag = toWorkflowDag(nodes, edges)
     await createWorkflowVersion(workflowId, {
       description: `Saved at ${new Date().toISOString().slice(0, 19)}`,
       dag,
@@ -234,7 +246,8 @@ async function saveWorkflow() {
 }
 
 async function runWorkflowSaveAndRun() {
-  const { valid, errors } = validateWorkflowNodes(editorNodes.value)
+  const { nodes, edges } = getPersistableGraph()
+  const { valid, errors } = validateWorkflowNodes(nodes)
   if (!valid) {
     validationErrors.value = errors
     return
@@ -244,7 +257,7 @@ async function runWorkflowSaveAndRun() {
   saveInProgress.value = true
   try {
     await updateWorkflow(workflowId, { name: (snapshot.workflowName || 'Untitled Workflow').trim() })
-    const dag = toWorkflowDag(editorNodes.value, editorEdges.value)
+    const dag = toWorkflowDag(nodes, edges)
     await createWorkflowVersion(workflowId, {
       description: `Saved at ${new Date().toISOString().slice(0, 19)}`,
       dag,
@@ -338,8 +351,9 @@ function onEdgesUpdate(nextEdges: Edge[]) {
 }
 
 function runPreflightCheck() {
-  const baseCheck = validateWorkflowNodes(editorNodes.value)
-  const preflight = validateWorkflowPreflight(editorNodes.value, editorEdges.value)
+  const { nodes, edges } = getPersistableGraph()
+  const baseCheck = validateWorkflowNodes(nodes)
+  const preflight = validateWorkflowPreflight(nodes, edges)
   const errors = [...baseCheck.errors, ...preflight.errors]
   validationErrors.value = errors
 }
@@ -389,6 +403,11 @@ function removeNode(nodeId: string) {
 
 function onKeydown(e: KeyboardEvent) {
   const meta = e.metaKey || e.ctrlKey
+  if (meta && e.key.toLowerCase() === 's') {
+    e.preventDefault()
+    void saveWorkflow()
+    return
+  }
   if (meta && e.key.toLowerCase() === 'z' && !e.shiftKey) {
     e.preventDefault()
     undo()
