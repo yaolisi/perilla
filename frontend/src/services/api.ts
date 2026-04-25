@@ -1042,6 +1042,9 @@ export interface WorkflowExecutionRecord {
     duration_ms?: number | null
     retry_count?: number
     error_message?: string | null
+    error_type?: string | null
+    error_stack?: string | null
+    failure_strategy?: string | null
   }>
 }
 
@@ -1063,6 +1066,9 @@ export interface WorkflowExecutionStatusRecord {
     duration_ms?: number | null
     retry_count?: number
     error_message?: string | null
+    error_type?: string | null
+    error_stack?: string | null
+    failure_strategy?: string | null
   }>
 }
 

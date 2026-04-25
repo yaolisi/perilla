@@ -46,6 +46,7 @@ const loading = ref(false)
 const logs = ref<string[]>([])
 const runError = ref<string | null>(null)
 const selectedNodeId = ref<string>('')
+const expandedErrorStackNodes = ref<Record<string, boolean>>({})
 const viewMode = ref<'graph' | 'timeline' | 'list' | 'delivery'>('timeline')
 /** 调试用：同步等待执行完成（可能超时，仅建议调试时使用） */
 const waitForCompletion = ref(false)
@@ -103,6 +104,12 @@ const selectedNode = computed<any | null>(() => {
     finished_at: fromTimeline?.finished_at ?? fromStates?.finished_at ?? null,
     retry_count: fromTimeline?.retry_count ?? fromStates?.retry_count ?? 0,
     error_message: fromTimeline?.error_message ?? fromStates?.error_message ?? null,
+    error_type: fromTimeline?.error_type ?? fromStates?.error_details?.error_type ?? null,
+    error_stack: fromTimeline?.error_stack ?? fromStates?.error_details?.stack_trace ?? null,
+    failure_strategy:
+      fromTimeline?.failure_strategy
+      ?? fromStates?.error_details?.failure_strategy
+      ?? null,
     input_data: fromStates?.input_data,
     output_data: fromStates?.output_data,
     error_details: fromStates?.error_details,
@@ -361,7 +368,13 @@ function pushLog(line: string, dedupeKey?: string) {
 }
 
 function nodeLogSignature(n: any): string {
-  return `${normalizeNodeStatus(n?.state)}|${intOrZero(n?.retry_count)}|${String(n?.error_message || '')}`
+  return [
+    normalizeNodeStatus(n?.state),
+    intOrZero(n?.retry_count),
+    String(n?.error_message || ''),
+    String(n?.error_type || ''),
+    String(n?.failure_strategy || ''),
+  ].join('|')
 }
 
 function intOrZero(v: unknown): number {
@@ -407,6 +420,22 @@ function ensureSelectedNode() {
   }
   if (selectedNodeId.value && !nodeStates.value.some((n) => n.node_id === selectedNodeId.value)) {
     selectedNodeId.value = nodeStates.value[0]?.node_id || ''
+  }
+}
+
+function hasNodeErrorStack(node: any): boolean {
+  const stack = node?.error_stack
+  return typeof stack === 'string' && stack.trim().length > 0
+}
+
+function isErrorStackExpanded(nodeId: string): boolean {
+  return !!expandedErrorStackNodes.value[nodeId]
+}
+
+function toggleErrorStack(nodeId: string): void {
+  expandedErrorStackNodes.value = {
+    ...expandedErrorStackNodes.value,
+    [nodeId]: !expandedErrorStackNodes.value[nodeId],
   }
 }
 
@@ -886,7 +915,7 @@ onUnmounted(() => {
     </header>
 
     <main class="flex-1 min-h-0 grid grid-cols-[260px_1fr_320px]">
-      <aside class="border-r border-slate-800/80 min-h-0">
+      <aside class="border-r border-slate-800/80 min-h-0" aria-label="Workflow node list">
         <div class="px-3 py-2 text-xs uppercase tracking-wide text-slate-400 border-b border-slate-800/80">{{ t('workflow_run.node_name') }}</div>
         <div class="overflow-auto h-[calc(100vh-270px)] px-2 py-2">
           <div
@@ -952,6 +981,22 @@ onUnmounted(() => {
               <Badge variant="secondary" :class="statusBadgeClass(normalizeNodeStatus(n.state))">{{ normalizeNodeStatus(n.state) }}</Badge>
             </div>
             <div class="mt-2 text-slate-400">retry: {{ n.retry_count || 0 }}</div>
+            <div v-if="n.failure_strategy || n.error_type" class="mt-1 flex flex-wrap items-center gap-2">
+              <Badge
+                v-if="n.failure_strategy"
+                variant="secondary"
+                class="text-[10px] uppercase border border-amber-500/30 bg-amber-500/10 text-amber-300"
+              >
+                strategy: {{ n.failure_strategy }}
+              </Badge>
+              <Badge
+                v-if="n.error_type"
+                variant="secondary"
+                class="text-[10px] border border-rose-500/30 bg-rose-500/10 text-rose-300"
+              >
+                {{ n.error_type }}
+              </Badge>
+            </div>
             <pre class="mt-2 rounded bg-slate-950/60 p-2 overflow-auto text-[11px]">{{ prettyJson(getNodeOutputData(n.node_id)) }}</pre>
           </div>
         </div>
@@ -988,7 +1033,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <aside class="min-h-0">
+      <aside class="min-h-0" aria-label="Workflow node inspector">
         <div class="px-3 py-2 text-xs uppercase tracking-wide text-slate-400 border-b border-slate-800/80">Node Inspector</div>
         <div class="h-[calc(100vh-270px)] overflow-auto p-3 space-y-3">
           <div v-if="selectedNode" class="rounded border border-slate-800 bg-slate-900/60 p-3">
@@ -1135,7 +1180,44 @@ onUnmounted(() => {
           <div v-if="selectedNode?.error_message" class="rounded border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-300">
             <div class="mb-1">{{ t('workflow_run.error') }}</div>
             <div>{{ selectedNode.error_message }}</div>
+            <div v-if="selectedNode.failure_strategy || selectedNode.error_type" class="mt-2 flex flex-wrap gap-2">
+              <Badge
+                v-if="selectedNode.failure_strategy"
+                variant="secondary"
+                class="text-[10px] uppercase border border-amber-500/30 bg-amber-500/10 text-amber-200"
+              >
+                failure_strategy: {{ selectedNode.failure_strategy }}
+              </Badge>
+              <Badge
+                v-if="selectedNode.error_type"
+                variant="secondary"
+                class="text-[10px] border border-rose-500/30 bg-rose-500/10 text-rose-200"
+              >
+                error_type: {{ selectedNode.error_type }}
+              </Badge>
+              <Badge
+                variant="secondary"
+                class="text-[10px] border border-slate-500/30 bg-slate-900/60 text-slate-200"
+              >
+                retry_count: {{ selectedNode.retry_count || 0 }}
+              </Badge>
+            </div>
             <pre v-if="selectedNode.error_details" class="mt-2 rounded bg-red-950/40 p-2 overflow-auto">{{ prettyJson(selectedNode.error_details) }}</pre>
+            <div v-if="hasNodeErrorStack(selectedNode)" class="mt-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                class="h-7 border-red-500/40 bg-red-950/30 text-[11px] text-red-200 hover:bg-red-900/40"
+                @click="toggleErrorStack(selectedNode.node_id)"
+              >
+                {{ isErrorStackExpanded(selectedNode.node_id) ? '收起错误堆栈' : '展开错误堆栈' }}
+              </Button>
+              <pre
+                v-if="isErrorStackExpanded(selectedNode.node_id)"
+                class="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 text-[11px] text-red-100"
+              >{{ selectedNode.error_stack }}</pre>
+            </div>
           </div>
         </div>
       </aside>

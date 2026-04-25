@@ -15,7 +15,6 @@ import {
   Mic,
   Zap,
   Search,
-  Zap,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'

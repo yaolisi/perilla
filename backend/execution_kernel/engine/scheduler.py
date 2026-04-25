@@ -9,6 +9,7 @@ from typing import Dict, Any, Set, List, Optional
 import logging
 from collections import defaultdict
 import os
+import traceback
 
 from execution_kernel.models.graph_definition import GraphDefinition, EdgeTrigger, SubgraphDefinition
 from execution_kernel.models.node_models import NodeRuntime, NodeState, GraphInstanceState
@@ -691,6 +692,34 @@ class Scheduler:
             
         except Exception as e:
             logger.exception(f"Node {node_id} execution failed: {e}")
+            stack_trace = traceback.format_exc()
+            failure_strategy = "stop"
+            if isinstance(getattr(node_def, "config", None), dict):
+                eh = node_def.config.get("error_handling")
+                if isinstance(eh, dict):
+                    fs = str(eh.get("on_failure") or "").strip().lower()
+                    if fs in {"stop", "continue", "replan"}:
+                        failure_strategy = fs
+            if failure_strategy == "replan":
+                async with self.db.async_session() as session:
+                    instance_repo = GraphInstanceRepository(session)
+                    instance_db = await instance_repo.get(instance_id)
+                    if instance_db:
+                        gc = dict(instance_db.global_context or {})
+                        reqs = gc.get("replan_requests")
+                        if not isinstance(reqs, list):
+                            reqs = []
+                        reqs.append(
+                            {
+                                "node_id": node_id,
+                                "reason": str(e),
+                                "ts": int(_utc_now_naive().timestamp() * 1000),
+                            }
+                        )
+                        gc["replan_requests"] = reqs
+                        instance_db.global_context = gc
+                        flag_modified(instance_db, "global_context")
+                        await session.commit()
             
             # V2.6: 发射 NodeFailed 事件
             async with self.db.async_session() as session:
@@ -703,6 +732,8 @@ class Scheduler:
                         error_type=type(e).__name__,
                         error_message=str(e),
                         retry_count=node_runtime.retry_count,
+                        stack_trace=stack_trace,
+                        failure_strategy=failure_strategy,
                     ),
                 )
             

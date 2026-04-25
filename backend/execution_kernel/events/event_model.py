@@ -153,13 +153,20 @@ class EventPayloadBuilder:
         error_type: str,
         error_message: str,
         retry_count: int,
+        stack_trace: Optional[str] = None,
+        failure_strategy: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return {
+        payload = {
             "node_id": node_id,
             "error_type": error_type,
             "error_message": error_message,
             "retry_count": retry_count,
         }
+        if stack_trace:
+            payload["stack_trace"] = stack_trace
+        if failure_strategy:
+            payload["failure_strategy"] = failure_strategy
+        return payload
     
     @staticmethod
     def node_retry_scheduled(

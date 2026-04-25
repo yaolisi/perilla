@@ -310,6 +310,62 @@ class WorkflowRuntime:
             "script": self._script_handler,
         })
 
+    @staticmethod
+    def _collect_failed_nodes(node_states: List[WorkflowExecutionNode]) -> List[Dict[str, Any]]:
+        failed: List[Dict[str, Any]] = []
+        for n in node_states or []:
+            s = n.state.value if hasattr(n.state, "value") else str(n.state)
+            if s not in {"failed", "timeout"}:
+                continue
+            failed.append(
+                {
+                    "node_id": n.node_id,
+                    "state": s,
+                    "error_message": n.error_message,
+                    "error_details": n.error_details if isinstance(n.error_details, dict) else None,
+                    "retry_count": int(n.retry_count or 0),
+                }
+            )
+        return failed
+
+    def _build_global_failure_details(
+        self,
+        execution: WorkflowExecution,
+        *,
+        error_message: str,
+        exception_type: str,
+    ) -> Dict[str, Any]:
+        global_error_cfg = (
+            execution.global_context.get("error_handling")
+            if isinstance(execution.global_context, dict)
+            else {}
+        )
+        if not isinstance(global_error_cfg, dict):
+            global_error_cfg = {}
+        on_failure_cfg = global_error_cfg.get("on_failure")
+        if not isinstance(on_failure_cfg, dict):
+            on_failure_cfg = {}
+
+        failed_nodes = self._collect_failed_nodes(execution.node_states or [])
+        details: Dict[str, Any] = {
+            "exception_type": exception_type,
+            "message": error_message,
+            "failed_nodes": failed_nodes,
+        }
+        if on_failure_cfg.get("alert"):
+            logger.error(
+                "[WorkflowRuntime] GLOBAL_FAILURE_ALERT execution_id=%s workflow_id=%s failed_nodes=%s message=%s",
+                execution.execution_id,
+                execution.workflow_id,
+                len(failed_nodes),
+                error_message,
+            )
+            details["alert_triggered"] = True
+        if on_failure_cfg.get("rollback"):
+            details["rollback_requested"] = True
+            details["rollback_note"] = "rollback request captured; executor should handle rollback action."
+        return details
+
     def _ensure_execution_not_cancelled(self, context: GraphContext) -> None:
         global_ctx = getattr(context, "global_data", {}) or {}
         execution_id = str(global_ctx.get("execution_id") or "").strip()
@@ -1170,13 +1226,19 @@ class WorkflowRuntime:
             
         except Exception as e:
             logger.error(f"[WorkflowRuntime] Execution failed: {execution_id} - {e}")
+            latest_execution = self.execution_repository.get_by_id(execution_id) or execution
+            failure_details = self._build_global_failure_details(
+                latest_execution,
+                error_message=str(e),
+                exception_type=type(e).__name__,
+            )
             
             # 标记执行失败
             failed_execution = self.execution_repository.update_state(
                 execution_id,
                 WorkflowExecutionState.FAILED,
                 error_message=str(e),
-                error_details={"exception_type": type(e).__name__}
+                error_details=failure_details,
             )
             if failed_execution is None:
                 latest = self.execution_repository.get_by_id(execution_id)

@@ -153,6 +153,22 @@ class GraphRuntimeAdapter:
             "timeout_seconds": config.get("timeout_seconds", 300.0),
             "cacheable": config.get("cacheable", False),
         }
+        # 兼容节点级 error_handling 配置：
+        # error_handling.max_retries / retry_interval_seconds / on_failure(stop|continue|replan)
+        error_handling = config.get("error_handling")
+        if isinstance(error_handling, dict):
+            retry_policy = dict(config.get("retry_policy") or {})
+            if error_handling.get("max_retries") is not None and retry_policy.get("max_retries") is None:
+                retry_policy["max_retries"] = error_handling.get("max_retries")
+            if (
+                error_handling.get("retry_interval_seconds") is not None
+                and retry_policy.get("backoff_seconds") is None
+            ):
+                retry_policy["backoff_seconds"] = error_handling.get("retry_interval_seconds")
+                # 节点级固定重试间隔默认关闭指数退避，保留 max_backoff 防御
+                retry_policy.setdefault("backoff_multiplier", 1.0)
+            if retry_policy:
+                kwargs["retry_policy"] = retry_policy
         retry_policy = config.get("retry_policy")
         if retry_policy is not None:
             kwargs["retry_policy"] = retry_policy
@@ -226,6 +242,17 @@ class GraphRuntimeAdapter:
     def _parse_node_error_details(cls, error_message: Optional[str]) -> Optional[Dict[str, Any]]:
         if not error_message or not isinstance(error_message, str):
             return None
+        kernel_marker = "__EKERR__:"
+        if error_message.startswith(kernel_marker):
+            payload = error_message[len(kernel_marker):].strip()
+            if not payload:
+                return None
+            try:
+                parsed = json.loads(payload)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                return {"message": payload}
         marker = "AGENT_NODE_OUTPUT_SCHEMA_ERROR:"
         if marker not in error_message:
             return None
@@ -296,6 +323,14 @@ class GraphRuntimeAdapter:
             for node_runtime in node_runtimes:
                 if node_runtime.output_data:
                     node_outputs[node_runtime.node_id] = node_runtime.output_data
+                parsed_error_details = cls._parse_node_error_details(node_runtime.error_message)
+                display_error_message = node_runtime.error_message
+                if isinstance(parsed_error_details, dict):
+                    display_error_message = (
+                        str(parsed_error_details.get("message") or node_runtime.error_message)
+                        if parsed_error_details.get("message") is not None
+                        else node_runtime.error_message
+                    )
                 state_val = (
                     node_runtime.state.value if hasattr(node_runtime.state, "value") else str(node_runtime.state)
                 )
@@ -305,8 +340,8 @@ class GraphRuntimeAdapter:
                         "state": _map_state(state_val),
                         "input_data": node_runtime.input_data or {},
                         "output_data": node_runtime.output_data or {},
-                        "error_message": node_runtime.error_message,
-                        "error_details": cls._parse_node_error_details(node_runtime.error_message),
+                        "error_message": display_error_message,
+                        "error_details": parsed_error_details,
                         "started_at": node_runtime.started_at.isoformat() if node_runtime.started_at else None,
                         "finished_at": node_runtime.finished_at.isoformat() if node_runtime.finished_at else None,
                         "retry_count": int(node_runtime.retry_count or 0),

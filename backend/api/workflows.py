@@ -2252,6 +2252,9 @@ def _ensure_timeline_node(
             "duration_ms": None,
             "retry_count": retry_counts.get(node_id, 0),
             "error_message": None,
+            "error_type": None,
+            "error_stack": None,
+            "failure_strategy": None,
         },
     )
     row["node_id"] = node_id
@@ -2313,6 +2316,9 @@ def _handle_node_succeeded_event(
     row["finished_at"] = finished_ts
     row["duration_ms"] = payload.get("duration_ms")
     row["error_message"] = None
+    row["error_type"] = None
+    row["error_stack"] = None
+    row["failure_strategy"] = None
 
 
 def _handle_node_failed_event(
@@ -2329,6 +2335,9 @@ def _handle_node_failed_event(
     row = _ensure_timeline_node(by_node, retry_counts, node_id, state="failed")
     row["finished_at"] = finished_ts
     row["error_message"] = payload.get("error_message")
+    row["error_type"] = payload.get("error_type")
+    row["error_stack"] = payload.get("stack_trace")
+    row["failure_strategy"] = payload.get("failure_strategy")
     row["retry_count"] = payload.get("retry_count", 0)
 
 
@@ -2428,6 +2437,9 @@ def _build_node_timeline_from_events(events: List[ExecutionEvent]) -> List[Dict[
         row.setdefault("finished_at", None)
         row.setdefault("duration_ms", None)
         row.setdefault("error_message", None)
+        row.setdefault("error_type", None)
+        row.setdefault("error_stack", None)
+        row.setdefault("failure_strategy", None)
 
     return list(by_node.values())
 
@@ -2470,6 +2482,9 @@ def _merge_timeline_with_node_states(
             "duration_ms": duration_ms,
             "retry_count": n.retry_count,
             "error_message": n.error_message,
+            "error_type": n.error_details.get("error_type") if isinstance(n.error_details, dict) else None,
+            "error_stack": n.error_details.get("stack_trace") if isinstance(n.error_details, dict) else None,
+            "failure_strategy": n.error_details.get("failure_strategy") if isinstance(n.error_details, dict) else None,
         })
     return out_list
 
@@ -2489,6 +2504,9 @@ def _node_timeline_row(node: WorkflowExecutionNode) -> Dict[str, Any]:
         "duration_ms": _node_duration_ms(node),
         "retry_count": node.retry_count,
         "error_message": node.error_message,
+        "error_type": node.error_details.get("error_type") if isinstance(node.error_details, dict) else None,
+        "error_stack": node.error_details.get("stack_trace") if isinstance(node.error_details, dict) else None,
+        "failure_strategy": node.error_details.get("failure_strategy") if isinstance(node.error_details, dict) else None,
     }
 
 

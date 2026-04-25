@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, Callable, Awaitable, Union
 import logging
 import traceback
+import json
 
 from execution_kernel.models.graph_definition import GraphDefinition, NodeDefinition, NodeType
 from execution_kernel.models.node_models import NodeRuntime, NodeState
@@ -83,6 +84,16 @@ class Executor:
         以便根据 node_def.config 分发到不同执行逻辑（如 skill / internal）。
         """
         self.node_handlers[node_type] = handler
+
+    @staticmethod
+    def _pack_error_message(error_message: str, error_type: str, stack_trace: Optional[str]) -> str:
+        """将节点异常打包为可解析字符串，便于 API 做错误可视化。"""
+        payload = {
+            "message": error_message,
+            "error_type": error_type,
+            "stack_trace": stack_trace or "",
+        }
+        return f"__EKERR__:{json.dumps(payload, ensure_ascii=False)}"
     
     async def execute_node(
         self,
@@ -163,9 +174,14 @@ class Executor:
         except Exception as e:
             error_type = type(e).__name__
             error_message = str(e)
+            packed_error = self._pack_error_message(
+                error_message=error_message,
+                error_type=error_type,
+                stack_trace=traceback.format_exc(),
+            )
             await self.state_machine.fail(
                 node_runtime.id, 
-                error_message=error_message,
+                error_message=packed_error,
                 error_type=error_type,
             )
             logger.error(f"Node {node_runtime.id} failed: {error_message}")
@@ -216,7 +232,19 @@ class Executor:
         3. 计算 backoff 时间
         4. 等待后重试
         """
+        cfg = node_def.config if isinstance(node_def.config, dict) else {}
+        error_handling = cfg.get("error_handling") if isinstance(cfg.get("error_handling"), dict) else {}
+        failure_strategy = str(error_handling.get("on_failure") or "stop").strip().lower()
+        if failure_strategy not in {"stop", "continue", "replan"}:
+            failure_strategy = "stop"
+
         max_retries = node_def.retry_policy.max_retries
+        custom_retry_interval = error_handling.get("retry_interval_seconds")
+        if custom_retry_interval is not None:
+            try:
+                custom_retry_interval = max(0.0, float(custom_retry_interval))
+            except (TypeError, ValueError):
+                custom_retry_interval = None
         
         while True:
             try:
@@ -239,10 +267,28 @@ class Executor:
                     logger.error(
                         f"Node {node_runtime.id} exceeded max retries ({max_retries})"
                     )
+                    if failure_strategy in {"continue", "replan"}:
+                        handled_error = str(e)
+                        # 失败降级：将节点标记为 SKIPPED，使工作流可以继续向后调度。
+                        await self.state_machine.skip(
+                            node_runtime.id,
+                            reason=f"degraded_by_{failure_strategy}: {handled_error}",
+                        )
+                        return {
+                            "degraded": True,
+                            "failure_strategy": failure_strategy,
+                            "error": handled_error,
+                            "retry_count": retry_count,
+                            "replan_requested": failure_strategy == "replan",
+                        }
                     raise
                 
                 # 计算退避时间
-                backoff = node_def.retry_policy.calculate_backoff(retry_count)
+                backoff = (
+                    float(custom_retry_interval)
+                    if isinstance(custom_retry_interval, (int, float))
+                    else node_def.retry_policy.calculate_backoff(retry_count)
+                )
                 
                 # 进入重试状态
                 await self.state_machine.retry(node_runtime.id, retry_count + 1)
