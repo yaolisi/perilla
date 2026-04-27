@@ -5,7 +5,10 @@ import pytest
 
 from core.agent_runtime.collaboration import (
     STATE_KEY_COLLABORATION,
+    STATE_KEY_COLLABORATION_MESSAGES,
+    append_collaboration_message_to_state,
     build_api_root_collaboration,
+    build_collaboration_message,
     build_workflow_collaboration,
     get_collaboration_persist_dict,
     merge_collaboration_into_state,
@@ -137,3 +140,36 @@ def test_merge_preserves_other_state():
     m = merge_collaboration_into_state({"k": 1}, {"correlation_id": "x", "orchestrator_agent_id": "y", "invoked_from": {}})
     assert m["k"] == 1
     assert m[STATE_KEY_COLLABORATION]["correlation_id"] == "x"
+
+
+def test_build_collaboration_message_normalizes_protocol_fields():
+    msg = build_collaboration_message(
+        {
+            "sender": "manager-1",
+            "receiver": "worker-2",
+            "task_id": "task-3",
+            "content": {"step": "collect"},
+            "status": "SUCCESS",
+        }
+    )
+    assert msg["sender"] == "manager-1"
+    assert msg["receiver"] == "worker-2"
+    assert msg["task_id"] == "task-3"
+    assert msg["content"]["step"] == "collect"
+    assert msg["status"] == "success"
+    assert msg["message_id"].startswith("cmsg_")
+
+
+def test_append_collaboration_message_to_state_keeps_recent_window():
+    base = {
+        STATE_KEY_COLLABORATION: {
+            "correlation_id": "corr-1",
+            "messages": [
+                {"task_id": "t1"},
+            ],
+        }
+    }
+    updated = append_collaboration_message_to_state(base, {"task_id": "t2"}, max_messages=1)
+    messages = updated[STATE_KEY_COLLABORATION][STATE_KEY_COLLABORATION_MESSAGES]
+    assert len(messages) == 1
+    assert messages[0]["task_id"] == "t2"

@@ -37,6 +37,9 @@ class GraphRuntimeAdapter:
         "end": NodeType.TOOL,     # 语义等同 output
         # kernel 暂无独立 AGENT 类型，复用 TOOL 调度并在 config.workflow_node_type 区分
         "agent": NodeType.TOOL,
+        "manager": NodeType.TOOL,
+        "worker": NodeType.TOOL,
+        "reflector": NodeType.TOOL,
         "approval": NodeType.TOOL,
         "sub_workflow": NodeType.TOOL,
         "condition": NodeType.CONDITION,
@@ -78,7 +81,21 @@ class GraphRuntimeAdapter:
         cfg = node.config or {}
         cfg_type = str(cfg.get("workflow_node_type") or "").strip().lower()
         normalized_cfg_type = cls._normalize_workflow_node_type(cfg_type)
-        if normalized_cfg_type in {"input", "output", "agent", "approval", "sub_workflow", "condition", "loop", "replan", "script", "llm"}:
+        if normalized_cfg_type in {
+            "input",
+            "output",
+            "agent",
+            "manager",
+            "worker",
+            "reflector",
+            "approval",
+            "sub_workflow",
+            "condition",
+            "loop",
+            "replan",
+            "script",
+            "llm",
+        }:
             return normalized_cfg_type
 
         normalized_type = cls._normalize_workflow_node_type(node.type)
@@ -256,6 +273,20 @@ class GraphRuntimeAdapter:
                 return {"message": payload}
         marker = "AGENT_NODE_OUTPUT_SCHEMA_ERROR:"
         if marker not in error_message:
+            runtime_marker = "AGENT_NODE_RUNTIME_ERROR_DETAILS:"
+            if runtime_marker in error_message:
+                payload = error_message.split(runtime_marker, 1)[1].strip()
+                if not payload:
+                    return None
+                try:
+                    parsed = json.loads(payload)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    return {
+                        "error_code": "AGENT_NODE_RUNTIME_ERROR",
+                        "message": payload,
+                    }
             return None
         payload = error_message.split(marker, 1)[1].strip()
         if not payload:
@@ -357,6 +388,7 @@ class GraphRuntimeAdapter:
                             "agent_session_id": out.get("agent_session_id"),
                             "status": out.get("status", "success"),
                             "response_preview": out.get("response_preview"),
+                            "recovery": out.get("recovery") if isinstance(out.get("recovery"), dict) else None,
                             "started_at": node_runtime.started_at.isoformat() if node_runtime.started_at else None,
                             "finished_at": node_runtime.finished_at.isoformat() if node_runtime.finished_at else None,
                             "duration_ms": int((node_runtime.finished_at - node_runtime.started_at).total_seconds() * 1000)
@@ -447,10 +479,10 @@ class GraphRuntimeAdapter:
                         errors.append(
                             f"Sub-workflow node {node.id} with fixed selector requires target_version_id or target_version"
                         )
-            elif normalized_type == "agent":
+            elif normalized_type in {"agent", "manager", "worker", "reflector"}:
                 config = node.config or {}
                 if not str(config.get("agent_id") or "").strip():
-                    errors.append(f"Agent node {node.id} missing 'agent_id' config")
+                    errors.append(f"{normalized_type.capitalize()} node {node.id} missing 'agent_id' config")
             elif normalized_type == "input":
                 config = node.config or {}
                 if "input_key" in config:

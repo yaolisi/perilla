@@ -78,6 +78,7 @@ class WorkflowVersionService:
         errors = dag.validate_dag()
         if errors:
             raise ValueError(f"DAG validation failed: {'; '.join(errors)}")
+        self._validate_workflow_global_config(dag.global_config or {})
         self._validate_sub_workflow_references(workflow_id, dag)
         
         # 生成版本号
@@ -149,7 +150,7 @@ class WorkflowVersionService:
 
     @staticmethod
     def _normalize_agent_config(cfg: Dict[str, Any], workflow_node_type: str) -> None:
-        if workflow_node_type != "agent":
+        if workflow_node_type not in {"agent", "manager", "worker", "reflector"}:
             return
         timeout = cfg.get("timeout")
         legacy_timeout = cfg.get("agent_timeout_seconds")
@@ -258,6 +259,7 @@ class WorkflowVersionService:
         )
         if errors:
             raise ValueError(f"Cannot publish invalid DAG: {'; '.join(errors)}")
+        self._validate_workflow_global_config(version.dag.global_config or {})
         self._validate_sub_workflow_references(version.workflow_id, version.dag)
         self._validate_sub_workflow_cycles(version.workflow_id, version.version_id, version.dag)
         impact = self.analyze_subworkflow_impact(
@@ -320,6 +322,53 @@ class WorkflowVersionService:
                 raise ValueError(
                     f"Sub-workflow node {node.id} target version does not belong to target_workflow_id"
                 )
+
+    @staticmethod
+    def _validate_workflow_global_config(global_config: Dict[str, Any]) -> None:
+        if not isinstance(global_config, dict):
+            raise ValueError("workflow global_config must be object")
+        reflector_cfg = global_config.get("reflector")
+        if reflector_cfg is None:
+            return
+        if not isinstance(reflector_cfg, dict):
+            raise ValueError("workflow global_config.reflector must be object")
+        allowed_keys = {"max_retries", "retry_interval_seconds", "fallback_agent_id"}
+        unknown_keys = sorted(set(reflector_cfg.keys()) - allowed_keys)
+        if unknown_keys:
+            raise ValueError(
+                "workflow global_config.reflector has unsupported keys: "
+                + ",".join(unknown_keys)
+            )
+
+        if "max_retries" in reflector_cfg:
+            try:
+                max_retries = int(reflector_cfg.get("max_retries"))
+            except (TypeError, ValueError):
+                raise ValueError("workflow global_config.reflector.max_retries must be integer")
+            if max_retries < 0 or max_retries > 20:
+                raise ValueError("workflow global_config.reflector.max_retries out of range [0,20]")
+
+        if "retry_interval_seconds" in reflector_cfg:
+            try:
+                retry_interval = float(reflector_cfg.get("retry_interval_seconds"))
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "workflow global_config.reflector.retry_interval_seconds must be number"
+                )
+            if retry_interval < 0.0 or retry_interval > 60.0:
+                raise ValueError(
+                    "workflow global_config.reflector.retry_interval_seconds out of range [0,60]"
+                )
+
+        if "fallback_agent_id" in reflector_cfg:
+            fallback_agent_id = reflector_cfg.get("fallback_agent_id")
+            if fallback_agent_id is not None:
+                if not isinstance(fallback_agent_id, str):
+                    raise ValueError("workflow global_config.reflector.fallback_agent_id must be string")
+                if len(fallback_agent_id) > 512:
+                    raise ValueError(
+                        "workflow global_config.reflector.fallback_agent_id too long (max 512)"
+                    )
 
     def _validate_sub_workflow_cycles(
         self,

@@ -18,7 +18,7 @@ import type { Edge } from '@vue-flow/core'
 import type { WorkflowNodeData } from './editor/types'
 import { toWorkflowDag, fromWorkflowDag } from './editor/serialization'
 import { validateWorkflowNodes, validateWorkflowPreflight } from './editor/validation'
-import { getWorkflow, getWorkflowVersion, updateWorkflow, createWorkflowVersion } from '@/services/api'
+import { getWorkflow, getWorkflowVersion, getSystemConfig, updateWorkflow, createWorkflowVersion } from '@/services/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -76,6 +76,9 @@ const saveInProgress = ref(false)
 const EDIT_DRAFT_KEY = `workflow:edit:${workflowId}:draft`
 const validationErrors = ref<Array<{ nodeId: string; nodeLabel?: string; message: string }>>([])
 const draftRestorePending = ref<EditorSnapshot | null>(null)
+const reflectorMaxRetries = ref<number>(0)
+const reflectorRetryIntervalSeconds = ref<number>(1)
+const reflectorFallbackAgentId = ref('')
 
 const selectedNodeModelId = computed(() => {
   const c = selectedNode.value?.data?.config
@@ -103,6 +106,147 @@ const selectedNodeAgentDisplayName = computed(() => {
   const id = (c as Record<string, unknown>).agent_id
   return (typeof name === 'string' && name) || (typeof id === 'string' ? id : '')
 })
+
+const effectiveReflectorPolicy = computed(() => {
+  const selectedConfig = (selectedNode.value?.data?.config || {}) as Record<string, unknown>
+  const hasNodeRetry = selectedConfig.reflector_max_retries !== undefined
+  const hasNodeInterval = selectedConfig.reflector_retry_interval_seconds !== undefined
+  const hasNodeFallback = selectedConfig.reflector_fallback_agent_id !== undefined
+  const nodeRetry = Number(selectedConfig.reflector_max_retries)
+  const nodeInterval = Number(selectedConfig.reflector_retry_interval_seconds)
+  const nodeFallback = String(selectedConfig.reflector_fallback_agent_id || '').trim()
+  return {
+    maxRetries: hasNodeRetry && Number.isFinite(nodeRetry) ? Math.max(0, Math.min(20, Math.trunc(nodeRetry))) : reflectorMaxRetries.value,
+    retryIntervalSeconds:
+      hasNodeInterval && Number.isFinite(nodeInterval)
+        ? Math.max(0, Math.min(60, Number(nodeInterval)))
+        : reflectorRetryIntervalSeconds.value,
+    fallbackAgentId: hasNodeFallback ? nodeFallback : reflectorFallbackAgentId.value,
+    maxRetriesSource: hasNodeRetry ? 'node' : 'global',
+    retryIntervalSource: hasNodeInterval ? 'node' : 'global',
+    fallbackSource: hasNodeFallback ? 'node' : 'global',
+    nodeType: selectedNode.value?.data?.type || null,
+  }
+})
+
+const reflectorOverrideNodes = computed(() => {
+  return (editorNodes.value || [])
+    .filter((node) => {
+      const cfg = (node.data?.config || {}) as Record<string, unknown>
+      return (
+        cfg.reflector_max_retries !== undefined ||
+        cfg.reflector_retry_interval_seconds !== undefined ||
+        cfg.reflector_fallback_agent_id !== undefined
+      )
+    })
+    .map((node) => {
+      const cfg = (node.data?.config || {}) as Record<string, unknown>
+      const overrideKeys: string[] = []
+      if (cfg.reflector_max_retries !== undefined) overrideKeys.push('max_retries')
+      if (cfg.reflector_retry_interval_seconds !== undefined) overrideKeys.push('retry_interval_seconds')
+      if (cfg.reflector_fallback_agent_id !== undefined) overrideKeys.push('fallback_agent_id')
+      return {
+        nodeId: node.id,
+        label: String(node.data?.label || node.id),
+        type: String(node.data?.type || ''),
+        overrideKeys,
+      }
+    })
+})
+
+const reflectorCoverageSummary = computed(() => {
+  const total = editorNodes.value.length
+  const overridden = reflectorOverrideNodes.value.length
+  return {
+    total,
+    overridden,
+    ratioText: `${overridden}/${total}`,
+    ratio: total > 0 ? overridden / total : 0,
+  }
+})
+
+const reflectorOverrideFieldStats = computed(() => {
+  let retriesCount = 0
+  let intervalCount = 0
+  let fallbackCount = 0
+  for (const node of editorNodes.value) {
+    const cfg = (node.data?.config || {}) as Record<string, unknown>
+    if (cfg.reflector_max_retries !== undefined) retriesCount += 1
+    if (cfg.reflector_retry_interval_seconds !== undefined) intervalCount += 1
+    if (cfg.reflector_fallback_agent_id !== undefined) fallbackCount += 1
+  }
+  return {
+    retriesCount,
+    intervalCount,
+    fallbackCount,
+  }
+})
+const importedGovernanceSnapshot = ref<{
+  workflow_id?: string
+  workflow_name?: string
+  exported_at?: string
+  coverage?: { overridden?: number; total?: number; ratioText?: string }
+  field_distribution?: { retriesCount?: number; intervalCount?: number; fallbackCount?: number }
+  overridden_nodes?: Array<{ nodeId?: string; label?: string; type?: string; overrideKeys?: string[] }>
+} | null>(null)
+const importedGovernanceError = ref('')
+const governanceUiMessage = ref('')
+const governanceHealthyThreshold = ref(0.1)
+const governanceWarningThreshold = ref(0.3)
+const governanceMaturity = computed(() => {
+  const ratio = reflectorCoverageSummary.value.ratio
+  const healthyThreshold = Math.max(0, Math.min(1, Number(governanceHealthyThreshold.value || 0.1)))
+  const warningThreshold = Math.max(healthyThreshold, Math.min(1, Number(governanceWarningThreshold.value || 0.3)))
+  if (ratio <= healthyThreshold) {
+    return {
+      level: 'Healthy',
+      toneClass: 'text-emerald-700 dark:text-emerald-300 border-emerald-500/40 bg-emerald-500/10',
+      hint: `节点覆盖较少（<= ${(healthyThreshold * 100).toFixed(0)}%），策略收敛良好。`,
+    }
+  }
+  if (ratio <= warningThreshold) {
+    return {
+      level: 'Warning',
+      toneClass: 'text-amber-700 dark:text-amber-300 border-amber-500/40 bg-amber-500/10',
+      hint: `存在一定节点覆盖（<= ${(warningThreshold * 100).toFixed(0)}%），建议定期巡检。`,
+    }
+  }
+  return {
+    level: 'Risky',
+    toneClass: 'text-destructive border-destructive/40 bg-destructive/10',
+    hint: '节点覆盖占比较高，建议收敛至全局策略。',
+  }
+})
+const importedGovernanceDiff = computed(() => {
+  if (!importedGovernanceSnapshot.value) return null
+  const importedCoverage = importedGovernanceSnapshot.value.coverage || {}
+  const importedFields = importedGovernanceSnapshot.value.field_distribution || {}
+  const importedNodes = importedGovernanceSnapshot.value.overridden_nodes || []
+  const importedNodeIds = new Set(
+    importedNodes.map((n) => String(n.nodeId || '').trim()).filter((id) => id.length > 0),
+  )
+  const currentNodeIds = new Set(
+    reflectorOverrideNodes.value.map((n) => String(n.nodeId || '').trim()).filter((id) => id.length > 0),
+  )
+  const addedNodeIds = [...currentNodeIds].filter((id) => !importedNodeIds.has(id))
+  const removedNodeIds = [...importedNodeIds].filter((id) => !currentNodeIds.has(id))
+  const currentCoverage = reflectorCoverageSummary.value.overridden
+  const importedCoverageValue = Number(importedCoverage.overridden ?? 0)
+  return {
+    coverageDelta: currentCoverage - importedCoverageValue,
+    retriesDelta: reflectorOverrideFieldStats.value.retriesCount - Number(importedFields.retriesCount ?? 0),
+    intervalDelta: reflectorOverrideFieldStats.value.intervalCount - Number(importedFields.intervalCount ?? 0),
+    fallbackDelta: reflectorOverrideFieldStats.value.fallbackCount - Number(importedFields.fallbackCount ?? 0),
+    addedNodeIds,
+    removedNodeIds,
+  }
+})
+
+function diffToneClass(delta: number): string {
+  if (delta > 0) return 'text-emerald-600 dark:text-emerald-400'
+  if (delta < 0) return 'text-destructive'
+  return 'text-muted-foreground'
+}
 
 
 function clone<T>(value: T): T {
@@ -216,8 +360,36 @@ function goBack() {
   router.push({ name: 'workflow-detail', params: { id: workflowId } })
 }
 
+function confirmGovernanceRiskBeforeSave(): boolean {
+  if (governanceMaturity.value.level !== 'Risky') return true
+  return window.confirm(
+    '当前治理状态为 Risky（节点覆盖比例较高）。建议先收敛策略后再发布。\n是否仍继续保存为新版本？',
+  )
+}
+
+function normalizeReflectorConfig() {
+  const retries = Number.isFinite(reflectorMaxRetries.value)
+    ? Math.max(0, Math.min(20, Math.trunc(reflectorMaxRetries.value)))
+    : 0
+  const retryInterval = Number.isFinite(reflectorRetryIntervalSeconds.value)
+    ? Math.max(0, Math.min(60, Number(reflectorRetryIntervalSeconds.value)))
+    : 1
+  const fallback = String(reflectorFallbackAgentId.value || '').trim()
+  reflectorMaxRetries.value = retries
+  reflectorRetryIntervalSeconds.value = retryInterval
+  reflectorFallbackAgentId.value = fallback
+  return {
+    reflector: {
+      max_retries: retries,
+      retry_interval_seconds: retryInterval,
+      fallback_agent_id: fallback,
+    },
+  } as Record<string, unknown>
+}
+
 async function saveWorkflow() {
   if (saveInProgress.value) return
+  if (!confirmGovernanceRiskBeforeSave()) return
   const { nodes, edges } = getPersistableGraph()
   const { valid, errors } = validateWorkflowNodes(nodes)
   if (!valid) {
@@ -229,7 +401,7 @@ async function saveWorkflow() {
   saveInProgress.value = true
   try {
     await updateWorkflow(workflowId, { name: (snapshot.workflowName || 'Untitled Workflow').trim() })
-    const dag = toWorkflowDag(nodes, edges)
+    const dag = toWorkflowDag(nodes, edges, normalizeReflectorConfig())
     await createWorkflowVersion(workflowId, {
       description: `Saved at ${new Date().toISOString().slice(0, 19)}`,
       dag,
@@ -246,6 +418,7 @@ async function saveWorkflow() {
 }
 
 async function runWorkflowSaveAndRun() {
+  if (!confirmGovernanceRiskBeforeSave()) return
   const { nodes, edges } = getPersistableGraph()
   const { valid, errors } = validateWorkflowNodes(nodes)
   if (!valid) {
@@ -257,7 +430,7 @@ async function runWorkflowSaveAndRun() {
   saveInProgress.value = true
   try {
     await updateWorkflow(workflowId, { name: (snapshot.workflowName || 'Untitled Workflow').trim() })
-    const dag = toWorkflowDag(nodes, edges)
+    const dag = toWorkflowDag(nodes, edges, normalizeReflectorConfig())
     await createWorkflowVersion(workflowId, {
       description: `Saved at ${new Date().toISOString().slice(0, 19)}`,
       dag,
@@ -369,6 +542,120 @@ function onSelectNodeById(nodeId: string) {
   selectedEdge.value = null
 }
 
+function clearNodeReflectorOverrides(nodeId: string) {
+  const list = [...editorNodes.value]
+  const idx = list.findIndex((n) => n.id === nodeId)
+  if (idx === -1) return
+  const node = list[idx]
+  if (!node?.data) return
+  const cfg = { ...((node.data.config as Record<string, unknown>) || {}) }
+  delete cfg.reflector_max_retries
+  delete cfg.reflector_retry_interval_seconds
+  delete cfg.reflector_fallback_agent_id
+  list[idx] = {
+    ...node,
+    data: {
+      ...node.data,
+      config: cfg,
+    } as WorkflowNodeData,
+  }
+  editorNodes.value = list
+}
+
+function clearAllReflectorOverrides() {
+  if (!reflectorOverrideNodes.value.length) return
+  const confirmed = window.confirm(`确认清除 ${reflectorOverrideNodes.value.length} 个节点的 Reflector 覆盖配置吗？`)
+  if (!confirmed) return
+  editorNodes.value = editorNodes.value.map((node) => {
+    const cfg = { ...((node.data?.config as Record<string, unknown>) || {}) }
+    if (
+      cfg.reflector_max_retries === undefined &&
+      cfg.reflector_retry_interval_seconds === undefined &&
+      cfg.reflector_fallback_agent_id === undefined
+    ) {
+      return node
+    }
+    delete cfg.reflector_max_retries
+    delete cfg.reflector_retry_interval_seconds
+    delete cfg.reflector_fallback_agent_id
+    return {
+      ...node,
+      data: {
+        ...(node.data as WorkflowNodeData),
+        config: cfg,
+      },
+    }
+  })
+}
+
+function exportReflectorGovernanceSnapshot() {
+  const payload = {
+    exported_at: new Date().toISOString(),
+    workflow_id: workflowId,
+    workflow_name: workflowName.value,
+    coverage: reflectorCoverageSummary.value,
+    risk_assessment: {
+      level: governanceMaturity.value.level,
+      hint: governanceMaturity.value.hint,
+      ratio: reflectorCoverageSummary.value.ratio,
+    },
+    field_distribution: reflectorOverrideFieldStats.value,
+    overridden_nodes: reflectorOverrideNodes.value,
+  }
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  const ts = new Date().toISOString().replace(/[:.]/g, '-')
+  link.href = url
+  link.download = `workflow-reflector-governance-${workflowId}-${ts}.json`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+function openGovernanceSnapshotImport() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = 'application/json,.json'
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) return
+    try {
+      const raw = await file.text()
+      const parsed = JSON.parse(raw) as {
+        workflow_id?: string
+        workflow_name?: string
+        exported_at?: string
+        coverage?: { overridden?: number; total?: number; ratioText?: string }
+        field_distribution?: { retriesCount?: number; intervalCount?: number; fallbackCount?: number }
+        overridden_nodes?: Array<{ nodeId?: string; label?: string; type?: string; overrideKeys?: string[] }>
+      }
+      importedGovernanceSnapshot.value = parsed
+      importedGovernanceError.value = ''
+    } catch (error) {
+      importedGovernanceSnapshot.value = null
+      importedGovernanceError.value = `快照导入失败：${String(error)}`
+    }
+  }
+  input.click()
+}
+
+function clearImportedGovernanceSnapshot() {
+  importedGovernanceSnapshot.value = null
+  importedGovernanceError.value = ''
+}
+
+function focusNodeFromGovernanceDiff(nodeId: string) {
+  const exists = editorNodes.value.some((node) => node.id === nodeId)
+  if (exists) {
+    onSelectNodeById(nodeId)
+    governanceUiMessage.value = ''
+    return
+  }
+  governanceUiMessage.value = `节点 ${nodeId} 不在当前画布中，无法定位。`
+}
+
 function onSelectEdge(edge: Edge | null) {
   // 仅在选择某条 edge 时清空节点选中；select-edge(null) 只清边，避免 drop 节点后配置被清空（onDrop 里会先 emit select-edge null 再 emit select-node-by-id）
   if (edge != null) selectedNodeId.value = null
@@ -448,6 +735,18 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 
 onMounted(async () => {
   try {
+    const systemConfig = await getSystemConfig()
+    const rawHealthy = Number(systemConfig?.settings?.workflowGovernanceHealthyThreshold)
+    const rawWarning = Number(systemConfig?.settings?.workflowGovernanceWarningThreshold)
+    const healthy = Number.isFinite(rawHealthy) ? Math.max(0, Math.min(1, rawHealthy)) : 0.1
+    const warning = Number.isFinite(rawWarning) ? Math.max(healthy, Math.min(1, rawWarning)) : 0.3
+    governanceHealthyThreshold.value = healthy
+    governanceWarningThreshold.value = warning
+  } catch {
+    governanceHealthyThreshold.value = 0.1
+    governanceWarningThreshold.value = 0.3
+  }
+  try {
     const wf = await getWorkflow(workflowId)
     workflowName.value = wf.name || 'Untitled Workflow'
     workflowVersion.value = wf.latest_version_id ? `v: ${String(wf.latest_version_id).slice(0, 8)}` : ''
@@ -461,6 +760,13 @@ onMounted(async () => {
           const { nodes, edges } = fromWorkflowDag(version.dag)
           editorNodes.value = nodes
           editorEdges.value = edges
+          const gc = (version.dag.global_config || {}) as Record<string, unknown>
+          const reflector = (gc.reflector || {}) as Record<string, unknown>
+          const mr = Number(reflector.max_retries)
+          const ri = Number(reflector.retry_interval_seconds)
+          reflectorMaxRetries.value = Number.isFinite(mr) ? mr : 0
+          reflectorRetryIntervalSeconds.value = Number.isFinite(ri) ? ri : 1
+          reflectorFallbackAgentId.value = String(reflector.fallback_agent_id || '')
         }
       } catch (e) {
         console.error('Failed to load workflow version DAG:', e)
@@ -545,6 +851,223 @@ onUnmounted(() => {
           <Rocket class="w-4 h-4 opacity-50" />
           <span class="opacity-70">{{ t('workflow_editor.deploy') }}</span>
         </Button>
+      </div>
+    </div>
+    <div class="px-6 py-3 border-b border-border/40 bg-muted/20">
+      <div class="text-sm font-medium mb-2">Reflector 默认策略（全局）</div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+          最大重试次数 (0-20)
+          <input
+            v-model.number="reflectorMaxRetries"
+            type="number"
+            min="0"
+            max="20"
+            class="h-8 rounded border border-input bg-background px-2 text-sm text-foreground"
+          />
+        </label>
+        <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+          重试间隔秒数 (0-60)
+          <input
+            v-model.number="reflectorRetryIntervalSeconds"
+            type="number"
+            min="0"
+            max="60"
+            step="0.1"
+            class="h-8 rounded border border-input bg-background px-2 text-sm text-foreground"
+          />
+        </label>
+        <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+          备用 Agent ID
+          <input
+            v-model="reflectorFallbackAgentId"
+            type="text"
+            maxlength="512"
+            placeholder="agent.worker.backup"
+            class="h-8 rounded border border-input bg-background px-2 text-sm text-foreground"
+          />
+        </label>
+      </div>
+      <div class="mt-3 rounded border border-border/60 bg-background/80 px-3 py-2 text-xs">
+        <div class="font-medium mb-1">最终生效策略预览（当前选中节点）</div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <div>
+            <span class="text-muted-foreground">重试次数：</span>
+            <span class="font-medium">{{ effectiveReflectorPolicy.maxRetries }}</span>
+            <span class="ml-1 text-muted-foreground">
+              (来源：{{ effectiveReflectorPolicy.maxRetriesSource === 'node' ? '节点覆盖' : '工作流全局' }})
+            </span>
+          </div>
+          <div>
+            <span class="text-muted-foreground">重试间隔：</span>
+            <span class="font-medium">{{ effectiveReflectorPolicy.retryIntervalSeconds }}s</span>
+            <span class="ml-1 text-muted-foreground">
+              (来源：{{ effectiveReflectorPolicy.retryIntervalSource === 'node' ? '节点覆盖' : '工作流全局' }})
+            </span>
+          </div>
+          <div>
+            <span class="text-muted-foreground">备用 Agent：</span>
+            <span class="font-medium">{{ effectiveReflectorPolicy.fallbackAgentId || '未配置' }}</span>
+            <span class="ml-1 text-muted-foreground">
+              (来源：{{ effectiveReflectorPolicy.fallbackSource === 'node' ? '节点覆盖' : '工作流全局' }})
+            </span>
+          </div>
+        </div>
+        <div class="mt-1 text-muted-foreground">
+          当前节点类型：{{ effectiveReflectorPolicy.nodeType || '未选中' }}（仅当节点配置包含 reflector_* 字段时会覆盖全局）
+        </div>
+      </div>
+      <div class="mt-3 rounded border border-border/60 bg-background/80 px-3 py-2 text-xs">
+        <div class="flex items-center justify-between mb-1">
+          <div class="flex items-center gap-2">
+            <div class="font-medium">节点级覆盖巡检</div>
+            <span
+              class="inline-flex items-center rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground"
+              :title="`覆盖节点 ${reflectorCoverageSummary.ratioText}`"
+            >
+              覆盖节点 {{ reflectorCoverageSummary.ratioText }}
+            </span>
+            <span
+              :class="[
+                'inline-flex items-center rounded border px-1.5 py-0.5 text-[11px]',
+                governanceMaturity.toneClass,
+              ]"
+            >
+              {{ governanceMaturity.level }}
+            </span>
+          </div>
+          <div class="flex items-center gap-3">
+            <button
+              class="text-xs text-primary hover:underline"
+              type="button"
+              @click="openGovernanceSnapshotImport"
+            >
+              导入治理快照
+            </button>
+            <button
+              class="text-xs text-primary hover:underline"
+              type="button"
+              @click="exportReflectorGovernanceSnapshot"
+            >
+              导出治理快照
+            </button>
+            <button
+              v-if="reflectorOverrideNodes.length > 0"
+              class="text-xs text-destructive hover:underline"
+              type="button"
+              @click="clearAllReflectorOverrides"
+            >
+              清除全部覆盖
+            </button>
+          </div>
+        </div>
+        <div class="mb-2 text-muted-foreground">
+          治理建议：{{ governanceMaturity.hint }}
+        </div>
+        <div v-if="reflectorOverrideNodes.length === 0" class="text-muted-foreground">
+          当前流程没有节点覆盖 reflector 全局策略。
+        </div>
+        <div class="mb-2 text-muted-foreground">
+          字段分布：
+          max_retries={{ reflectorOverrideFieldStats.retriesCount }}，
+          retry_interval_seconds={{ reflectorOverrideFieldStats.intervalCount }}，
+          fallback_agent_id={{ reflectorOverrideFieldStats.fallbackCount }}
+        </div>
+        <div v-if="importedGovernanceError" class="mb-2 text-destructive">
+          {{ importedGovernanceError }}
+        </div>
+        <div v-else-if="governanceUiMessage" class="mb-2 text-amber-600 dark:text-amber-400">
+          {{ governanceUiMessage }}
+        </div>
+        <div v-if="importedGovernanceSnapshot" class="mb-2 rounded border border-dashed border-border px-2 py-2">
+          <div class="flex items-center justify-between mb-1">
+            <div class="font-medium">导入快照预览（只读，不影响当前配置）</div>
+            <button
+              class="text-xs text-muted-foreground hover:underline"
+              type="button"
+              @click="clearImportedGovernanceSnapshot"
+            >
+              关闭预览
+            </button>
+          </div>
+          <div class="text-muted-foreground">
+            workflow={{ importedGovernanceSnapshot.workflow_name || '-' }}
+            ({{ importedGovernanceSnapshot.workflow_id || '-' }})，
+            exported_at={{ importedGovernanceSnapshot.exported_at || '-' }}
+          </div>
+          <div class="text-muted-foreground">
+            覆盖节点={{ importedGovernanceSnapshot.coverage?.ratioText || '-' }}；
+            字段分布：
+            max_retries={{ importedGovernanceSnapshot.field_distribution?.retriesCount ?? '-' }}，
+            retry_interval_seconds={{ importedGovernanceSnapshot.field_distribution?.intervalCount ?? '-' }}，
+            fallback_agent_id={{ importedGovernanceSnapshot.field_distribution?.fallbackCount ?? '-' }}
+          </div>
+          <div v-if="importedGovernanceDiff" class="mt-1">
+            <div class="text-muted-foreground mb-1">与当前差异：</div>
+            <div class="flex flex-wrap gap-2">
+              <span :class="['inline-flex items-center rounded border border-border px-1.5 py-0.5', diffToneClass(importedGovernanceDiff.coverageDelta)]">
+                覆盖节点Δ={{ importedGovernanceDiff.coverageDelta >= 0 ? '+' : '' }}{{ importedGovernanceDiff.coverageDelta }}
+              </span>
+              <span :class="['inline-flex items-center rounded border border-border px-1.5 py-0.5', diffToneClass(importedGovernanceDiff.retriesDelta)]">
+                max_retriesΔ={{ importedGovernanceDiff.retriesDelta >= 0 ? '+' : '' }}{{ importedGovernanceDiff.retriesDelta }}
+              </span>
+              <span :class="['inline-flex items-center rounded border border-border px-1.5 py-0.5', diffToneClass(importedGovernanceDiff.intervalDelta)]">
+                retry_interval_secondsΔ={{ importedGovernanceDiff.intervalDelta >= 0 ? '+' : '' }}{{ importedGovernanceDiff.intervalDelta }}
+              </span>
+              <span :class="['inline-flex items-center rounded border border-border px-1.5 py-0.5', diffToneClass(importedGovernanceDiff.fallbackDelta)]">
+                fallback_agent_idΔ={{ importedGovernanceDiff.fallbackDelta >= 0 ? '+' : '' }}{{ importedGovernanceDiff.fallbackDelta }}
+              </span>
+            </div>
+          </div>
+          <div
+            v-if="importedGovernanceDiff && (importedGovernanceDiff.addedNodeIds.length || importedGovernanceDiff.removedNodeIds.length)"
+            class="mt-1"
+          >
+            <div class="text-muted-foreground mb-1">节点清单差异：</div>
+            <div class="flex flex-wrap gap-2">
+              <span
+                v-for="nodeId in importedGovernanceDiff.addedNodeIds"
+                :key="`added-${nodeId}`"
+                class="inline-flex cursor-pointer items-center rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-700 hover:opacity-80 dark:text-emerald-300"
+                @click="focusNodeFromGovernanceDiff(nodeId)"
+              >
+                + {{ nodeId }}
+              </span>
+              <span
+                v-for="nodeId in importedGovernanceDiff.removedNodeIds"
+                :key="`removed-${nodeId}`"
+                class="inline-flex cursor-pointer items-center rounded border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-destructive hover:opacity-80"
+                @click="focusNodeFromGovernanceDiff(nodeId)"
+              >
+                - {{ nodeId }}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div v-else class="space-y-1">
+          <div
+            v-for="item in reflectorOverrideNodes"
+            :key="item.nodeId"
+            class="flex flex-wrap items-center gap-2"
+          >
+            <button
+              class="text-primary hover:underline"
+              type="button"
+              @click="onSelectNodeById(item.nodeId)"
+            >
+              {{ item.label }} ({{ item.nodeId }})
+            </button>
+            <span class="text-muted-foreground">类型: {{ item.type }}</span>
+            <span class="text-muted-foreground">覆盖字段: {{ item.overrideKeys.join(', ') }}</span>
+            <button
+              class="text-xs text-destructive hover:underline"
+              type="button"
+              @click="clearNodeReflectorOverrides(item.nodeId)"
+            >
+              清除覆盖
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 

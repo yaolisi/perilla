@@ -78,6 +78,11 @@ ALLOWED_SYSTEM_CONFIG_KEYS = {
     "workflowContractRequiredInputAddedBreaking",
     "workflowContractOutputAddedRisky",
     "workflowContractFieldExemptions",
+    "workflowReflectorMaxRetries",
+    "workflowReflectorRetryIntervalSeconds",
+    "workflowReflectorFallbackAgentId",
+    "workflowGovernanceHealthyThreshold",
+    "workflowGovernanceWarningThreshold",
     "chaosFailRateWarn",
     "chaosP95WarnMs",
     "chaosNetErrWarn",
@@ -103,12 +108,47 @@ SYSTEM_CONFIG_SCHEMA_HINTS: Dict[str, Dict[str, Any]] = {
         "description": "字段豁免列表，逗号分隔，格式 input.xxx 或 output.xxx。",
         "example": "input.age,output.debug",
     },
+    "workflowReflectorMaxRetries": {
+        "type": "integer",
+        "default": 0,
+        "recommended": 1,
+        "description": "Reflector 全局默认重试次数（节点可覆盖）。",
+    },
+    "workflowReflectorRetryIntervalSeconds": {
+        "type": "number",
+        "default": 1.0,
+        "recommended": 1.0,
+        "description": "Reflector 全局默认重试间隔秒数（节点可覆盖）。",
+    },
+    "workflowReflectorFallbackAgentId": {
+        "type": "string",
+        "default": "",
+        "recommended": "",
+        "description": "Reflector 全局默认备用 Agent ID（节点可覆盖）。",
+    },
+    "workflowGovernanceHealthyThreshold": {
+        "type": "number",
+        "default": 0.1,
+        "recommended": 0.1,
+        "description": "治理成熟度 Healthy 阈值（覆盖比例）。",
+    },
+    "workflowGovernanceWarningThreshold": {
+        "type": "number",
+        "default": 0.3,
+        "recommended": 0.3,
+        "description": "治理成熟度 Warning 阈值（覆盖比例）。超过则为 Risky。",
+    },
 }
 
 SYSTEM_CONFIG_EXAMPLE_PAYLOAD: Dict[str, Any] = {
     "workflowContractRequiredInputAddedBreaking": True,
     "workflowContractOutputAddedRisky": True,
     "workflowContractFieldExemptions": "input.age,output.debug",
+    "workflowReflectorMaxRetries": 1,
+    "workflowReflectorRetryIntervalSeconds": 1.0,
+    "workflowReflectorFallbackAgentId": "agent.worker.backup",
+    "workflowGovernanceHealthyThreshold": 0.1,
+    "workflowGovernanceWarningThreshold": 0.3,
 }
 
 
@@ -151,6 +191,11 @@ class SystemConfigUpdate(BaseModel):
     workflowContractRequiredInputAddedBreaking: Optional[bool] = None
     workflowContractOutputAddedRisky: Optional[bool] = None
     workflowContractFieldExemptions: Optional[str] = Field(default=None, max_length=4096)
+    workflowReflectorMaxRetries: Optional[int] = Field(default=None, ge=0, le=20)
+    workflowReflectorRetryIntervalSeconds: Optional[float] = Field(default=None, ge=0.0, le=60.0)
+    workflowReflectorFallbackAgentId: Optional[str] = Field(default=None, max_length=512)
+    workflowGovernanceHealthyThreshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    workflowGovernanceWarningThreshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     chaosFailRateWarn: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     chaosP95WarnMs: Optional[int] = Field(default=None, ge=1, le=600000)
     chaosNetErrWarn: Optional[int] = Field(default=None, ge=0, le=10000)
@@ -213,7 +258,31 @@ def _validate_system_config_payload(config_data: Dict[str, Any]) -> Dict[str, An
             )
         raise_api_error(status_code=400, code="system_config_invalid", message=str(e))
 
-    return cast(Dict[str, Any], validated.model_dump(exclude_none=True))
+    normalized = cast(Dict[str, Any], validated.model_dump(exclude_none=True))
+    _validate_governance_threshold_consistency(normalized)
+    return normalized
+
+
+def _validate_governance_threshold_consistency(config_data: Dict[str, Any]) -> None:
+    healthy = config_data.get("workflowGovernanceHealthyThreshold")
+    warning = config_data.get("workflowGovernanceWarningThreshold")
+    if healthy is None or warning is None:
+        return
+    try:
+        healthy_v = float(healthy)
+        warning_v = float(warning)
+    except (TypeError, ValueError):
+        return
+    if warning_v < healthy_v:
+        raise_api_error(
+            status_code=400,
+            code="system_config_invalid_governance_thresholds",
+            message="workflowGovernanceWarningThreshold must be greater than or equal to workflowGovernanceHealthyThreshold",
+            details={
+                "workflowGovernanceHealthyThreshold": healthy_v,
+                "workflowGovernanceWarningThreshold": warning_v,
+            },
+        )
 
 def _challenge_redis_key(challenge_id: str) -> str:
     return f"{settings.inference_cache_prefix}:challenge:{challenge_id}"

@@ -38,6 +38,7 @@ const RUNTIME_TO_EDITOR_TYPE: Record<string, EditorNodeType> = {
 export function toWorkflowDag(
   nodes: Node<WorkflowNodeData>[],
   edges: Edge[],
+  globalConfig: Record<string, unknown> = {},
 ): WorkflowDagPayload {
   const dagNodes: WorkflowNodePayload[] = nodes.map((node) => {
     const data = node.data ?? { type: 'skill', label: 'Tool', config: {} }
@@ -98,7 +99,7 @@ export function toWorkflowDag(
     nodes: dagNodes,
     edges: dagEdges,
     entry_node: dagNodes[0]?.id ?? null,
-    global_config: {},
+    global_config: globalConfig,
   }
 }
 

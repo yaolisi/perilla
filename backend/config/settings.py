@@ -313,6 +313,13 @@ class Settings(BaseSettings):
     workflow_contract_output_added_risky: bool = True
     # 契约兼容策略：逗号分隔字段豁免（支持 input.foo / output.bar）
     workflow_contract_field_exemptions: str = ""
+    # Reflector 默认重试策略（全局），节点可覆盖
+    workflow_reflector_max_retries: int = 0
+    workflow_reflector_retry_interval_seconds: float = 1.0
+    workflow_reflector_fallback_agent_id: str = ""
+    # Reflector 治理成熟度阈值（前端巡检/软门禁）
+    workflow_governance_healthy_threshold: float = 0.1
+    workflow_governance_warning_threshold: float = 0.3
     # Workflow 执行长期 pending 告警（秒）
     workflow_pending_warn_seconds: float = 8.0
     # Workflow 执行 pending 告警重复间隔（秒）

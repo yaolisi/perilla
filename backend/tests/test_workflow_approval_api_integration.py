@@ -571,6 +571,52 @@ def test_execution_call_chain_api_returns_parent_child_links(tmp_path):
     session_factory = _make_session_factory(tmp_path)
     execution_id, _ = _seed_workflow_execution_and_task(session_factory)
     child_execution_id = f"exec_child_{uuid.uuid4().hex[:8]}"
+    child_node_states = json.dumps(
+        [
+            {
+                "node_id": "worker_node_1",
+                "state": "success",
+                "output_data": {
+                    "type": "agent_result",
+                    "agent_id": "agent.worker",
+                    "agent_session_id": "sess_worker_1",
+                    "collaboration_messages": [
+                        {
+                            "sender": "agent.manager",
+                            "receiver": "agent.worker",
+                            "task_id": f"{execution_id}:agent_node_1",
+                            "status": "running",
+                            "timestamp": "2026-01-01T00:00:00Z",
+                            "content": {"event": "attempt_started", "stage": "primary", "attempt": 1},
+                        },
+                        {
+                            "sender": "agent.manager",
+                            "receiver": "agent.worker.backup",
+                            "task_id": f"{execution_id}:agent_node_1",
+                            "status": "success",
+                            "timestamp": "2026-01-01T00:00:01Z",
+                            "content": {"event": "fallback_succeeded", "stage": "fallback", "attempt": 1},
+                        },
+                    ],
+                    "recovery": {
+                        "recovery_mode": "fallback_agent",
+                        "fallback_used": True,
+                        "fallback_agent_id": "agent.worker.backup",
+                        "recovery_trace": [
+                            {"attempt": 1, "stage": "primary", "status": "error"},
+                            {"attempt": 1, "stage": "fallback", "status": "success"},
+                        ],
+                    },
+                },
+                "input_data": {},
+                "error_message": None,
+                "error_details": None,
+                "retry_count": 0,
+                "started_at": None,
+                "finished_at": None,
+            }
+        ]
+    )
     with session_factory() as db:
         db.add(
             WorkflowExecutionORM(
@@ -585,7 +631,7 @@ def test_execution_call_chain_api_returns_parent_child_links(tmp_path):
                     "parent_execution_id": execution_id,
                     "parent_node_id": "sub_node_1",
                 },
-                node_states_json="[]",
+                node_states_json=child_node_states,
                 triggered_by="u1",
                 trigger_type="workflow",
                 resource_quota={},
@@ -599,6 +645,14 @@ def test_execution_call_chain_api_returns_parent_child_links(tmp_path):
     ids = [item["execution_id"] for item in data["items"]]
     assert execution_id in ids
     assert child_execution_id in ids
+    child_item = next(item for item in data["items"] if item["execution_id"] == child_execution_id)
+    assert len(child_item["recovery_summaries"]) == 1
+    assert child_item["recovery_summaries"][0]["recovery"]["fallback_used"] is True
+    assert len(child_item["collaboration_summaries"]) == 1
+    collab = child_item["collaboration_summaries"][0]
+    assert collab["message_total"] == 2
+    assert collab["status_counts"]["running"] == 1
+    assert collab["stage_counts"]["fallback"] == 1
 
 
 def test_publish_version_blocks_on_subworkflow_breaking_impact(tmp_path):

@@ -12,11 +12,14 @@ from core.workflows.models.workflow_version import (
 )
 from core.workflows.models.workflow_execution import WorkflowExecution, WorkflowExecutionState
 from core.workflows.runtime.graph_runtime_adapter import GraphRuntimeAdapter
+from core.workflows.runtime.workflow_runtime import WorkflowRuntime
+import core.workflows.runtime.workflow_runtime as workflow_runtime_module
 from core.workflows.runtime.subworkflow import apply_output_mapping, build_child_input
 from core.workflows.services.workflow_version_service import WorkflowVersionService
 from execution_kernel.engine.context import GraphContext
 from api.workflows import _build_execution_call_chain
 from config.settings import settings
+from core.agent_runtime.session import AgentSession
 
 
 def _build_version(*, workflow_id: str, version_id: str, nodes: list[WorkflowNode]) -> WorkflowVersion:
@@ -46,6 +49,194 @@ def test_graph_runtime_adapter_accepts_sub_workflow_node() -> None:
     version = _build_version(workflow_id="wf-parent", version_id="v-parent", nodes=[sub_node])
     errors = GraphRuntimeAdapter.validate_compatibility(version)
     assert errors == []
+
+
+def test_graph_runtime_adapter_accepts_multi_agent_role_nodes() -> None:
+    nodes = [
+        WorkflowNode(id="manager-1", type="tool", config={"workflow_node_type": "manager", "agent_id": "agent.manager"}),
+        WorkflowNode(id="worker-1", type="tool", config={"workflow_node_type": "worker", "agent_id": "agent.worker"}),
+        WorkflowNode(id="reflector-1", type="tool", config={"workflow_node_type": "reflector", "agent_id": "agent.reflector"}),
+    ]
+    version = _build_version(workflow_id="wf-parent", version_id="v-parent-roles", nodes=nodes)
+    errors = GraphRuntimeAdapter.validate_compatibility(version)
+    assert errors == []
+
+
+def test_workflow_runtime_resolve_reflector_retry_config(monkeypatch) -> None:
+    runtime = object.__new__(WorkflowRuntime)
+
+    class _DummyStore:
+        @staticmethod
+        def get_setting(_key, default):
+            return default
+
+    monkeypatch.setattr(workflow_runtime_module, "get_system_settings_store", lambda: _DummyStore())
+    cfg = runtime._resolve_reflector_retry_config(  # noqa: SLF001
+        {
+            "reflector_max_retries": "3",
+            "reflector_retry_interval_seconds": "0.5",
+            "reflector_fallback_agent_id": "agent.backup",
+        },
+        global_ctx={},
+    )
+    assert cfg["max_retries"] == 3
+    assert cfg["retry_interval_seconds"] == pytest.approx(0.5)
+    assert cfg["fallback_agent_id"] == "agent.backup"
+
+
+def test_workflow_runtime_resolve_reflector_retry_config_supports_workflow_global_default(monkeypatch) -> None:
+    runtime = object.__new__(WorkflowRuntime)
+
+    class _DummyStore:
+        @staticmethod
+        def get_setting(_key, default):
+            return default
+
+    monkeypatch.setattr(workflow_runtime_module, "get_system_settings_store", lambda: _DummyStore())
+    cfg = runtime._resolve_reflector_retry_config(  # noqa: SLF001
+        {},
+        global_ctx={
+            "workflow_global_config": {
+                "reflector": {
+                    "max_retries": 2,
+                    "retry_interval_seconds": 2.5,
+                    "fallback_agent_id": "agent.global.backup",
+                }
+            }
+        },
+    )
+    assert cfg["max_retries"] == 2
+    assert cfg["retry_interval_seconds"] == pytest.approx(2.5)
+    assert cfg["fallback_agent_id"] == "agent.global.backup"
+
+
+def test_workflow_runtime_agent_output_includes_recovery_metadata() -> None:
+    runtime = object.__new__(WorkflowRuntime)
+    session = AgentSession(
+        session_id="s-1",
+        agent_id="agent.primary",
+        user_id="u1",
+        status="finished",
+        messages=[],
+        state={"workflow_agent_context": {"node_role": "reflector"}},
+    )
+    output = runtime._build_agent_output(  # noqa: SLF001
+        session,
+        "agent.primary",
+        "node-1",
+        recovery_meta={"fallback_used": True, "fallback_agent_id": "agent.backup"},
+    )
+    assert output["agent_role"] == "reflector"
+    assert output["recovery"]["fallback_used"] is True
+
+
+def test_workflow_runtime_agent_output_includes_collaboration_messages() -> None:
+    runtime = object.__new__(WorkflowRuntime)
+    session = AgentSession(
+        session_id="s-2",
+        agent_id="agent.worker",
+        user_id="u1",
+        status="finished",
+        messages=[],
+        state={
+            "workflow_agent_context": {"node_role": "worker"},
+            "collaboration": {
+                "messages": [
+                    {
+                        "sender": "agent.manager",
+                        "receiver": "agent.worker",
+                        "task_id": "ex-1:node-2",
+                        "status": "running",
+                        "content": {"event": "attempt_started", "stage": "primary"},
+                    }
+                ]
+            },
+        },
+    )
+    output = runtime._build_agent_output(session, "agent.worker", "node-2")  # noqa: SLF001
+    assert output["agent_role"] == "worker"
+    assert isinstance(output.get("collaboration_messages"), list)
+    assert output["collaboration_messages"][0]["receiver"] == "agent.worker"
+
+
+def test_workflow_runtime_records_collaboration_messages_for_agent_attempts() -> None:
+    runtime = object.__new__(WorkflowRuntime)
+    session = AgentSession(
+        session_id="wf_ex-1_node-1",
+        agent_id="agent.primary",
+        user_id="u1",
+        status="idle",
+        messages=[],
+        state={
+            "workflow_agent_context": {
+                "workflow_execution_id": "ex-1",
+                "source_node_id": "node-1",
+            },
+            "collaboration": {
+                "correlation_id": "wfex_ex-1",
+                "orchestrator_agent_id": "agent.manager",
+            },
+        },
+    )
+    updated = runtime._record_agent_collaboration_event(  # noqa: SLF001
+        session,
+        receiver="agent.primary",
+        status="running",
+        stage="primary",
+        attempt=1,
+        event="attempt_started",
+    )
+    collab = updated.state.get("collaboration") if isinstance(updated.state, dict) else {}
+    messages = collab.get("messages") if isinstance(collab, dict) else []
+    assert isinstance(messages, list)
+    assert len(messages) == 1
+    msg = messages[0]
+    assert msg["sender"] == "agent.manager"
+    assert msg["receiver"] == "agent.primary"
+    assert msg["task_id"] == "ex-1:node-1"
+    assert msg["status"] == "running"
+    assert msg["content"]["event"] == "attempt_started"
+
+
+def test_graph_runtime_adapter_parses_reflector_runtime_error_details() -> None:
+    details_json = (
+        '{"error_code":"AGENT_NODE_RUNTIME_ERROR","message":"primary failed",'
+        '"recovery_trace":[{"attempt":1,"stage":"primary","status":"error"}]}'
+    )
+    parsed = GraphRuntimeAdapter._parse_node_error_details(  # noqa: SLF001
+        f"AGENT_NODE_RUNTIME_ERROR_DETAILS: {details_json}"
+    )
+    assert isinstance(parsed, dict)
+    assert parsed["error_code"] == "AGENT_NODE_RUNTIME_ERROR"
+    assert parsed["message"] == "primary failed"
+    assert isinstance(parsed["recovery_trace"], list)
+
+
+def test_workflow_version_service_accepts_reflector_global_config() -> None:
+    WorkflowVersionService._validate_workflow_global_config(  # noqa: SLF001
+        {
+            "reflector": {
+                "max_retries": 2,
+                "retry_interval_seconds": 1.5,
+                "fallback_agent_id": "agent.backup",
+            }
+        }
+    )
+
+
+def test_workflow_version_service_rejects_invalid_reflector_global_config() -> None:
+    with pytest.raises(ValueError, match="unsupported keys"):
+        WorkflowVersionService._validate_workflow_global_config(  # noqa: SLF001
+            {"reflector": {"unknown": 1}}
+        )
+    with pytest.raises(ValueError, match="max_retries out of range"):
+        WorkflowVersionService._validate_workflow_global_config(  # noqa: SLF001
+            {"reflector": {"max_retries": 999}}
+        )
+    with pytest.raises(ValueError, match="retry_interval_seconds out of range"):
+        WorkflowVersionService._validate_workflow_global_config(  # noqa: SLF001
+            {"reflector": {"retry_interval_seconds": 999.0}}
+        )
 
 
 def test_subworkflow_mapping_helpers_support_expression_and_output_mapping() -> None:

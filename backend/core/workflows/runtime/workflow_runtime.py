@@ -27,13 +27,19 @@ from core.workflows.repository import WorkflowApprovalTaskRepository
 from core.workflows.governance import ExecutionManager, ExecutionRequest
 from core.workflows.runtime.graph_runtime_adapter import GraphRuntimeAdapter
 from core.workflows.runtime.subworkflow import build_child_input, apply_output_mapping
+from core.system.settings_store import get_system_settings_store
 from core.inference.client.inference_client import InferenceClient
 from core.tools.registry import ToolRegistry
 from core.tools.context import ToolContext
 from core.agent_runtime.definition import get_agent_registry
 from core.agent_runtime.executor import get_agent_executor
 from core.agent_runtime.session import AgentSession
-from core.agent_runtime.collaboration import build_workflow_collaboration, merge_collaboration_into_state
+from core.agent_runtime.collaboration import (
+    append_collaboration_message_to_state,
+    build_collaboration_message,
+    build_workflow_collaboration,
+    merge_collaboration_into_state,
+)
 from core.agent_runtime.v2.runtime import get_agent_runtime
 from core.types import Message
 from execution_kernel.engine.control_flow import execute_condition_node
@@ -423,7 +429,7 @@ class WorkflowRuntime:
             return self._handle_input_node(cfg, input_data, context)
         if workflow_node_type == "output":
             return self._handle_output_node(cfg, input_data, context)
-        if workflow_node_type == "agent":
+        if workflow_node_type in {"agent", "manager", "worker", "reflector"}:
             return await self._execute_agent_node(
                 node_def=node_def,
                 input_data=input_data,
@@ -695,16 +701,25 @@ class WorkflowRuntime:
             call_chain=call_chain,
             agent_id=agent_id,
             global_ctx=global_ctx,
+            node_role=str(cfg.get("workflow_node_type") or "agent").strip().lower(),
         )
 
-        result_session = await self._run_agent_runtime_session(
+        result_session, recovery_meta = await self._run_agent_runtime_with_reflector(
             run_agent=run_agent,
             session=session,
             workspace=workspace,
             cfg=cfg,
+            registry=registry,
+            primary_agent_id=agent_id,
+            global_ctx=global_ctx,
         )
         self._ensure_agent_session_success(result_session, agent_id)
-        agent_output = self._build_agent_output(result_session, agent_id, str(node_def.id))
+        agent_output = self._build_agent_output(
+            result_session,
+            agent_id,
+            str(node_def.id),
+            recovery_meta=recovery_meta,
+        )
         self._validate_agent_output_schema(agent_output, cfg, node_def)
         self._ensure_execution_not_cancelled(context)
         return agent_output
@@ -873,6 +888,7 @@ class WorkflowRuntime:
         call_chain: List[str],
         agent_id: str,
         global_ctx: Dict[str, Any],
+        node_role: str,
     ) -> AgentSession:
         node_session_id = (
             f"wf_{workflow_execution_id}_{node_id}"
@@ -891,6 +907,7 @@ class WorkflowRuntime:
             "source_node_id": node_id,
             "call_depth": len(call_chain) + 1,
             "call_chain": call_chain + [agent_id],
+            "node_role": node_role or "agent",
         }
         collab = build_workflow_collaboration(
             global_ctx=global_ctx,
@@ -924,18 +941,52 @@ class WorkflowRuntime:
         return assistant_reply
 
     def _build_agent_output(
-        self, result_session: AgentSession, agent_id: str, node_id: str
+        self,
+        result_session: AgentSession,
+        agent_id: str,
+        node_id: str,
+        recovery_meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         assistant_reply = self._extract_assistant_reply(result_session)
-        return {
+        node_role = self._extract_node_role_from_session(result_session)
+        output: Dict[str, Any] = {
             "type": "agent_result",
             "status": "success",
             "agent_id": agent_id,
             "agent_session_id": result_session.session_id,
             "workflow_node_id": node_id,
+            "agent_role": node_role,
             "response": assistant_reply,
             "response_preview": assistant_reply[:500],
         }
+        collaboration_messages = self._extract_collaboration_messages_from_session(result_session)
+        if collaboration_messages:
+            output["collaboration_messages"] = collaboration_messages
+        if isinstance(recovery_meta, dict) and recovery_meta:
+            output["recovery"] = recovery_meta
+        return output
+
+    @staticmethod
+    def _extract_node_role_from_session(result_session: AgentSession) -> str:
+        state = result_session.state if isinstance(result_session.state, dict) else {}
+        agent_ctx = state.get("workflow_agent_context") if isinstance(state, dict) else {}
+        role = str((agent_ctx or {}).get("node_role") or "").strip().lower()
+        return role or "agent"
+
+    @staticmethod
+    def _extract_collaboration_messages_from_session(result_session: AgentSession) -> List[Dict[str, Any]]:
+        state = result_session.state if isinstance(result_session.state, dict) else {}
+        collab = state.get("collaboration") if isinstance(state, dict) else {}
+        if not isinstance(collab, dict):
+            return []
+        messages = collab.get("messages")
+        if not isinstance(messages, list):
+            return []
+        out: List[Dict[str, Any]] = []
+        for item in messages:
+            if isinstance(item, dict):
+                out.append(dict(item))
+        return out
 
     def _validate_agent_output_schema(
         self, agent_output: Dict[str, Any], cfg: Dict[str, Any], node_def: NodeDefinition
@@ -1131,6 +1182,360 @@ class WorkflowRuntime:
             )
         return await runtime.run(run_agent, session, workspace=workspace)
 
+    async def _run_agent_runtime_with_reflector(
+        self,
+        *,
+        run_agent: Any,
+        session: AgentSession,
+        workspace: str,
+        cfg: Dict[str, Any],
+        registry: Any,
+        primary_agent_id: str,
+        global_ctx: Dict[str, Any],
+    ) -> tuple[AgentSession, Dict[str, Any]]:
+        """
+        失败恢复策略（Reflector Phase 1）：
+        1) 主 Agent 失败后按配置重试
+        2) 仍失败时可切换 fallback Agent 执行
+        """
+        retry_cfg = self._resolve_reflector_retry_config(cfg, global_ctx=global_ctx)
+        max_retries = retry_cfg["max_retries"]
+        retry_interval_seconds = retry_cfg["retry_interval_seconds"]
+        fallback_agent_id = retry_cfg["fallback_agent_id"]
+        (
+            primary_result,
+            session,
+            attempts_trace,
+            last_error_message,
+        ) = await self._run_primary_agent_with_retries(
+            run_agent=run_agent,
+            session=session,
+            workspace=workspace,
+            cfg=cfg,
+            primary_agent_id=primary_agent_id,
+            max_retries=max_retries,
+            retry_interval_seconds=retry_interval_seconds,
+        )
+        if primary_result is not None:
+            return primary_result, {
+                "recovery_mode": "direct_or_retry",
+                "attempts": len(attempts_trace),
+                "fallback_used": False,
+                "recovery_trace": attempts_trace,
+            }
+
+        if not fallback_agent_id:
+            raise RuntimeError(self._build_reflector_failure_message(
+                primary_agent_id=primary_agent_id,
+                fallback_agent_id=None,
+                primary_error=last_error_message or f"Agent run failed: {primary_agent_id}",
+                fallback_error=None,
+                attempts_trace=attempts_trace,
+            ))
+
+        fallback_agent = registry.get_agent(fallback_agent_id)
+        if not fallback_agent:
+            raise RuntimeError(self._build_reflector_failure_message(
+                primary_agent_id=primary_agent_id,
+                fallback_agent_id=fallback_agent_id,
+                primary_error=last_error_message or "unknown",
+                fallback_error=f"fallback agent not found: {fallback_agent_id}",
+                attempts_trace=attempts_trace,
+            ))
+        fallback_run_agent = fallback_agent.model_copy(deep=True)
+        fallback_session = session.model_copy(deep=True)
+        fallback_session.agent_id = fallback_run_agent.agent_id
+        fallback_session = self._record_agent_collaboration_event(
+            fallback_session,
+            receiver=fallback_agent_id,
+            status="running",
+            stage="fallback",
+            attempt=1,
+            event="fallback_started",
+        )
+        fallback_result = await self._run_agent_runtime_session(
+            run_agent=fallback_run_agent,
+            session=fallback_session,
+            workspace=workspace,
+            cfg=cfg,
+        )
+        if fallback_result.status == "error":
+            fallback_error = fallback_result.error_message or "fallback run failed"
+            fallback_result = self._record_agent_collaboration_event(
+                fallback_result,
+                receiver=fallback_agent_id,
+                status="error",
+                stage="fallback",
+                attempt=1,
+                event="fallback_failed",
+                error=fallback_error,
+            )
+            attempts_trace.append(
+                {
+                    "attempt": 1,
+                    "stage": "fallback",
+                    "agent_id": fallback_agent_id,
+                    "status": "error",
+                    "error": fallback_error,
+                }
+            )
+            raise RuntimeError(self._build_reflector_failure_message(
+                primary_agent_id=primary_agent_id,
+                fallback_agent_id=fallback_agent_id,
+                primary_error=last_error_message or "unknown",
+                fallback_error=fallback_error,
+                attempts_trace=attempts_trace,
+            ))
+        fallback_result = self._record_agent_collaboration_event(
+            fallback_result,
+            receiver=fallback_agent_id,
+            status="success",
+            stage="fallback",
+            attempt=1,
+            event="fallback_succeeded",
+        )
+        attempts_trace.append(
+            {
+                "attempt": 1,
+                "stage": "fallback",
+                "agent_id": fallback_agent_id,
+                "status": "success",
+            }
+        )
+        return fallback_result, {
+            "recovery_mode": "fallback_agent",
+            "attempts": max_retries + 1,
+            "fallback_used": True,
+            "fallback_agent_id": fallback_agent_id,
+            "primary_error": last_error_message,
+            "recovery_trace": attempts_trace,
+        }
+
+    async def _run_primary_agent_with_retries(
+        self,
+        *,
+        run_agent: Any,
+        session: AgentSession,
+        workspace: str,
+        cfg: Dict[str, Any],
+        primary_agent_id: str,
+        max_retries: int,
+        retry_interval_seconds: float,
+    ) -> tuple[Optional[AgentSession], AgentSession, List[Dict[str, Any]], Optional[str]]:
+        last_error_message: Optional[str] = None
+        attempts_trace: List[Dict[str, Any]] = []
+        for attempt in range(max_retries + 1):
+            session = self._record_agent_collaboration_event(
+                session,
+                receiver=primary_agent_id,
+                status="running",
+                stage="primary",
+                attempt=attempt + 1,
+                event="attempt_started",
+            )
+            current_session = session.model_copy(deep=True)
+            try:
+                result = await self._run_agent_runtime_session(
+                    run_agent=run_agent,
+                    session=current_session,
+                    workspace=workspace,
+                    cfg=cfg,
+                )
+            except Exception as exc:
+                last_error_message = str(exc)
+                attempts_trace.append(
+                    {
+                        "attempt": attempt + 1,
+                        "stage": "primary",
+                        "status": "exception",
+                        "error": last_error_message,
+                    }
+                )
+                session = self._record_agent_collaboration_event(
+                    session,
+                    receiver=primary_agent_id,
+                    status="error",
+                    stage="primary",
+                    attempt=attempt + 1,
+                    event="attempt_exception",
+                    error=last_error_message,
+                )
+                if attempt < max_retries:
+                    session = self._record_agent_collaboration_event(
+                        session,
+                        receiver=primary_agent_id,
+                        status="retry",
+                        stage="primary",
+                        attempt=attempt + 1,
+                        event="retry_scheduled",
+                        error=last_error_message,
+                    )
+                    await asyncio.sleep(retry_interval_seconds)
+                    continue
+                break
+            if result.status != "error":
+                attempts_trace.append(
+                    {
+                        "attempt": attempt + 1,
+                        "stage": "primary",
+                        "status": "success",
+                    }
+                )
+                result = self._record_agent_collaboration_event(
+                    result,
+                    receiver=primary_agent_id,
+                    status="success",
+                    stage="primary",
+                    attempt=attempt + 1,
+                    event="attempt_succeeded",
+                )
+                return result, result, attempts_trace, last_error_message
+            last_error_message = result.error_message or "agent runtime returned error status"
+            attempts_trace.append(
+                {
+                    "attempt": attempt + 1,
+                    "stage": "primary",
+                    "status": "error",
+                    "error": last_error_message,
+                }
+            )
+            session = self._record_agent_collaboration_event(
+                result,
+                receiver=primary_agent_id,
+                status="error",
+                stage="primary",
+                attempt=attempt + 1,
+                event="attempt_failed",
+                error=last_error_message,
+            )
+            if attempt < max_retries:
+                session = self._record_agent_collaboration_event(
+                    session,
+                    receiver=primary_agent_id,
+                    status="retry",
+                    stage="primary",
+                    attempt=attempt + 1,
+                    event="retry_scheduled",
+                    error=last_error_message,
+                )
+                await asyncio.sleep(retry_interval_seconds)
+                continue
+            break
+        return None, session, attempts_trace, last_error_message
+
+    @staticmethod
+    def _record_agent_collaboration_event(
+        session: AgentSession,
+        *,
+        receiver: str,
+        status: str,
+        stage: str,
+        attempt: int,
+        event: str,
+        error: Optional[str] = None,
+    ) -> AgentSession:
+        state = session.state if isinstance(session.state, dict) else {}
+        collab = state.get("collaboration") if isinstance(state, dict) else {}
+        collab = collab if isinstance(collab, dict) else {}
+        sender = str(collab.get("orchestrator_agent_id") or "workflow_runtime").strip() or "workflow_runtime"
+        workflow_ctx = state.get("workflow_agent_context") if isinstance(state, dict) else {}
+        workflow_ctx = workflow_ctx if isinstance(workflow_ctx, dict) else {}
+        workflow_execution_id = str(workflow_ctx.get("workflow_execution_id") or "").strip()
+        source_node_id = str(workflow_ctx.get("source_node_id") or "").strip()
+        task_id = f"{workflow_execution_id}:{source_node_id}" if workflow_execution_id and source_node_id else session.session_id
+        content: Dict[str, Any] = {
+            "event": event,
+            "stage": stage,
+            "attempt": int(attempt),
+            "session_id": session.session_id,
+        }
+        if error:
+            content["error"] = error
+        message = build_collaboration_message(
+            {
+                "sender": sender,
+                "receiver": receiver,
+                "task_id": task_id,
+                "content": content,
+                "status": status,
+            }
+        )
+        session.state = append_collaboration_message_to_state(state, message)
+        return session
+
+    @staticmethod
+    def _build_reflector_failure_message(
+        *,
+        primary_agent_id: str,
+        fallback_agent_id: Optional[str],
+        primary_error: str,
+        fallback_error: Optional[str],
+        attempts_trace: List[Dict[str, Any]],
+    ) -> str:
+        details = {
+            "error_code": "AGENT_NODE_RUNTIME_ERROR",
+            "message": primary_error,
+            "primary_agent_id": primary_agent_id,
+            "fallback_agent_id": fallback_agent_id,
+            "fallback_error": fallback_error,
+            "recovery_trace": attempts_trace,
+        }
+        return "AGENT_NODE_RUNTIME_ERROR_DETAILS: " + json.dumps(details, ensure_ascii=False)
+
+    def _resolve_reflector_retry_config(
+        self,
+        cfg: Dict[str, Any],
+        *,
+        global_ctx: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        workflow_global = global_ctx.get("workflow_global_config") if isinstance(global_ctx, dict) else {}
+        workflow_reflector = {}
+        if isinstance(workflow_global, dict):
+            reflector_candidate = workflow_global.get("reflector")
+            if isinstance(reflector_candidate, dict):
+                workflow_reflector = reflector_candidate
+        settings_store = get_system_settings_store()
+        default_retries = settings_store.get_setting(
+            "workflowReflectorMaxRetries",
+            getattr(settings, "workflow_reflector_max_retries", 0),
+        )
+        default_retry_interval = settings_store.get_setting(
+            "workflowReflectorRetryIntervalSeconds",
+            getattr(settings, "workflow_reflector_retry_interval_seconds", 1.0),
+        )
+        default_fallback_agent = settings_store.get_setting(
+            "workflowReflectorFallbackAgentId",
+            getattr(settings, "workflow_reflector_fallback_agent_id", ""),
+        )
+        max_retries = self._coerce_int(
+            cfg.get(
+                "reflector_max_retries",
+                workflow_reflector.get("max_retries", default_retries),
+            ),
+            self._coerce_int(default_retries, 0),
+        )
+        max_retries = max(0, max_retries)
+        retry_interval_raw = cfg.get(
+            "reflector_retry_interval_seconds",
+            workflow_reflector.get("retry_interval_seconds", default_retry_interval),
+        )
+        try:
+            retry_interval_seconds = max(0.0, float(retry_interval_raw))
+        except (TypeError, ValueError):
+            retry_interval_seconds = 1.0
+        fallback_agent_id = str(
+            cfg.get(
+                "reflector_fallback_agent_id",
+                workflow_reflector.get("fallback_agent_id", default_fallback_agent),
+            )
+            or ""
+        ).strip()
+        return {
+            "max_retries": max_retries,
+            "retry_interval_seconds": retry_interval_seconds,
+            "fallback_agent_id": fallback_agent_id or None,
+        }
+
     def _resolve_execution_start_state(
         self, execution_id: str
     ) -> Tuple[WorkflowExecution, Optional[WorkflowExecution]]:
@@ -1230,6 +1635,7 @@ class WorkflowRuntime:
             "version_id": execution.version_id,
             "execution_id": execution.execution_id,
             "input_data": execution.input_data or {},
+            "workflow_global_config": version.dag.global_config or {},
             "workspace": workspace_dir,
             **base_gc,
         }

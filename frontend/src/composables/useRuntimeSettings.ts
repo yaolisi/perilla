@@ -83,6 +83,8 @@ export function useRuntimeSettings() {
   const agentStepDefaultTimeoutSeconds = ref(0)
   const agentStepDefaultMaxRetries = ref(0)
   const agentStepDefaultRetryIntervalSeconds = ref(1)
+  const workflowGovernanceHealthyThreshold = ref(0.1)
+  const workflowGovernanceWarningThreshold = ref(0.3)
   const DEFAULT_SMART_ROUTING_POLICIES_TEMPLATE = `{
   "reasoning-model": {
     "strategy": "blue_green",
@@ -185,6 +187,14 @@ export function useRuntimeSettings() {
           agentStepDefaultRetryIntervalSeconds.value = 1
         }
       }
+      workflowGovernanceHealthyThreshold.value = parseFloat01(
+        s.workflowGovernanceHealthyThreshold,
+        0.1,
+      )
+      workflowGovernanceWarningThreshold.value = Math.max(
+        workflowGovernanceHealthyThreshold.value,
+        parseFloat01(s.workflowGovernanceWarningThreshold, 0.3),
+      )
       smartRoutingJsonError.value = ''
       refreshSmartRoutingPreview()
       isEditing.value = false
@@ -230,6 +240,14 @@ export function useRuntimeSettings() {
         agentStepDefaultRetryIntervalSeconds: Math.min(
           60,
           Math.max(0, parseFloat(String(agentStepDefaultRetryIntervalSeconds.value)) || 1),
+        ),
+        workflowGovernanceHealthyThreshold: parseFloat01(
+          workflowGovernanceHealthyThreshold.value,
+          0.1,
+        ),
+        workflowGovernanceWarningThreshold: Math.max(
+          parseFloat01(workflowGovernanceHealthyThreshold.value, 0.1),
+          parseFloat01(workflowGovernanceWarningThreshold.value, 0.3),
         ),
       })
       await loadConfig()
@@ -725,6 +743,8 @@ export function useRuntimeSettings() {
     agentStepDefaultTimeoutSeconds,
     agentStepDefaultMaxRetries,
     agentStepDefaultRetryIntervalSeconds,
+    workflowGovernanceHealthyThreshold,
+    workflowGovernanceWarningThreshold,
     fillSmartRoutingTemplate,
     clearSmartRoutingPolicies,
     config,

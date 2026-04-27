@@ -64,6 +64,8 @@ def test_config_schema_endpoint_exposes_workflow_contract_policy_examples():
     assert "workflowContractRequiredInputAddedBreaking" in example
     assert "workflowContractOutputAddedRisky" in example
     assert "workflowContractFieldExemptions" in example
+    assert "workflowGovernanceHealthyThreshold" in hints
+    assert "workflowGovernanceWarningThreshold" in hints
     query_examples = body.get("query_examples", {})
     assert "combined" in query_examples
     assert "compact=true" in str(query_examples.get("combined"))
@@ -300,6 +302,8 @@ def test_update_config_accepts_valid_smart_routing_policy(monkeypatch):
         "workflowContractRequiredInputAddedBreaking": False,
         "workflowContractOutputAddedRisky": True,
         "workflowContractFieldExemptions": "input.age,output.debug",
+        "workflowGovernanceHealthyThreshold": 0.1,
+        "workflowGovernanceWarningThreshold": 0.3,
     }
     resp = client.post("/api/system/config", json=payload)
     assert resp.status_code == 200
@@ -309,6 +313,27 @@ def test_update_config_accepts_valid_smart_routing_policy(monkeypatch):
     assert captured.get("workflowContractRequiredInputAddedBreaking") is False
     assert captured.get("workflowContractOutputAddedRisky") is True
     assert captured.get("workflowContractFieldExemptions") == "input.age,output.debug"
+    assert float(captured.get("workflowGovernanceHealthyThreshold")) == pytest.approx(0.1)
+    assert float(captured.get("workflowGovernanceWarningThreshold")) == pytest.approx(0.3)
+
+
+def test_update_config_rejects_invalid_governance_threshold_order(monkeypatch):
+    client = _build_client()
+
+    class _FakeStore:
+        def set_setting(self, key, value):
+            raise AssertionError("set_setting should not be called for invalid payload")
+
+    monkeypatch.setattr(system_api, "get_system_settings_store", lambda: _FakeStore())
+    resp = client.post(
+        "/api/system/config",
+        json={
+            "workflowGovernanceHealthyThreshold": 0.4,
+            "workflowGovernanceWarningThreshold": 0.2,
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json().get("error", {}).get("code") == "system_config_invalid_governance_thresholds"
 
 
 def test_update_config_rejects_invalid_smart_routing_policy(monkeypatch):

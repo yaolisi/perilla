@@ -1285,6 +1285,55 @@ export async function getWorkflowExecution(
   return response.json()
 }
 
+/** 与 GET …/call-chain 返回的 collaboration_summaries 单项对齐 */
+export interface WorkflowExecutionCallChainCollaborationSummary {
+  node_id: string
+  agent_id?: string | null
+  agent_session_id?: string | null
+  message_total: number
+  status_counts: Record<string, number>
+  stage_counts: Record<string, number>
+  recent_messages?: unknown[]
+}
+
+export interface WorkflowExecutionCallChainItem {
+  execution_id: string
+  workflow_id: string
+  version_id: string
+  state: string
+  created_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  parent_execution_id?: string | null
+  parent_node_id?: string | null
+  correlation_id?: string | null
+  recovery_summaries?: Array<Record<string, unknown>>
+  collaboration_summaries?: WorkflowExecutionCallChainCollaborationSummary[]
+}
+
+export interface WorkflowExecutionCallChainResponse {
+  root_execution_id: string
+  correlation_id: string
+  items: WorkflowExecutionCallChainItem[]
+  total: number
+}
+
+export async function getWorkflowExecutionCallChain(
+  workflowId: string,
+  executionId: string,
+  params: { limit?: number } = {}
+): Promise<WorkflowExecutionCallChainResponse> {
+  const usp = new URLSearchParams()
+  if (typeof params.limit === 'number') usp.set('limit', String(params.limit))
+  const q = usp.toString()
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/v1/workflows/${workflowId}/executions/${executionId}/call-chain${q ? `?${q}` : ''}`,
+    { method: 'GET' }
+  )
+  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  return response.json()
+}
+
 export async function getWorkflowExecutionStatus(
   workflowId: string,
   executionId: string

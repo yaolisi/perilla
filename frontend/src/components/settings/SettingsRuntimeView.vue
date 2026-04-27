@@ -55,7 +55,30 @@ const smartRoutingSnapshotOpen = ref(false)
 const smartRoutingDiffOpen = ref(false)
 const SMART_ROUTING_GROUP_STATE_KEY = 'runtime.smartRouting.groupState.v1'
 const SMART_ROUTING_DIFF_VIEW_STATE_KEY = 'runtime.smartRouting.diffViewState.v1'
+const GOVERNANCE_SAMPLE_RATIOS_KEY = 'runtime.workflowGovernance.sampleRatios.v1'
 const filteredSnapshotDiff = computed(() => getFilteredSnapshotDiff())
+const governanceSampleRatios = ref([0.1, 0.25, 0.4])
+const governanceThresholdPreview = computed(() => {
+  const healthy = Math.max(0, Math.min(1, Number(workflowGovernanceHealthyThreshold.value || 0.1)))
+  const warning = Math.max(healthy, Math.min(1, Number(workflowGovernanceWarningThreshold.value || 0.3)))
+  const classify = (ratio: number) => {
+    if (ratio <= healthy) return 'Healthy'
+    if (ratio <= warning) return 'Warning'
+    return 'Risky'
+  }
+  const normalizedSamples = governanceSampleRatios.value.map((ratio) =>
+    Math.max(0, Math.min(1, Number(ratio) || 0)),
+  )
+  return {
+    healthy,
+    warning,
+    samples: normalizedSamples.map((ratio) => ({
+      ratio,
+      label: `${(ratio * 100).toFixed(0)}%`,
+      level: classify(ratio),
+    })),
+  }
+})
 
 const {
   autoUnloadLocalModelOnSwitch,
@@ -75,6 +98,8 @@ const {
   agentStepDefaultTimeoutSeconds,
   agentStepDefaultMaxRetries,
   agentStepDefaultRetryIntervalSeconds,
+  workflowGovernanceHealthyThreshold,
+  workflowGovernanceWarningThreshold,
   fillSmartRoutingTemplate,
   clearSmartRoutingPolicies,
   upsertCanaryPolicy,
@@ -143,6 +168,7 @@ const setChatStreamGzip = (v: boolean) => {
 onMounted(() => {
   loadSmartRoutingGroupState()
   loadSmartRoutingDiffViewState()
+  loadGovernanceSampleRatios()
   void loadConfig()
   loadChatStreamPrefs()
 })
@@ -239,6 +265,26 @@ const resetSmartRoutingPanelPreferences = () => {
   smartRoutingSnapshotDiffAliasFilter.value = ''
 }
 
+const loadGovernanceSampleRatios = () => {
+  try {
+    const raw = localStorage.getItem(GOVERNANCE_SAMPLE_RATIOS_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed) || parsed.length !== 3) return
+    governanceSampleRatios.value = parsed.map((ratio) => {
+      const num = Number(ratio)
+      return Number.isFinite(num) ? Math.max(0, Math.min(1, num)) : 0
+    })
+  } catch {
+    // Ignore invalid stored ratios.
+  }
+}
+
+const resetGovernanceSampleRatios = () => {
+  governanceSampleRatios.value = [0.1, 0.25, 0.4]
+  localStorage.removeItem(GOVERNANCE_SAMPLE_RATIOS_KEY)
+}
+
 watch(
   [
     smartRoutingBuilderOpen,
@@ -272,6 +318,14 @@ watch(
       }),
     )
   },
+)
+
+watch(
+  governanceSampleRatios,
+  () => {
+    localStorage.setItem(GOVERNANCE_SAMPLE_RATIOS_KEY, JSON.stringify(governanceSampleRatios.value))
+  },
+  { deep: true },
 )
 
 </script>
@@ -662,6 +716,87 @@ watch(
                     <p class="text-xs text-muted-foreground">
                       {{ t('settings.runtime.agent_step_retry_interval_hint') }}
                     </p>
+                  </div>
+                </div>
+                <div class="rounded-xl border border-border/60 bg-background/60 p-3 space-y-2">
+                  <p class="text-xs font-semibold text-foreground">实时预览样例</p>
+                  <p class="text-xs text-muted-foreground">
+                    当前阈值：Healthy ≤ {{ (governanceThresholdPreview.healthy * 100).toFixed(0) }}%，
+                    Warning ≤ {{ (governanceThresholdPreview.warning * 100).toFixed(0) }}%，其余为 Risky
+                  </p>
+                  <div class="grid gap-2 md:grid-cols-3">
+                    <div
+                      v-for="(_, idx) in governanceSampleRatios"
+                      :key="`sample-input-${idx}`"
+                      class="space-y-1"
+                    >
+                      <div class="text-[11px] text-muted-foreground">样例 {{ idx + 1 }} 覆盖比例</div>
+                      <Input
+                        v-model.number="governanceSampleRatios[idx]"
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        class="h-9 bg-background border-border text-foreground rounded-lg px-3 text-xs"
+                      />
+                    </div>
+                  </div>
+                  <div class="flex justify-end">
+                    <Button variant="outline" size="sm" class="h-8" @click="resetGovernanceSampleRatios">
+                      重置样例比例
+                    </Button>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <span
+                      v-for="item in governanceThresholdPreview.samples"
+                      :key="item.label"
+                      class="inline-flex items-center rounded border border-border px-2 py-1 text-xs text-muted-foreground"
+                    >
+                      覆盖 {{ item.label }} → {{ item.level }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div class="rounded-2xl border border-border/60 bg-background/40 p-5 space-y-5">
+                <div class="flex items-center gap-2">
+                  <Sliders class="w-4 h-4 text-emerald-500" />
+                  <h3 class="text-sm font-semibold text-foreground">
+                    工作流治理阈值
+                  </h3>
+                </div>
+                <p class="text-xs text-muted-foreground leading-relaxed">
+                  控制 Workflow 编辑器中的治理成熟度分级（Healthy / Warning / Risky）与软门禁触发点。
+                </p>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <div class="space-y-2">
+                    <label for="workflow-governance-healthy-threshold" class="text-sm font-medium text-foreground">
+                      Healthy 阈值（0-1）
+                    </label>
+                    <Input
+                      id="workflow-governance-healthy-threshold"
+                      v-model.number="workflowGovernanceHealthyThreshold"
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      class="w-full h-12 bg-background border-border text-foreground rounded-xl px-4"
+                      @update:modelValue="isEditing = true"
+                    />
+                  </div>
+                  <div class="space-y-2">
+                    <label for="workflow-governance-warning-threshold" class="text-sm font-medium text-foreground">
+                      Warning 阈值（0-1）
+                    </label>
+                    <Input
+                      id="workflow-governance-warning-threshold"
+                      v-model.number="workflowGovernanceWarningThreshold"
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      class="w-full h-12 bg-background border-border text-foreground rounded-xl px-4"
+                      @update:modelValue="isEditing = true"
+                    />
                   </div>
                 </div>
               </div>

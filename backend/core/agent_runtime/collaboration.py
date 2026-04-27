@@ -8,10 +8,22 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
 # session.state 中协作上下文的键（与方案文档一致）
 STATE_KEY_COLLABORATION = "collaboration"
+STATE_KEY_COLLABORATION_MESSAGES = "messages"
+DEFAULT_COLLABORATION_MESSAGE_STATUS = "sent"
+COLLABORATION_MESSAGE_ALLOWED_STATUS = {
+    "queued",
+    "sent",
+    "received",
+    "running",
+    "success",
+    "error",
+    "retry",
+}
 
 
 def ensure_correlation_id(value: Optional[str]) -> str:
@@ -113,3 +125,65 @@ def parse_invoked_from_form(raw: Optional[str]) -> Optional[Dict[str, Any]]:
         return v if isinstance(v, dict) else None
     except Exception:
         return None
+
+
+def build_collaboration_message(
+    payload: Dict[str, Any],
+    *,
+    default_status: str = DEFAULT_COLLABORATION_MESSAGE_STATUS,
+) -> Dict[str, Any]:
+    """
+    归一化协作消息，保证最小协议字段齐全：
+    sender / receiver / task_id / content / timestamp / status。
+    """
+    src = dict(payload or {})
+    sender = str(src.get("sender") or "").strip()
+    receiver = str(src.get("receiver") or "").strip()
+    task_id = str(src.get("task_id") or "").strip()
+    if not sender or not receiver or not task_id:
+        raise ValueError("sender/receiver/task_id are required")
+    content = src.get("content")
+    if not isinstance(content, dict):
+        raise ValueError("content must be object")
+
+    status = str(src.get("status") or default_status).strip().lower()
+    if status not in COLLABORATION_MESSAGE_ALLOWED_STATUS:
+        raise ValueError("status is invalid")
+
+    timestamp = src.get("timestamp")
+    if isinstance(timestamp, str) and timestamp.strip():
+        ts = timestamp.strip()
+    else:
+        ts = datetime.now(UTC).isoformat()
+
+    normalized: Dict[str, Any] = {
+        "message_id": str(src.get("message_id") or f"cmsg_{uuid.uuid4().hex[:16]}"),
+        "sender": sender,
+        "receiver": receiver,
+        "task_id": task_id,
+        "content": content,
+        "timestamp": ts,
+        "status": status,
+    }
+    if src.get("meta") is not None:
+        normalized["meta"] = src.get("meta")
+    return normalized
+
+
+def append_collaboration_message_to_state(
+    state: Optional[Dict[str, Any]],
+    message: Dict[str, Any],
+    *,
+    max_messages: int = 500,
+) -> Dict[str, Any]:
+    """将消息追加到 state.collaboration.messages，保留最近 max_messages 条。"""
+    out = dict(state or {})
+    collab = dict(out.get(STATE_KEY_COLLABORATION) or {})
+    current = collab.get(STATE_KEY_COLLABORATION_MESSAGES)
+    messages = list(current) if isinstance(current, list) else []
+    messages.append(dict(message))
+    if max_messages > 0 and len(messages) > max_messages:
+        messages = messages[-max_messages:]
+    collab[STATE_KEY_COLLABORATION_MESSAGES] = messages
+    out[STATE_KEY_COLLABORATION] = collab
+    return out

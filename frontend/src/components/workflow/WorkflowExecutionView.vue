@@ -22,6 +22,7 @@ import {
   getWorkflow,
   getWorkflowVersion,
   getWorkflowExecution,
+  getWorkflowExecutionCallChain,
   getWorkflowExecutionStatus,
   getCollaborationSessionsByCorrelation,
   listWorkflowExecutions,
@@ -30,6 +31,8 @@ import {
   streamWorkflowExecutionStatus,
   type WorkflowExecutionStatusRecord,
   type WorkflowExecutionRecord,
+  type WorkflowExecutionCallChainItem,
+  type WorkflowExecutionCallChainResponse,
   type WorkflowRecord,
   type CorrelationSummaryResponse,
 } from '@/services/api'
@@ -228,6 +231,30 @@ const deliveryData = computed(() => {
   return { finalText, artifacts, payload: obj }
 })
 
+/** 交付页：当前执行各节点 output 中协作消息汇总 */
+const deliveryCollaborationRollup = computed(() => {
+  const states = currentExecution.value?.node_states || []
+  let totalMsgs = 0
+  let errors = 0
+  let retries = 0
+  let nodesWith = 0
+  for (const node of states) {
+    const out = node.output_data
+    if (!out || typeof out !== 'object' || Array.isArray(out)) continue
+    const raw = (out as Record<string, unknown>).collaboration_messages
+    if (!Array.isArray(raw) || raw.length === 0) continue
+    nodesWith += 1
+    for (const msg of raw) {
+      if (!msg || typeof msg !== 'object') continue
+      totalMsgs += 1
+      const st = String((msg as Record<string, unknown>).status || '').trim().toLowerCase()
+      if (st === 'error') errors += 1
+      else if (st === 'retry') retries += 1
+    }
+  }
+  return { totalMsgs, errors, retries, nodesWith }
+})
+
 function formatExecutionRunError(message: string): string {
   const lower = message.toLowerCase()
   if (
@@ -280,6 +307,18 @@ function openAgentRunForSession(agentId: string, sessionId: string) {
 const collabChainLoading = ref(false)
 const collabChainResult = ref<CorrelationSummaryResponse | null>(null)
 const collabChainError = ref<string | null>(null)
+const executionCallChainLoading = ref(false)
+const executionCallChain = ref<WorkflowExecutionCallChainResponse | null>(null)
+const executionCallChainError = ref<string | null>(null)
+/** 与全量 execution 拉取对齐的静默刷新节流（ms），避免与轮询同频打爆 call-chain */
+const CALL_CHAIN_QUIET_GAP_MS = 4500
+let lastCallChainQuietRefreshAt = 0
+const collaborationStatusFilter = ref<'all' | string>('all')
+const collaborationStageFilter = ref<'all' | string>('all')
+const collaborationGroupExpanded = ref<Record<string, boolean>>({})
+const collaborationOnlyAnomalyGroups = ref(false)
+const collaborationListRef = ref<HTMLElement | null>(null)
+const collaborationAutoFocusedExecutionId = ref<string | null>(null)
 
 async function queryCollaborationChain(sameOrchestratorOnly: boolean) {
   const cid = executionCollaboration.value.correlationId
@@ -300,12 +339,323 @@ async function queryCollaborationChain(sameOrchestratorOnly: boolean) {
   }
 }
 
+/**
+ * 拉取执行调用链。`silent` 时不占主 loading（避免轮询/SSE 伴生刷新闪 spinner）。
+ * `bypassQuietGap`：跳过静默节流（reconcile、SSE 终态等需要立刻对齐）。
+ */
+async function refreshExecutionCallChain(opts?: { silent?: boolean; bypassQuietGap?: boolean }): Promise<void> {
+  const silent = !!opts?.silent
+  const bypassQuietGap = !!opts?.bypassQuietGap
+  const eid = currentExecution.value?.execution_id
+  if (!eid) {
+    executionCallChain.value = null
+    executionCallChainError.value = null
+    return
+  }
+  if (silent && !bypassQuietGap) {
+    const now = Date.now()
+    if (now - lastCallChainQuietRefreshAt < CALL_CHAIN_QUIET_GAP_MS) return
+  }
+  if (!silent) {
+    executionCallChainLoading.value = true
+    executionCallChainError.value = null
+  }
+  try {
+    executionCallChain.value = await getWorkflowExecutionCallChain(workflowId, eid, { limit: 500 })
+    lastCallChainQuietRefreshAt = Date.now()
+    executionCallChainError.value = null
+  } catch (e) {
+    if (!silent) {
+      executionCallChainError.value = e instanceof Error ? e.message : String(e)
+      executionCallChain.value = null
+    }
+  } finally {
+    if (!silent) {
+      executionCallChainLoading.value = false
+    }
+  }
+}
+
+/** 在已成功合并全量 execution 详情后触发，使调用链协作汇总与 inspector 同步 */
+function queueCallChainRefreshAfterExecutionDetail(opts?: { force?: boolean }): void {
+  void refreshExecutionCallChain({ silent: true, bypassQuietGap: !!opts?.force })
+}
+
+function manualRefreshExecutionCallChain(): void {
+  void refreshExecutionCallChain()
+}
+
+function aggregateCallChainItemCollab(item: WorkflowExecutionCallChainItem): {
+  agentNodes: number
+  totalMsgs: number
+  errors: number
+  retries: number
+} {
+  const sums = item.collaboration_summaries || []
+  let totalMsgs = 0
+  let errors = 0
+  let retries = 0
+  for (const s of sums) {
+    totalMsgs += typeof s.message_total === 'number' ? s.message_total : 0
+    const sc = s.status_counts || {}
+    errors += Number(sc.error || 0)
+    retries += Number(sc.retry || 0)
+  }
+  return { agentNodes: sums.length, totalMsgs, errors, retries }
+}
+
+const executionCallChainDisplayRows = computed(() => {
+  const chain = executionCallChain.value
+  if (!chain?.items?.length) return []
+  return chain.items.map((item) => ({ item, agg: aggregateCallChainItemCollab(item) }))
+})
+
+async function openCallChainExecutionRow(item: WorkflowExecutionCallChainItem) {
+  if (item.workflow_id !== workflowId) return
+  await loadExecutionById(item.execution_id)
+}
+
+function focusCallChainCollabNode(nodeId: string, rowExecutionId: string) {
+  if (rowExecutionId !== currentExecution.value?.execution_id) return
+  const id = String(nodeId || '').trim()
+  if (!id) return
+  const hit = nodeTimeline.value.some((n) => n.node_id === id) || nodeStates.value.some((n) => n.node_id === id)
+  if (hit) selectedNodeId.value = id
+}
+
 watch(
   () => currentExecution.value?.execution_id,
-  () => {
+  (eid) => {
     collabChainResult.value = null
     collabChainError.value = null
+    collaborationStatusFilter.value = 'all'
+    collaborationStageFilter.value = 'all'
+    collaborationGroupExpanded.value = {}
+    collaborationOnlyAnomalyGroups.value = false
+    collaborationAutoFocusedExecutionId.value = null
+    executionCallChain.value = null
+    executionCallChainError.value = null
+    lastCallChainQuietRefreshAt = 0
+    if (eid) void refreshExecutionCallChain()
   }
+)
+
+const selectedNodeCollaborationMessages = computed<Array<Record<string, unknown>>>(() => {
+  const out = selectedNode.value?.output_data
+  if (!out || typeof out !== 'object' || Array.isArray(out)) return []
+  const raw = (out as Record<string, unknown>).collaboration_messages
+  if (!Array.isArray(raw)) return []
+  return raw.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+})
+
+const collaborationStatusOptions = computed<string[]>(() => {
+  const set = new Set<string>()
+  for (const msg of selectedNodeCollaborationMessages.value) {
+    const s = String(msg.status || '').trim().toLowerCase()
+    if (s) set.add(s)
+  }
+  return Array.from(set)
+})
+
+const collaborationStageOptions = computed<string[]>(() => {
+  const set = new Set<string>()
+  for (const msg of selectedNodeCollaborationMessages.value) {
+    const content = msg.content
+    if (!content || typeof content !== 'object' || Array.isArray(content)) continue
+    const stage = String((content as Record<string, unknown>).stage || '').trim().toLowerCase()
+    if (stage) set.add(stage)
+  }
+  return Array.from(set)
+})
+
+const filteredSelectedNodeCollaborationMessages = computed<Array<Record<string, unknown>>>(() => {
+  const statusFilter = collaborationStatusFilter.value
+  const stageFilter = collaborationStageFilter.value
+  return selectedNodeCollaborationMessages.value.filter((msg) => {
+    const status = String(msg.status || '').trim().toLowerCase()
+    const content = msg.content
+    const stage = content && typeof content === 'object' && !Array.isArray(content)
+      ? String((content as Record<string, unknown>).stage || '').trim().toLowerCase()
+      : ''
+    if (statusFilter !== 'all' && status !== statusFilter) return false
+    if (stageFilter !== 'all' && stage !== stageFilter) return false
+    return true
+  })
+})
+
+const selectedNodeCollaborationSummary = computed(() => {
+  const statusCounts: Record<string, number> = {}
+  const stageCounts: Record<string, number> = {}
+  for (const msg of selectedNodeCollaborationMessages.value) {
+    const status = String(msg.status || 'unknown').trim().toLowerCase() || 'unknown'
+    statusCounts[status] = (statusCounts[status] || 0) + 1
+    const content = msg.content
+    const stage = content && typeof content === 'object' && !Array.isArray(content)
+      ? String((content as Record<string, unknown>).stage || 'unknown').trim().toLowerCase() || 'unknown'
+      : 'unknown'
+    stageCounts[stage] = (stageCounts[stage] || 0) + 1
+  }
+  return {
+    total: selectedNodeCollaborationMessages.value.length,
+    statusCounts,
+    stageCounts,
+  }
+})
+
+type CollaborationMessageGroup = {
+  key: string
+  stage: string
+  attempt: number
+  statusCounts: Record<string, number>
+  items: Array<Record<string, unknown>>
+}
+
+function buildCollaborationMessageGroupsFromMessages(
+  messages: Array<Record<string, unknown>>
+): CollaborationMessageGroup[] {
+  const buckets = new Map<string, {
+    stage: string
+    attempt: number
+    statusCounts: Record<string, number>
+    items: Array<Record<string, unknown>>
+  }>()
+  for (const msg of messages) {
+    const content = msg.content
+    const stage = content && typeof content === 'object' && !Array.isArray(content)
+      ? String((content as Record<string, unknown>).stage || 'unknown').trim().toLowerCase() || 'unknown'
+      : 'unknown'
+    const attemptRaw = content && typeof content === 'object' && !Array.isArray(content)
+      ? Number((content as Record<string, unknown>).attempt ?? 0)
+      : 0
+    const attempt = Number.isFinite(attemptRaw) ? Math.max(0, Math.floor(attemptRaw)) : 0
+    const key = `${stage}#${attempt}`
+    const status = String(msg.status || 'unknown').trim().toLowerCase() || 'unknown'
+    const found = buckets.get(key)
+    if (found) {
+      found.items.push(msg)
+      found.statusCounts[status] = (found.statusCounts[status] || 0) + 1
+    } else {
+      buckets.set(key, {
+        stage,
+        attempt,
+        statusCounts: { [status]: 1 },
+        items: [msg],
+      })
+    }
+  }
+  return Array.from(buckets.entries())
+    .map(([key, value]) => ({ key, ...value }))
+    .sort((a, b) => {
+      const riskDiff = collaborationGroupRiskRank(a) - collaborationGroupRiskRank(b)
+      if (riskDiff !== 0) return riskDiff
+      const attemptDiff = a.attempt - b.attempt
+      if (attemptDiff !== 0) return attemptDiff
+      return a.stage.localeCompare(b.stage)
+    })
+}
+
+const collaborationMessageGroups = computed(() =>
+  buildCollaborationMessageGroupsFromMessages(filteredSelectedNodeCollaborationMessages.value)
+)
+
+const visibleCollaborationMessageGroups = computed(() => {
+  if (!collaborationOnlyAnomalyGroups.value) return collaborationMessageGroups.value
+  return collaborationMessageGroups.value.filter((group) => {
+    const errors = Number(group.statusCounts.error || 0)
+    const retries = Number(group.statusCounts.retry || 0)
+    return errors > 0 || retries > 0
+  })
+})
+
+function formatMessageTimestamp(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return '-'
+  const ts = parseServerTime(value)
+  if (Number.isNaN(ts)) return String(value)
+  return new Date(ts).toLocaleString()
+}
+
+function isCollaborationGroupExpanded(key: string): boolean {
+  if (collaborationGroupExpanded.value[key] === undefined) {
+    const group = collaborationMessageGroups.value.find((item) => item.key === key)
+    if (!group) return true
+    const errors = Number(group.statusCounts.error || 0)
+    const retries = Number(group.statusCounts.retry || 0)
+    // 默认行为：异常组展开，健康组折叠，降低排障扫描成本。
+    return errors > 0 || retries > 0
+  }
+  return !!collaborationGroupExpanded.value[key]
+}
+
+function toggleCollaborationGroup(key: string): void {
+  collaborationGroupExpanded.value = {
+    ...collaborationGroupExpanded.value,
+    [key]: !isCollaborationGroupExpanded(key),
+  }
+}
+
+function hasNodeFallbackUsed(nodeId: string): boolean {
+  const output = getNodeOutputData(nodeId)
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return false
+  const rec = (output as Record<string, unknown>).recovery
+  return !!(rec && typeof rec === 'object' && (rec as Record<string, unknown>).fallback_used === true)
+}
+
+function collaborationGroupToneClass(group: { statusCounts: Record<string, number> }): string {
+  const errors = Number(group.statusCounts.error || 0)
+  const retries = Number(group.statusCounts.retry || 0)
+  if (errors > 0) return 'border-rose-500/40 bg-rose-500/10'
+  if (retries > 0) return 'border-amber-500/40 bg-amber-500/10'
+  return 'border-violet-500/20 bg-slate-950/30'
+}
+
+function collaborationGroupRiskRank(group: { statusCounts: Record<string, number> }): number {
+  const errors = Number(group.statusCounts.error || 0)
+  const retries = Number(group.statusCounts.retry || 0)
+  if (errors > 0) return 0
+  if (retries > 0) return 1
+  return 2
+}
+
+function isAnomalyGroup(group: { statusCounts: Record<string, number> }): boolean {
+  return collaborationGroupRiskRank(group) < 2
+}
+
+/** 节点全量协作消息按 stage+attempt 分组后的异常组数 / 总组数（不受 status/stage 下拉影响） */
+const collaborationAnomalyGroupStatsGlobal = computed(() => {
+  const groups = buildCollaborationMessageGroupsFromMessages(selectedNodeCollaborationMessages.value)
+  let anomaly = 0
+  for (const g of groups) {
+    if (isAnomalyGroup(g)) anomaly += 1
+  }
+  return { anomaly, total: groups.length }
+})
+
+/** 与下方列表同源：status/stage 筛选后的异常组数 / 总组数（「只看异常组」不改变此口径） */
+const collaborationAnomalyGroupStatsFiltered = computed(() => {
+  const groups = collaborationMessageGroups.value
+  let anomaly = 0
+  for (const g of groups) {
+    if (isAnomalyGroup(g)) anomaly += 1
+  }
+  return { anomaly, total: groups.length }
+})
+
+watch(
+  [() => currentExecution.value?.execution_id, visibleCollaborationMessageGroups],
+  async ([executionId, groups]) => {
+    const eid = typeof executionId === 'string' ? executionId : ''
+    if (!eid || collaborationAutoFocusedExecutionId.value === eid) return
+    const firstAnomalyIndex = groups.findIndex((group) => isAnomalyGroup(group))
+    if (firstAnomalyIndex < 0) return
+    await nextTick()
+    const root = collaborationListRef.value
+    if (!root) return
+    const target = root.querySelector(`[data-collab-group-index="${firstAnomalyIndex}"]`) as HTMLElement | null
+    if (!target) return
+    target.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    collaborationAutoFocusedExecutionId.value = eid
+  },
+  { deep: false }
 )
 
 function parseServerTime(v: string | null | undefined): number {
@@ -337,6 +687,33 @@ function getNodeOutputData(nodeId: string): unknown {
   const n = nodeStates.value.find((x) => x.node_id === nodeId)
   return n?.output_data
 }
+
+/** 节点 output 内协作消息条数及异常计数（用于列表/侧栏徽标） */
+function nodeOutputCollaborationStats(nodeId: string): { total: number; errors: number; retries: number } | null {
+  const output = getNodeOutputData(nodeId)
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return null
+  const raw = (output as Record<string, unknown>).collaboration_messages
+  if (!Array.isArray(raw) || raw.length === 0) return null
+  let errors = 0
+  let retries = 0
+  for (const msg of raw) {
+    if (!msg || typeof msg !== 'object') continue
+    const st = String((msg as Record<string, unknown>).status || '').trim().toLowerCase()
+    if (st === 'error') errors += 1
+    else if (st === 'retry') retries += 1
+  }
+  return { total: raw.length, errors, retries }
+}
+
+/** 侧栏/列表按 node_id 索引协作统计，避免模板内重复计算 */
+const nodeCollabStatsByNodeId = computed(() => {
+  const m: Record<string, { total: number; errors: number; retries: number }> = {}
+  for (const row of timelineRows.value) {
+    const s = nodeOutputCollaborationStats(row.node_id)
+    if (s) m[row.node_id] = s
+  }
+  return m
+})
 
 function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000))
@@ -460,6 +837,77 @@ function timelineTrackStyle(node: any) {
   }
 }
 
+type TimelineCollabRiskMarker = { pct: number; kind: 'error' | 'retry'; title: string }
+
+/** 节点时间线轨道上的协作风险刻度（error/retry），沿条宽百分比定位；过近合并、数量上限以保持简洁 */
+function timelineCollabRiskMarkers(node: any): TimelineCollabRiskMarker[] {
+  const nodeId = String(node?.node_id || '').trim()
+  if (!nodeId) return []
+  const hasTiming = !!(node.started_at || node.finished_at)
+  if (!hasTiming) return []
+  const start = node.started_at ? new Date(node.started_at).getTime() : timelineBounds.value.min
+  const end = node.finished_at
+    ? new Date(node.finished_at).getTime()
+    : (node.started_at ? Date.now() : start)
+  const span = Math.max(1, end - start)
+
+  const output = getNodeOutputData(nodeId)
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return []
+  const raw = (output as Record<string, unknown>).collaboration_messages
+  if (!Array.isArray(raw) || !raw.length) return []
+
+  const rawMarks: { pct: number; kind: 'error' | 'retry'; title: string }[] = []
+  for (const msg of raw) {
+    if (!msg || typeof msg !== 'object') continue
+    const st = String((msg as Record<string, unknown>).status || '').trim().toLowerCase()
+    if (st !== 'error' && st !== 'retry') continue
+    const tsRaw = (msg as Record<string, unknown>).timestamp
+    const kind: 'error' | 'retry' = st === 'error' ? 'error' : 'retry'
+    let pct: number
+    let timeLabel: string
+    if (typeof tsRaw === 'string' && tsRaw.trim()) {
+      const ts = parseServerTime(tsRaw)
+      if (!Number.isNaN(ts)) {
+        const clamped = Math.min(end, Math.max(start, ts))
+        pct = ((clamped - start) / span) * 100
+        timeLabel = formatMessageTimestamp(tsRaw)
+      } else {
+        pct = 50
+        timeLabel = t('workflow_run.timeline_collab_midpoint')
+      }
+    } else {
+      pct = 50
+      timeLabel = t('workflow_run.timeline_collab_midpoint')
+    }
+    const title = `${kind === 'error' ? 'error' : 'retry'} · ${timeLabel}`
+    rawMarks.push({ pct: Math.min(100, Math.max(0, pct)), kind, title })
+  }
+  if (!rawMarks.length) return []
+  rawMarks.sort((a, b) => a.pct - b.pct)
+
+  const mergeGap = 2.8
+  const merged: TimelineCollabRiskMarker[] = []
+  for (const m of rawMarks) {
+    const prev = merged[merged.length - 1]
+    if (prev && Math.abs(m.pct - prev.pct) < mergeGap) {
+      if (m.kind === 'error' || prev.kind === 'error') prev.kind = 'error'
+      else prev.kind = 'retry'
+      prev.title = `${prev.title}; ${m.title}`
+      continue
+    }
+    merged.push({ pct: m.pct, kind: m.kind, title: m.title })
+  }
+
+  const maxMarks = 12
+  if (merged.length <= maxMarks) return merged
+  const k = Math.ceil(merged.length / maxMarks)
+  const thinned: TimelineCollabRiskMarker[] = []
+  for (let i = 0; i < merged.length; i += k) {
+    thinned.push(merged[i])
+  }
+  return thinned.slice(0, maxMarks)
+}
+
 function nodeTrackClass(state: string) {
   const s = normalizeNodeStatus(state)
   if (s === 'succeeded') return 'bg-emerald-500/35 border-emerald-400/80'
@@ -514,17 +962,25 @@ async function loadLatestExecution() {
   const res = await listWorkflowExecutions(workflowId, { limit: 10, offset: 0 })
   const latest = (res.items || [])[0]
   if (!latest) return
+  const prevId = currentExecution.value?.execution_id
   const full = await getWorkflowExecution(workflowId, latest.execution_id)
   appendExecutionLogDiff(currentExecution.value, full, 'load_latest')
   currentExecution.value = full
   ensureSelectedNode()
+  if (prevId === full.execution_id) {
+    queueCallChainRefreshAfterExecutionDetail({ force: true })
+  }
 }
 
 async function loadExecutionById(executionId: string) {
+  const prevId = currentExecution.value?.execution_id
   const full = await getWorkflowExecution(workflowId, executionId)
   appendExecutionLogDiff(currentExecution.value, full, 'load_by_id')
   currentExecution.value = full
   ensureSelectedNode()
+  if (prevId === full.execution_id) {
+    queueCallChainRefreshAfterExecutionDetail({ force: true })
+  }
 }
 
 async function refreshCurrentExecution() {
@@ -549,6 +1005,7 @@ async function refreshCurrentExecution() {
       appendExecutionLogDiff(currentExecution.value, reconciled, 'auto_reconcile')
       currentExecution.value = reconciled
       ensureSelectedNode()
+      queueCallChainRefreshAfterExecutionDetail({ force: true })
     } catch {
       // ignore reconcile read errors; regular polling will continue
     }
@@ -561,6 +1018,7 @@ async function refreshCurrentExecution() {
     appendExecutionLogDiff(currentExecution.value, latest, 'poll_detail')
     currentExecution.value = latest
     ensureSelectedNode()
+    queueCallChainRefreshAfterExecutionDetail()
   }
 }
 
@@ -656,6 +1114,7 @@ function startStatusStream(executionId: string) {
               appendExecutionLogDiff(currentExecution.value, latest, 'sse_detail')
               currentExecution.value = latest
               ensureSelectedNode()
+              queueCallChainRefreshAfterExecutionDetail()
             } catch {
               // ignore periodic full-detail sync errors
             }
@@ -671,6 +1130,7 @@ function startStatusStream(executionId: string) {
             appendExecutionLogDiff(currentExecution.value, latest, 'sse_terminal')
             currentExecution.value = latest
             ensureSelectedNode()
+            queueCallChainRefreshAfterExecutionDetail({ force: true })
           } catch {
             // ignore terminal full-sync errors
           }
@@ -731,6 +1191,7 @@ async function stopExecution() {
     const updated = await cancelWorkflowExecution(workflowId, currentExecution.value.execution_id)
     appendExecutionLogDiff(currentExecution.value, updated, 'stop')
     currentExecution.value = updated
+    queueCallChainRefreshAfterExecutionDetail({ force: true })
   } catch (e) {
     runError.value = e instanceof Error ? e.message : String(e)
     throw e
@@ -762,6 +1223,7 @@ async function doReconcile() {
     const updated = await reconcileWorkflowExecution(workflowId, exec.execution_id)
     appendExecutionLogDiff(currentExecution.value, updated, 'reconcile')
     currentExecution.value = updated
+    queueCallChainRefreshAfterExecutionDetail({ force: true })
   } catch (e) {
     runError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -926,7 +1388,7 @@ onUnmounted(() => {
           <button
             v-for="n in timelineRows"
             :key="n.node_id"
-            class="w-full h-12 text-left px-2 text-sm border-b border-slate-800/60 hover:bg-slate-800/70 flex items-center"
+            class="w-full min-h-[48px] py-1.5 text-left px-2 text-sm border-b border-slate-800/60 hover:bg-slate-800/70 flex flex-col justify-center"
             :class="selectedNodeId === n.node_id ? 'bg-blue-600/20' : ''"
             @click="selectedNodeId = n.node_id"
           >
@@ -941,7 +1403,26 @@ onUnmounted(() => {
                 </div>
                 <div class="truncate text-[11px] text-slate-500">{{ displayNodeSubtitle(n.node_id) }}</div>
               </div>
-              <span class="w-2 h-2 rounded-full" :class="nodeTrackClass(n.state)" />
+              <span class="w-2 h-2 shrink-0 rounded-full" :class="nodeTrackClass(n.state)" />
+            </div>
+            <div
+              v-if="nodeCollabStatsByNodeId[n.node_id]"
+              class="mt-1 flex flex-wrap items-center gap-0.5"
+            >
+              <Badge
+                variant="secondary"
+                class="text-[9px] border border-violet-500/30 bg-violet-500/10 text-violet-200 px-1 py-0"
+              >{{ t('workflow_run.execution_collab_msgs', { count: nodeCollabStatsByNodeId[n.node_id].total }) }}</Badge>
+              <Badge
+                v-if="nodeCollabStatsByNodeId[n.node_id].errors > 0"
+                variant="secondary"
+                class="text-[9px] border border-rose-500/30 bg-rose-500/10 text-rose-200 px-1 py-0"
+              >E {{ nodeCollabStatsByNodeId[n.node_id].errors }}</Badge>
+              <Badge
+                v-if="nodeCollabStatsByNodeId[n.node_id].retries > 0"
+                variant="secondary"
+                class="text-[9px] border border-amber-500/30 bg-amber-500/10 text-amber-200 px-1 py-0"
+              >RT {{ nodeCollabStatsByNodeId[n.node_id].retries }}</Badge>
             </div>
           </button>
           <div v-if="!timelineRows.length" class="text-xs text-slate-500 px-2 py-3">
@@ -961,43 +1442,105 @@ onUnmounted(() => {
             <div class="grid grid-cols-6 text-[11px] text-slate-500 border-b border-slate-800/80">
               <div v-for="mark in [0, 20, 40, 60, 80, 100]" :key="mark" class="px-2 py-1 border-r border-slate-800/60">{{ mark }}%</div>
             </div>
-            <div v-for="n in timelineRows" :key="`row-${n.node_id}`" class="relative h-12 border-b border-slate-800/60">
+            <p class="px-2 py-1 text-[10px] text-slate-500 border-b border-slate-800/60 leading-snug">
+              {{ t('workflow_run.timeline_collab_legend') }}
+            </p>
+            <div
+              v-for="n in timelineRows"
+              :key="`row-${n.node_id}`"
+              class="relative h-12 border-b border-slate-800/60 cursor-pointer hover:bg-slate-800/25 transition-colors"
+              :class="selectedNodeId === n.node_id ? 'bg-blue-600/10' : ''"
+              :title="t('workflow_run.timeline_row_select_hint')"
+              @click="selectedNodeId = n.node_id"
+            >
               <div class="absolute inset-y-0 left-0 right-0 grid grid-cols-6 pointer-events-none">
                 <div v-for="m in 6" :key="m" class="border-r border-slate-800/40" />
               </div>
-              <div
-                class="absolute top-2 h-8 rounded border shadow-sm"
-                :class="[nodeTrackClass(n.state), nodeTrackAnimClass(n.state)]"
-                :style="timelineTrackStyle(n)"
-              />
+              <div class="absolute top-2 h-8 z-[1]" :style="timelineTrackStyle(n)">
+                <div
+                  class="absolute inset-0 rounded border shadow-sm pointer-events-none overflow-hidden"
+                  :class="[nodeTrackClass(n.state), nodeTrackAnimClass(n.state)]"
+                />
+                <div
+                  v-for="(mk, mkIdx) in timelineCollabRiskMarkers(n)"
+                  :key="`tl-collab-${n.node_id}-${mkIdx}`"
+                  class="pointer-events-none absolute top-0.5 bottom-0.5 w-px rounded-full z-[2] -translate-x-1/2"
+                  :class="
+                    mk.kind === 'error'
+                      ? 'bg-rose-400 shadow-[0_0_5px_rgba(251,113,133,0.65)]'
+                      : 'bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.55)]'
+                  "
+                  :title="mk.title"
+                  :style="{ left: `${mk.pct}%` }"
+                />
+              </div>
             </div>
           </div>
         </div>
 
         <div v-else-if="viewMode === 'list'" class="h-[calc(100vh-270px)] overflow-auto p-3 space-y-2">
-          <div v-for="n in timelineRows" :key="`list-${n.node_id}`" class="rounded border border-slate-800 bg-slate-900/60 p-3 text-xs">
-            <div class="flex items-center justify-between">
-              <span class="font-medium">{{ n.node_id }}</span>
-              <Badge variant="secondary" :class="statusBadgeClass(normalizeNodeStatus(n.state))">{{ normalizeNodeStatus(n.state) }}</Badge>
+          <div
+            v-for="n in timelineRows"
+            :key="`list-${n.node_id}`"
+            class="rounded border border-slate-800 bg-slate-900/60 p-3 text-xs transition-colors"
+            :class="selectedNodeId === n.node_id ? 'ring-1 ring-blue-500/40' : ''"
+          >
+            <div
+              class="cursor-pointer rounded-md -mx-1 px-1 py-0.5 hover:bg-slate-800/60"
+              :title="t('workflow_run.list_row_select_header_hint')"
+              @click="selectedNodeId = n.node_id"
+            >
+              <div class="flex items-center justify-between">
+                <span class="font-medium">{{ n.node_id }}</span>
+                <div class="flex flex-wrap items-center justify-end gap-2">
+                  <template v-if="nodeCollabStatsByNodeId[n.node_id]">
+                    <Badge
+                      variant="secondary"
+                      class="text-[10px] border border-violet-500/30 bg-violet-500/10 text-violet-200"
+                    >{{ t('workflow_run.execution_collab_msgs', { count: nodeCollabStatsByNodeId[n.node_id].total }) }}</Badge>
+                    <Badge
+                      v-if="nodeCollabStatsByNodeId[n.node_id].errors > 0"
+                      variant="secondary"
+                      class="text-[10px] border border-rose-500/30 bg-rose-500/10 text-rose-200"
+                    >E {{ nodeCollabStatsByNodeId[n.node_id].errors }}</Badge>
+                    <Badge
+                      v-if="nodeCollabStatsByNodeId[n.node_id].retries > 0"
+                      variant="secondary"
+                      class="text-[10px] border border-amber-500/30 bg-amber-500/10 text-amber-200"
+                    >RT {{ nodeCollabStatsByNodeId[n.node_id].retries }}</Badge>
+                  </template>
+                  <Badge
+                    v-if="hasNodeFallbackUsed(n.node_id)"
+                    variant="secondary"
+                    class="text-[10px] border border-violet-500/30 bg-violet-500/10 text-violet-200"
+                  >
+                    fallback_used
+                  </Badge>
+                  <Badge variant="secondary" :class="statusBadgeClass(normalizeNodeStatus(n.state))">{{ normalizeNodeStatus(n.state) }}</Badge>
+                </div>
+              </div>
+              <div class="mt-2 text-slate-400">retry: {{ n.retry_count || 0 }}</div>
+              <div v-if="n.failure_strategy || n.error_type" class="mt-1 flex flex-wrap items-center gap-2">
+                <Badge
+                  v-if="n.failure_strategy"
+                  variant="secondary"
+                  class="text-[10px] uppercase border border-amber-500/30 bg-amber-500/10 text-amber-300"
+                >
+                  strategy: {{ n.failure_strategy }}
+                </Badge>
+                <Badge
+                  v-if="n.error_type"
+                  variant="secondary"
+                  class="text-[10px] border border-rose-500/30 bg-rose-500/10 text-rose-300"
+                >
+                  {{ n.error_type }}
+                </Badge>
+              </div>
             </div>
-            <div class="mt-2 text-slate-400">retry: {{ n.retry_count || 0 }}</div>
-            <div v-if="n.failure_strategy || n.error_type" class="mt-1 flex flex-wrap items-center gap-2">
-              <Badge
-                v-if="n.failure_strategy"
-                variant="secondary"
-                class="text-[10px] uppercase border border-amber-500/30 bg-amber-500/10 text-amber-300"
-              >
-                strategy: {{ n.failure_strategy }}
-              </Badge>
-              <Badge
-                v-if="n.error_type"
-                variant="secondary"
-                class="text-[10px] border border-rose-500/30 bg-rose-500/10 text-rose-300"
-              >
-                {{ n.error_type }}
-              </Badge>
-            </div>
-            <pre class="mt-2 rounded bg-slate-950/60 p-2 overflow-auto text-[11px]">{{ prettyJson(getNodeOutputData(n.node_id)) }}</pre>
+            <pre
+              class="mt-2 rounded bg-slate-950/60 p-2 overflow-auto text-[11px] select-text cursor-text"
+              @click.stop
+            >{{ prettyJson(getNodeOutputData(n.node_id)) }}</pre>
           </div>
         </div>
 
@@ -1010,6 +1553,29 @@ onUnmounted(() => {
               <div class="flex justify-between"><span>{{ t('workflow_run.nodes') }}</span><span>{{ executionSummary.completed }}/{{ executionSummary.total }}</span></div>
               <div class="flex justify-between"><span>{{ t('workflow_run.failed') }}</span><span>{{ executionSummary.failed }}</span></div>
             </div>
+          </div>
+          <div class="rounded border border-violet-500/25 bg-violet-950/20 p-3 text-xs space-y-2">
+            <div class="text-slate-300 font-medium">{{ t('workflow_run.delivery_collab_title') }}</div>
+            <p class="text-[10px] text-slate-500 leading-relaxed">{{ t('workflow_run.delivery_collab_hint') }}</p>
+            <div
+              v-if="deliveryCollaborationRollup.totalMsgs > 0"
+              class="flex flex-wrap items-center gap-2 text-[11px] text-slate-300"
+            >
+              <span>{{ t('workflow_run.execution_call_chain_agents', { count: deliveryCollaborationRollup.nodesWith }) }}</span>
+              <span class="text-slate-600">·</span>
+              <span>{{ t('workflow_run.execution_call_chain_msgs', { count: deliveryCollaborationRollup.totalMsgs }) }}</span>
+              <Badge
+                v-if="deliveryCollaborationRollup.errors > 0"
+                variant="secondary"
+                class="text-[9px] border border-rose-500/35 bg-rose-500/10 text-rose-200"
+              >E {{ deliveryCollaborationRollup.errors }}</Badge>
+              <Badge
+                v-if="deliveryCollaborationRollup.retries > 0"
+                variant="secondary"
+                class="text-[9px] border border-amber-500/35 bg-amber-500/10 text-amber-200"
+              >RT {{ deliveryCollaborationRollup.retries }}</Badge>
+            </div>
+            <div v-else class="text-[11px] text-slate-500">{{ t('workflow_run.delivery_collab_empty') }}</div>
           </div>
           <div class="rounded border border-slate-800 bg-slate-900/60 p-3 text-xs">
             <div class="text-slate-400 mb-1">{{ t('workflow_run.final_output') }}</div>
@@ -1039,6 +1605,124 @@ onUnmounted(() => {
           <div v-if="selectedNode" class="rounded border border-slate-800 bg-slate-900/60 p-3">
             <div class="text-sm font-semibold">{{ selectedNode.node_id }}</div>
             <div class="text-xs text-slate-400 mt-1">{{ normalizeNodeStatus(selectedNode.state) }}</div>
+          </div>
+
+          <div
+            v-if="currentExecution?.execution_id"
+            class="rounded border border-violet-500/25 bg-violet-950/25 p-3 text-xs space-y-2"
+          >
+            <div class="flex items-center justify-between gap-2 text-slate-200 font-medium">
+              <span class="inline-flex items-center gap-1.5 min-w-0">
+                <ListTree class="w-3.5 h-3.5 shrink-0 text-violet-400" />
+                <span class="truncate">{{ t('workflow_run.execution_call_chain_title') }}</span>
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                class="h-7 w-7 shrink-0 text-violet-300 hover:text-violet-100"
+                :disabled="!currentExecution?.execution_id"
+                :title="t('workflow_run.execution_call_chain_refresh')"
+                @click="manualRefreshExecutionCallChain"
+              >
+                <Loader2 v-if="executionCallChainLoading" class="w-3.5 h-3.5 animate-spin" />
+                <RefreshCw v-else class="w-3.5 h-3.5" />
+              </Button>
+            </div>
+            <p class="text-[10px] text-slate-500 leading-relaxed">
+              {{ t('workflow_run.execution_call_chain_hint') }}
+            </p>
+            <p v-if="executionCallChainError" class="text-red-400 text-[11px]">{{ executionCallChainError }}</p>
+            <ul
+              v-if="executionCallChainDisplayRows.length"
+              class="max-h-52 overflow-auto space-y-2 border-t border-violet-500/20 pt-2"
+            >
+              <li
+                v-for="{ item, agg } in executionCallChainDisplayRows"
+                :key="`call-chain-${item.execution_id}`"
+                class="rounded border border-violet-500/20 bg-slate-950/40 p-2"
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0 flex-1 space-y-1">
+                    <div class="flex flex-wrap items-center gap-1">
+                      <Badge variant="secondary" :class="statusBadgeClass(normalizeExecutionStatus(item.state))">
+                        {{ normalizeExecutionStatus(item.state) }}
+                      </Badge>
+                      <span
+                        v-if="item.execution_id === executionCallChain?.root_execution_id"
+                        class="text-[10px] text-violet-300/90"
+                      >{{ t('workflow_run.execution_call_chain_root') }}</span>
+                      <span v-if="item.parent_execution_id" class="text-[10px] text-slate-500">
+                        ← {{ String(item.parent_node_id || t('workflow_run.execution_call_chain_parent_unknown')) }}
+                      </span>
+                    </div>
+                    <code class="block text-[10px] text-slate-300 break-all leading-snug">{{ item.execution_id }}</code>
+                    <template v-if="agg.agentNodes > 0">
+                      <div class="flex flex-wrap items-center gap-1 text-[10px]">
+                        <span class="text-slate-400">{{
+                          t('workflow_run.execution_call_chain_agents', { count: agg.agentNodes })
+                        }}</span>
+                        <span class="text-slate-500">·</span>
+                        <span class="text-slate-400">{{
+                          t('workflow_run.execution_call_chain_msgs', { count: agg.totalMsgs })
+                        }}</span>
+                        <Badge
+                          v-if="agg.errors > 0"
+                          variant="secondary"
+                          class="text-[9px] border border-rose-500/35 bg-rose-500/10 text-rose-200"
+                        >E {{ agg.errors }}</Badge>
+                        <Badge
+                          v-if="agg.retries > 0"
+                          variant="secondary"
+                          class="text-[9px] border border-amber-500/35 bg-amber-500/10 text-amber-200"
+                        >RT {{ agg.retries }}</Badge>
+                      </div>
+                      <ul class="mt-1 space-y-0.5 border-l border-violet-500/25 pl-2">
+                        <li
+                          v-for="c in item.collaboration_summaries || []"
+                          :key="`cc-${item.execution_id}-${c.node_id}`"
+                          class="flex flex-wrap items-center gap-1 text-[10px] text-slate-400"
+                        >
+                          <span class="font-mono text-slate-300">{{ c.node_id }}</span>
+                          <span>· {{ c.message_total }} msg</span>
+                          <Badge
+                            v-if="Number(c.status_counts?.error || 0) > 0"
+                            variant="secondary"
+                            class="text-[9px] border border-rose-500/30 bg-rose-500/10 text-rose-200"
+                          >E {{ c.status_counts?.error }}</Badge>
+                          <Badge
+                            v-if="Number(c.status_counts?.retry || 0) > 0"
+                            variant="secondary"
+                            class="text-[9px] border border-amber-500/30 bg-amber-500/10 text-amber-200"
+                          >RT {{ c.status_counts?.retry }}</Badge>
+                          <button
+                            v-if="item.execution_id === currentExecution?.execution_id"
+                            type="button"
+                            class="text-violet-300 hover:text-violet-100 underline-offset-2 hover:underline"
+                            @click="focusCallChainCollabNode(c.node_id, item.execution_id)"
+                          >
+                            {{ t('workflow_run.execution_call_chain_focus') }}
+                          </button>
+                        </li>
+                      </ul>
+                    </template>
+                    <div v-else class="text-[10px] text-slate-500">
+                      {{ t('workflow_run.execution_call_chain_empty_collab') }}
+                    </div>
+                  </div>
+                  <Button
+                    v-if="item.workflow_id === workflowId && item.execution_id !== currentExecution?.execution_id"
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    class="h-7 shrink-0 text-[10px] border-violet-500/40 text-violet-100 hover:bg-violet-500/10 px-2"
+                    @click="openCallChainExecutionRow(item)"
+                  >
+                    {{ t('workflow_run.execution_call_chain_view') }}
+                  </Button>
+                </div>
+              </li>
+            </ul>
           </div>
 
           <div
@@ -1159,6 +1843,140 @@ onUnmounted(() => {
             </Button>
           </div>
 
+          <div
+            v-if="selectedNodeCollaborationMessages.length"
+            class="rounded border border-violet-500/30 bg-violet-500/10 p-3 text-xs space-y-2"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-slate-300 font-medium">{{ t('workflow_run.collab_timeline_title') }}</span>
+              <Badge
+                v-if="collaborationAnomalyGroupStatsGlobal.total > 0"
+                variant="secondary"
+                class="shrink-0 max-w-[min(100%,14rem)] text-[10px] border px-1.5 py-0 leading-tight"
+                :class="
+                  collaborationAnomalyGroupStatsGlobal.anomaly > 0
+                    || collaborationAnomalyGroupStatsFiltered.anomaly > 0
+                    ? 'border-rose-500/40 bg-rose-500/15 text-rose-200'
+                    : 'border-slate-600/50 bg-slate-900/50 text-slate-400'
+                "
+                :title="t('workflow_run.collab_anomaly_badge_title')"
+              >
+                <span class="inline-flex flex-wrap items-center gap-x-1 gap-y-0.5 justify-end">
+                  <span>{{
+                    t('workflow_run.collab_stats_global_short', {
+                      anomaly: collaborationAnomalyGroupStatsGlobal.anomaly,
+                      total: collaborationAnomalyGroupStatsGlobal.total,
+                    })
+                  }}</span>
+                  <span class="text-slate-500">·</span>
+                  <span>{{
+                    t('workflow_run.collab_stats_filtered_short', {
+                      anomaly: collaborationAnomalyGroupStatsFiltered.anomaly,
+                      total: collaborationAnomalyGroupStatsFiltered.total,
+                    })
+                  }}</span>
+                </span>
+              </Badge>
+            </div>
+            <div class="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
+              <div class="rounded border border-violet-500/20 bg-slate-900/40 px-2 py-1">
+                total: {{ selectedNodeCollaborationSummary.total }}
+              </div>
+              <div class="rounded border border-violet-500/20 bg-slate-900/40 px-2 py-1">
+                stages: {{ Object.keys(selectedNodeCollaborationSummary.stageCounts).length }}
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <select
+                v-model="collaborationStatusFilter"
+                class="h-7 rounded border border-violet-500/30 bg-slate-900/60 px-2 text-[11px] text-slate-200"
+              >
+                <option value="all">status: all</option>
+                <option v-for="s in collaborationStatusOptions" :key="`status-${s}`" :value="s">
+                  status: {{ s }}
+                </option>
+              </select>
+              <select
+                v-model="collaborationStageFilter"
+                class="h-7 rounded border border-violet-500/30 bg-slate-900/60 px-2 text-[11px] text-slate-200"
+              >
+                <option value="all">stage: all</option>
+                <option v-for="s in collaborationStageOptions" :key="`stage-${s}`" :value="s">
+                  stage: {{ s }}
+                </option>
+              </select>
+            </div>
+            <label class="inline-flex items-center gap-2 text-[11px] text-slate-300">
+              <input
+                v-model="collaborationOnlyAnomalyGroups"
+                type="checkbox"
+                class="h-3.5 w-3.5 rounded border-violet-500/40 bg-slate-900/60"
+              />
+              {{ t('workflow_run.collab_only_anomaly') }}
+            </label>
+            <div ref="collaborationListRef" class="max-h-56 overflow-auto space-y-1 border-t border-violet-500/20 pt-2">
+              <div
+                v-for="(group, groupIdx) in visibleCollaborationMessageGroups"
+                :key="`collab-group-${group.key}`"
+                :data-collab-group-index="groupIdx"
+                class="rounded border"
+                :class="collaborationGroupToneClass(group)"
+              >
+                <button
+                  type="button"
+                  class="w-full flex items-center justify-between px-2 py-1.5 text-[11px] text-slate-300 hover:bg-violet-500/5"
+                  @click="toggleCollaborationGroup(group.key)"
+                >
+                  <span>stage={{ group.stage }} · attempt={{ group.attempt }}</span>
+                  <span class="flex items-center gap-1 text-[10px]">
+                    <span
+                      v-if="group.statusCounts.success"
+                      class="rounded border border-emerald-500/40 bg-emerald-500/10 px-1 text-emerald-200"
+                    >S:{{ group.statusCounts.success }}</span>
+                    <span
+                      v-if="group.statusCounts.error"
+                      class="rounded border border-rose-500/40 bg-rose-500/10 px-1 text-rose-200"
+                    >E:{{ group.statusCounts.error }}</span>
+                    <span
+                      v-if="group.statusCounts.running"
+                      class="rounded border border-sky-500/40 bg-sky-500/10 px-1 text-sky-200"
+                    >R:{{ group.statusCounts.running }}</span>
+                    <span
+                      v-if="group.statusCounts.retry"
+                      class="rounded border border-amber-500/40 bg-amber-500/10 px-1 text-amber-200"
+                    >RT:{{ group.statusCounts.retry }}</span>
+                    <span class="text-slate-500">{{ t('workflow_run.collab_group_msg_count', { count: group.items.length }) }}</span>
+                  </span>
+                </button>
+                <ul v-if="isCollaborationGroupExpanded(group.key)" class="space-y-1 px-2 pb-2">
+                  <li
+                    v-for="(msg, idx) in group.items"
+                    :key="`collab-msg-${group.key}-${idx}`"
+                    class="rounded border border-slate-700/70 bg-slate-950/40 p-2"
+                  >
+                    <div class="flex items-center justify-between gap-2 text-[10px] text-slate-400">
+                      <span>{{ formatMessageTimestamp(msg.timestamp) }}</span>
+                      <Badge variant="secondary" class="text-[10px] border border-violet-500/30 bg-violet-500/10 text-violet-200">
+                        {{ String(msg.status || 'unknown') }}
+                      </Badge>
+                    </div>
+                    <div class="mt-1 text-[11px] text-slate-200">
+                      {{ String(msg.sender || '-') }} -> {{ String(msg.receiver || '-') }}
+                    </div>
+                    <div class="text-[10px] text-slate-500">task: {{ String(msg.task_id || '-') }}</div>
+                    <pre class="mt-1 rounded bg-slate-900/60 p-1.5 overflow-auto text-[10px]">{{ prettyJson(msg.content) }}</pre>
+                  </li>
+                </ul>
+              </div>
+              <div
+                v-if="!visibleCollaborationMessageGroups.length"
+                class="rounded border border-slate-700/60 bg-slate-900/40 px-2 py-1.5 text-[11px] text-slate-500"
+              >
+                {{ t('workflow_run.collab_empty_filtered') }}
+              </div>
+            </div>
+          </div>
+
           <div class="rounded border border-slate-800 bg-slate-900/60 p-3 text-xs">
             <div class="text-slate-400 mb-1">{{ t('workflow_run.performance') }}</div>
             <div class="flex justify-between"><span>{{ t('workflow_run.queue_pos') }}</span><span>{{ currentExecution?.queue_position ?? '-' }}</span></div>
@@ -1211,7 +2029,7 @@ onUnmounted(() => {
                 class="h-7 border-red-500/40 bg-red-950/30 text-[11px] text-red-200 hover:bg-red-900/40"
                 @click="toggleErrorStack(selectedNode.node_id)"
               >
-                {{ isErrorStackExpanded(selectedNode.node_id) ? '收起错误堆栈' : '展开错误堆栈' }}
+                {{ isErrorStackExpanded(selectedNode.node_id) ? t('workflow_run.error_stack_collapse') : t('workflow_run.error_stack_expand') }}
               </Button>
               <pre
                 v-if="isErrorStackExpanded(selectedNode.node_id)"

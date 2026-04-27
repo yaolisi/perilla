@@ -2631,8 +2631,90 @@ def _agent_summary_from_node_output(
         "agent_session_id": output.get("agent_session_id"),
         "status": output.get("status", "success"),
         "response_preview": output.get("response_preview"),
+        "recovery": output.get("recovery") if isinstance(output.get("recovery"), dict) else None,
         "duration_ms": duration_ms,
     }
+
+
+def _execution_recovery_summaries(execution: WorkflowExecution) -> List[Dict[str, Any]]:
+    recoveries: List[Dict[str, Any]] = []
+    for node in execution.node_states or []:
+        summary = _agent_summary_from_node_output(node, _node_duration_ms(node))
+        if not isinstance(summary, dict):
+            continue
+        recovery = summary.get("recovery")
+        if not isinstance(recovery, dict):
+            continue
+        recoveries.append(
+            {
+                "node_id": summary.get("node_id"),
+                "agent_id": summary.get("agent_id"),
+                "agent_session_id": summary.get("agent_session_id"),
+                "recovery": recovery,
+            }
+        )
+    return recoveries
+
+
+def _execution_collaboration_summaries(execution: WorkflowExecution) -> List[Dict[str, Any]]:
+    summaries: List[Dict[str, Any]] = []
+    for node in execution.node_states or []:
+        output = node.output_data or {}
+        if not (isinstance(output, dict) and output.get("type") == "agent_result"):
+            continue
+        messages = output.get("collaboration_messages")
+        if not isinstance(messages, list):
+            continue
+        summary = _summarize_collaboration_messages(node_id=node.node_id, output=output, messages=messages)
+        if summary is not None:
+            summaries.append(summary)
+    return summaries
+
+
+def _summarize_collaboration_messages(
+    *,
+    node_id: str,
+    output: Dict[str, Any],
+    messages: List[Any],
+) -> Optional[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = [m for m in messages if isinstance(m, dict)]
+    if not normalized:
+        return None
+    status_counts: Dict[str, int] = {}
+    stage_counts: Dict[str, int] = {}
+    for msg in normalized:
+        status = str(msg.get("status") or "unknown").strip().lower() or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        content = msg.get("content")
+        stage = str(content.get("stage") or "unknown").strip().lower() if isinstance(content, dict) else "unknown"
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+    return {
+        "node_id": node_id,
+        "agent_id": output.get("agent_id"),
+        "agent_session_id": output.get("agent_session_id"),
+        "message_total": len(normalized),
+        "status_counts": status_counts,
+        "stage_counts": stage_counts,
+        "recent_messages": normalized[-20:],
+    }
+
+
+def _should_include_execution_in_call_chain(
+    *,
+    item: WorkflowExecution,
+    root_execution_id: str,
+    correlation_id: str,
+) -> bool:
+    item_ctx = item.global_context or {}
+    item_correlation = str(item_ctx.get("correlation_id") or "").strip()
+    parent_execution_id = str(item_ctx.get("parent_execution_id") or "").strip()
+    if item.execution_id == root_execution_id:
+        return True
+    if item_correlation and item_correlation == correlation_id:
+        return True
+    if parent_execution_id and parent_execution_id == root_execution_id:
+        return True
+    return False
 
 
 def _collect_node_timeline_and_agent_summaries(
@@ -2730,20 +2812,15 @@ def _build_execution_call_chain(
 ) -> Dict[str, Any]:
     root_ctx = root_execution.global_context or {}
     correlation_id = str(root_ctx.get("correlation_id") or f"wfex_{root_execution.execution_id}").strip()
-    scoped: List[WorkflowExecution] = []
-    for item in candidates:
-        item_ctx = item.global_context or {}
-        item_correlation = str(item_ctx.get("correlation_id") or "").strip()
-        parent_execution_id = str(item_ctx.get("parent_execution_id") or "").strip()
-        if item.execution_id == root_execution.execution_id:
-            scoped.append(item)
-            continue
-        if item_correlation and item_correlation == correlation_id:
-            scoped.append(item)
-            continue
-        if parent_execution_id and parent_execution_id == root_execution.execution_id:
-            scoped.append(item)
-            continue
+    scoped: List[WorkflowExecution] = [
+        item
+        for item in candidates
+        if _should_include_execution_in_call_chain(
+            item=item,
+            root_execution_id=root_execution.execution_id,
+            correlation_id=correlation_id,
+        )
+    ]
 
     scoped.sort(
         key=lambda ex: (
@@ -2766,6 +2843,8 @@ def _build_execution_call_chain(
                 "parent_execution_id": ctx.get("parent_execution_id"),
                 "parent_node_id": ctx.get("parent_node_id"),
                 "correlation_id": ctx.get("correlation_id"),
+                "recovery_summaries": _execution_recovery_summaries(ex),
+                "collaboration_summaries": _execution_collaboration_summaries(ex),
             }
         )
     return {"correlation_id": correlation_id, "items": items}
