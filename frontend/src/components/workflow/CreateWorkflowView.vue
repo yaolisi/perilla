@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter, onBeforeRouteLeave } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Save, Play, Rocket, Undo2, Redo2, Loader2 } from 'lucide-vue-next'
@@ -12,7 +12,24 @@ import type { Node } from '@vue-flow/core'
 import type { Edge } from '@vue-flow/core'
 import type { WorkflowNodeData } from './editor/types'
 import { validateWorkflowNodes, validateWorkflowPreflight } from './editor/validation'
-import { createWorkflow, createWorkflowVersion, runWorkflow as runWorkflowApi, type WorkflowNodePayload, type WorkflowEdgePayload, type WorkflowDagPayload } from '@/services/api'
+import {
+  createWorkflow,
+  createWorkflowVersion,
+  runWorkflow as runWorkflowApi,
+  getToolCompositionRecommendations,
+  recordToolCompositionUsage,
+  type ToolCompositionRecommendationItem,
+  type WorkflowNodePayload,
+  type WorkflowEdgePayload,
+  type WorkflowDagPayload,
+} from '@/services/api'
+import {
+  listToolCompositionTemplates,
+  recommendTemplates,
+  buildTemplateGraph,
+  trackTemplateUsage,
+  type ToolCompositionTemplateId,
+} from './editor/toolCompositionTemplates'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -51,6 +68,55 @@ let autosaveTimer: number | null = null
 const CREATE_DRAFT_KEY = 'workflow:create:draft'
 const validationErrors = ref<Array<{ nodeId: string; nodeLabel?: string; message: string }>>([])
 const draftRestorePending = ref<EditorSnapshot | null>(null)
+const selectedTemplateId = ref<ToolCompositionTemplateId>('travel_planning')
+const templates = listToolCompositionTemplates()
+const backendRecommendedTemplates = ref<ToolCompositionRecommendationItem[]>([])
+const recommendedTemplates = computed(() => {
+  if (backendRecommendedTemplates.value.length > 0) {
+    const known = new Map(templates.map((t) => [t.id, t]))
+    return backendRecommendedTemplates.value.map((item) => ({
+      id: item.id as ToolCompositionTemplateId,
+      name: item.name || known.get(item.id as ToolCompositionTemplateId)?.name || item.id,
+      description: item.description || known.get(item.id as ToolCompositionTemplateId)?.description || '',
+      tools: item.tools || known.get(item.id as ToolCompositionTemplateId)?.tools || [],
+      score: item.score || 0,
+      signals: item.signals || {},
+    }))
+  }
+  return recommendTemplates(editorNodes.value)
+})
+const recommendationUiMessage = ref('')
+const activeRecommendationPairKey = ref('')
+const canvasFocusNodeId = ref<string | null>(null)
+const selectedRecommendationReason = computed(() => {
+  const picked = recommendedTemplates.value.find((x) => x.id === selectedTemplateId.value) as
+    | ({ signals?: Record<string, any> } & Record<string, any>)
+    | undefined
+  const s = (picked?.signals || {}) as Record<string, any>
+  if (!s || Object.keys(s).length === 0) return ''
+  return `重叠工具 ${s.overlap ?? 0}，转移信号 ${s.transition_score ?? 0}（置信度 ${(Number(s.transition_confidence || 0) * 100).toFixed(0)}%），用户历史 ${s.user_uses ?? 0} 次`
+})
+const selectedRecommendationChips = computed(() => {
+  const picked = recommendedTemplates.value.find((x) => x.id === selectedTemplateId.value) as
+    | ({ signals?: Record<string, any> } & Record<string, any>)
+    | undefined
+  const s = (picked?.signals || {}) as Record<string, any>
+  const pairs = Array.isArray(s.transition_pairs) ? s.transition_pairs : []
+  return pairs
+    .filter((p) => p && typeof p === 'object')
+    .map((p) => {
+      const from = String((p as Record<string, unknown>).from || '')
+      const to = String((p as Record<string, unknown>).to || '')
+      const w = Number((p as Record<string, unknown>).weight || 0)
+      return {
+        key: `${from}->${to}`,
+        label: `${from} -> ${to}`,
+        detail: `转移权重 ${w.toFixed(2)}`,
+        from,
+        to,
+      }
+    })
+})
 
 const selectedNodeModelId = computed(() => {
   const c = selectedNode.value?.data?.config
@@ -400,6 +466,76 @@ function runPreflightCheck() {
   validationErrors.value = [...baseCheck.errors, ...preflight.errors]
 }
 
+function applyTemplate() {
+  const graph = buildTemplateGraph(selectedTemplateId.value)
+  editorNodes.value = graph.nodes
+  editorEdges.value = graph.edges
+  selectedNode.value = null
+  selectedEdge.value = null
+  trackTemplateUsage(selectedTemplateId.value)
+  const toolSequence = graph.nodes
+    .filter((n) => n.data?.type === 'skill')
+    .map((n) => String((n.data?.config as Record<string, unknown>)?.tool_name || ''))
+    .filter(Boolean)
+  if (savedWorkflowId.value) {
+    recordToolCompositionUsage(savedWorkflowId.value, {
+      template_id: selectedTemplateId.value,
+      tool_sequence: toolSequence,
+    }).catch(() => undefined)
+  }
+  void refreshBackendRecommendations()
+}
+
+async function refreshBackendRecommendations() {
+  if (!savedWorkflowId.value) {
+    backendRecommendedTemplates.value = []
+    return
+  }
+  try {
+    const currentTools = editorNodes.value
+      .filter((n) => n.data?.type === 'skill')
+      .map((n) => String((n.data?.config as Record<string, unknown>)?.tool_name || ''))
+      .filter(Boolean)
+    const res = await getToolCompositionRecommendations(savedWorkflowId.value, {
+      current_tools: currentTools,
+      limit: 5,
+    })
+    backendRecommendedTemplates.value = res.items || []
+  } catch {
+    backendRecommendedTemplates.value = []
+  }
+}
+
+function onRecommendationChipClick(chip: { key: string; label: string; detail: string; from: string; to: string }) {
+  recommendationUiMessage.value = `推荐链路：${chip.label}（${chip.detail}）`
+  activeRecommendationPairKey.value = chip.key
+  const fromNode = editorNodes.value.find((n) => {
+    const cfg = (n.data?.config || {}) as Record<string, unknown>
+    return n.data?.type === 'skill' && String(cfg.tool_name || cfg.tool_id || '') === chip.from
+  })
+  const toNode = editorNodes.value.find((n) => {
+    const cfg = (n.data?.config || {}) as Record<string, unknown>
+    return n.data?.type === 'skill' && String(cfg.tool_name || cfg.tool_id || '') === chip.to
+  })
+  const target = toNode || fromNode
+  if (target) {
+    onSelectNodeById(target.id)
+    canvasFocusNodeId.value = target.id
+    window.setTimeout(() => {
+      if (canvasFocusNodeId.value === target.id) canvasFocusNodeId.value = null
+    }, 300)
+  }
+  void nextTick(() => {
+    const fromEl = document.querySelector(`[data-tool-name="${chip.from}"]`) as HTMLElement | null
+    const toEl = document.querySelector(`[data-tool-name="${chip.to}"]`) as HTMLElement | null
+    ;(fromEl || toEl)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  })
+}
+
+function clearRecommendationMessage() {
+  recommendationUiMessage.value = ''
+}
+
 function onSelectNode(node: Node<WorkflowNodeData> | null) {
   console.log("[CreateWorkflowView] onSelectNode:", node?.id)
   if (!node) {
@@ -502,6 +638,7 @@ onMounted(() => {
   recalcDirty()
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('beforeunload', onBeforeUnload)
+  void refreshBackendRecommendations()
 })
 onUnmounted(() => {
   if (autosaveTimer != null) window.clearTimeout(autosaveTimer)
@@ -553,6 +690,54 @@ onUnmounted(() => {
         </Button>
       </div>
     </div>
+    <div class="px-6 py-3 border-b border-border/40 bg-muted/20 flex items-center gap-3">
+      <span class="text-sm font-medium">智能推荐模板</span>
+      <select
+        v-model="selectedTemplateId"
+        aria-label="选择工具组合模板"
+        class="h-8 min-w-[220px] rounded-md border border-input bg-background px-2 text-sm"
+      >
+        <option
+          v-for="tpl in recommendedTemplates"
+          :key="tpl.id"
+          :value="tpl.id"
+        >
+          {{ tpl.name }}（推荐分: {{ tpl.score }}）
+        </option>
+      </select>
+      <Button aria-label="一键导入工具组合模板" variant="outline" size="sm" @click="applyTemplate">一键导入模板</Button>
+      <Button variant="ghost" size="sm" @click="refreshBackendRecommendations">刷新推荐</Button>
+      <span class="text-xs text-muted-foreground">
+        {{ templates.find((t) => t.id === selectedTemplateId)?.description }}
+      </span>
+      <span v-if="selectedRecommendationReason" class="text-xs text-muted-foreground">
+        推荐原因：{{ selectedRecommendationReason }}
+      </span>
+      <button
+        v-if="recommendationUiMessage"
+        type="button"
+        class="text-xs text-muted-foreground underline"
+        @click="clearRecommendationMessage"
+      >
+        关闭解释
+      </button>
+      <div v-if="selectedRecommendationChips.length" class="flex items-center gap-2 flex-wrap">
+        <button
+          v-for="chip in selectedRecommendationChips"
+          :key="chip.key"
+          type="button"
+          class="rounded-full border border-border/70 bg-background px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted"
+          :class="activeRecommendationPairKey === chip.key ? 'border-primary text-primary' : ''"
+          :title="chip.detail"
+          @click="onRecommendationChipClick(chip)"
+        >
+          {{ chip.label }}
+        </button>
+      </div>
+      <div v-if="recommendationUiMessage" class="text-xs text-muted-foreground">
+        {{ recommendationUiMessage }}
+      </div>
+    </div>
 
     <!-- 校验错误面板：点击定位节点 -->
     <div v-if="validationErrors.length" class="mx-6 mb-2 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm">
@@ -580,13 +765,14 @@ onUnmounted(() => {
 
     <!-- Three columns: Node Library | Canvas | Node Config -->
     <div class="flex flex-1 min-h-0">
-      <aside class="w-56 shrink-0 flex flex-col border-r border-border/50">
+      <aside class="w-56 shrink-0 flex flex-col border-r border-border/50" aria-label="节点库面板">
         <NodeLibrary />
       </aside>
       <main class="flex-1 min-w-0 flex flex-col p-4">
         <WorkflowCanvas
           :nodes="editorNodes"
           :edges="editorEdges"
+          :focus-node-id="canvasFocusNodeId"
           @update:nodes="onNodesUpdate"
           @update:edges="onEdgesUpdate"
           @select-node="onSelectNode"
@@ -594,7 +780,7 @@ onUnmounted(() => {
           @select-edge="onSelectEdge"
         />
       </main>
-      <aside class="w-80 shrink-0 flex flex-col border-l border-border/50">
+      <aside class="w-80 shrink-0 flex flex-col border-l border-border/50" aria-label="节点配置面板">
         <NodeConfigPanel
           :node="selectedNode"
           :edge="selectedEdge"

@@ -26,6 +26,7 @@ from core.workflows.repository import WorkflowExecutionRepository, WorkflowVersi
 from core.workflows.repository import WorkflowApprovalTaskRepository
 from core.workflows.governance import ExecutionManager, ExecutionRequest
 from core.workflows.runtime.graph_runtime_adapter import GraphRuntimeAdapter
+from core.workflows.recommendation import WorkflowToolCompositionRecommender
 from core.workflows.runtime.subworkflow import build_child_input, apply_output_mapping
 from core.system.settings_store import get_system_settings_store
 from core.inference.client.inference_client import InferenceClient
@@ -1949,10 +1950,72 @@ class WorkflowRuntime:
         
         if on_state_change:
             on_state_change(execution)
+
+        self._record_runtime_tool_sequence_learning(execution_id, result)
         
         logger.info(f"[WorkflowRuntime] Execution completed: {execution_id} - {final_state.value}")
         
         return execution
+
+    def _record_runtime_tool_sequence_learning(
+        self,
+        execution_id: str,
+        result: Dict[str, Any],
+    ) -> None:
+        """执行完成后按真实节点执行结果提取工具序列，更新推荐学习数据。"""
+        try:
+            execution = self.execution_repository.get_by_id(execution_id)
+            if not execution:
+                return
+            version = self.version_repository.get_version_by_id(execution.version_id)
+            if not version or not version.dag or not version.dag.nodes:
+                return
+            tool_name_by_node: Dict[str, str] = {}
+            for node in version.dag.nodes:
+                cfg = node.config or {}
+                if node.type != "tool":
+                    continue
+                tool_name = str(cfg.get("tool_name") or cfg.get("tool_id") or "").strip()
+                if tool_name:
+                    tool_name_by_node[node.id] = tool_name
+            if not tool_name_by_node:
+                return
+
+            node_states = result.get("node_states") if isinstance(result, dict) else []
+            if not isinstance(node_states, list):
+                return
+            successful_tool_states: List[Dict[str, Any]] = []
+            for st in node_states:
+                if not isinstance(st, dict):
+                    continue
+                node_id = str(st.get("node_id") or "").strip()
+                state = str(st.get("state") or "").strip().lower()
+                if node_id not in tool_name_by_node:
+                    continue
+                if state not in {"success", "completed"}:
+                    continue
+                successful_tool_states.append(st)
+            if not successful_tool_states:
+                return
+            successful_tool_states.sort(key=lambda x: str(x.get("started_at") or ""))
+            tool_sequence = [
+                tool_name_by_node[str(st.get("node_id"))]
+                for st in successful_tool_states
+                if str(st.get("node_id")) in tool_name_by_node
+            ]
+            if not tool_sequence:
+                return
+            recommender = WorkflowToolCompositionRecommender()
+            recommender.record_runtime_sequence(
+                workflow_id=execution.workflow_id,
+                user_id=str(execution.triggered_by or "system"),
+                tool_sequence=tool_sequence,
+            )
+        except Exception as e:
+            logger.warning(
+                "[WorkflowRuntime] Failed to record runtime tool sequence learning: %s",
+                e,
+            )
 
     @staticmethod
     def _map_kernel_state_to_workflow_state(kernel_state: Any) -> WorkflowExecutionState:

@@ -12,8 +12,9 @@ const props = withDefaults(
   defineProps<{
     nodes?: Node<WorkflowNodeData>[]
     edges?: Edge[]
+    focusNodeId?: string | null
   }>(),
-  { nodes: () => [], edges: () => [] }
+  { nodes: () => [], edges: () => [], focusNodeId: null }
 )
 const FLOW_ID = 'workflow-editor-canvas'
 const SNAP_GRID: [number, number] = [16, 16]
@@ -69,6 +70,15 @@ watch(
     edgesRef.value = v ?? []
   },
   { immediate: true, deep: true }
+)
+watch(
+  () => props.focusNodeId,
+  (nodeId) => {
+    const id = String(nodeId || '').trim()
+    if (!id) return
+    if (!nodesRef.value.some((n) => n.id === id)) return
+    locateNode(id)
+  }
 )
 
 const nodeTypes = { workflow: markRaw(WorkflowNode) }

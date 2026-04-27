@@ -1072,6 +1072,15 @@ export interface WorkflowExecutionStatusRecord {
   }>
 }
 
+export interface ToolCompositionRecommendationItem {
+  id: string
+  name: string
+  description: string
+  tools: string[]
+  score: number
+  signals?: Record<string, any>
+}
+
 export async function listWorkflows(params: {
   namespace?: string
   lifecycle_state?: string
@@ -1250,6 +1259,39 @@ export async function runWorkflow(
       trigger_type: data.trigger_type || 'manual',
     }),
   })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(error.detail || `API error: ${response.statusText}`)
+  }
+  return response.json()
+}
+
+export async function recordToolCompositionUsage(
+  workflowId: string,
+  data: { template_id: string; tool_sequence: string[] },
+): Promise<{ ok: boolean }> {
+  const response = await apiFetch(`${API_BASE_URL}/api/v1/workflows/${workflowId}/tool-composition/usage`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(error.detail || `API error: ${response.statusText}`)
+  }
+  return response.json()
+}
+
+export async function getToolCompositionRecommendations(
+  workflowId: string,
+  params: { current_tools?: string[]; limit?: number } = {},
+): Promise<{ items: ToolCompositionRecommendationItem[]; total: number }> {
+  const usp = new URLSearchParams()
+  if (params.current_tools?.length) usp.set('current_tools', params.current_tools.join(','))
+  if (typeof params.limit === 'number') usp.set('limit', String(params.limit))
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/v1/workflows/${workflowId}/tool-composition/templates/recommend${usp.toString() ? `?${usp.toString()}` : ''}`,
+    { method: 'GET' },
+  )
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }))
     throw new Error(error.detail || `API error: ${response.statusText}`)

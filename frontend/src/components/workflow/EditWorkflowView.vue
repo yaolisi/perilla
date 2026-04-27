@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Save, Play, Rocket, Undo2, Redo2, Loader2, ChevronDown } from 'lucide-vue-next'
@@ -18,7 +18,23 @@ import type { Edge } from '@vue-flow/core'
 import type { WorkflowNodeData } from './editor/types'
 import { toWorkflowDag, fromWorkflowDag } from './editor/serialization'
 import { validateWorkflowNodes, validateWorkflowPreflight } from './editor/validation'
-import { getWorkflow, getWorkflowVersion, getSystemConfig, updateWorkflow, createWorkflowVersion } from '@/services/api'
+import {
+  getWorkflow,
+  getWorkflowVersion,
+  getSystemConfig,
+  updateWorkflow,
+  createWorkflowVersion,
+  getToolCompositionRecommendations,
+  recordToolCompositionUsage,
+  type ToolCompositionRecommendationItem,
+} from '@/services/api'
+import {
+  listToolCompositionTemplates,
+  recommendTemplates,
+  buildTemplateGraph,
+  trackTemplateUsage,
+  type ToolCompositionTemplateId,
+} from './editor/toolCompositionTemplates'
 
 const route = useRoute()
 const router = useRouter()
@@ -193,6 +209,64 @@ const importedGovernanceError = ref('')
 const governanceUiMessage = ref('')
 const governanceHealthyThreshold = ref(0.1)
 const governanceWarningThreshold = ref(0.3)
+const selectedTemplateId = ref<ToolCompositionTemplateId>('travel_planning')
+const templates = listToolCompositionTemplates()
+const backendRecommendedTemplates = ref<ToolCompositionRecommendationItem[]>([])
+const recommendedTemplates = computed(() => {
+  if (backendRecommendedTemplates.value.length > 0) {
+    const known = new Map(templates.map((t) => [t.id, t]))
+    return backendRecommendedTemplates.value.map((item) => ({
+      id: item.id as ToolCompositionTemplateId,
+      name: item.name || known.get(item.id as ToolCompositionTemplateId)?.name || item.id,
+      description: item.description || known.get(item.id as ToolCompositionTemplateId)?.description || '',
+      tools: item.tools || known.get(item.id as ToolCompositionTemplateId)?.tools || [],
+      score: item.score || 0,
+      signals: item.signals || {},
+    }))
+  }
+  return recommendTemplates(editorNodes.value)
+})
+const selectedRecommendationReason = computed(() => {
+  const picked = recommendedTemplates.value.find((x) => x.id === selectedTemplateId.value) as
+    | ({ signals?: Record<string, any> } & Record<string, any>)
+    | undefined
+  const s = (picked?.signals || {}) as Record<string, any>
+  if (!s || Object.keys(s).length === 0) return ''
+  return `重叠工具 ${s.overlap ?? 0}，转移信号 ${s.transition_score ?? 0}（置信度 ${(Number(s.transition_confidence || 0) * 100).toFixed(0)}%），用户历史 ${s.user_uses ?? 0} 次`
+})
+const selectedRecommendationChips = computed(() => {
+  const picked = recommendedTemplates.value.find((x) => x.id === selectedTemplateId.value) as
+    | ({ signals?: Record<string, any> } & Record<string, any>)
+    | undefined
+  const s = (picked?.signals || {}) as Record<string, any>
+  const pairs = Array.isArray(s.transition_pairs) ? s.transition_pairs : []
+  return pairs
+    .filter((p) => p && typeof p === 'object')
+    .map((p) => {
+      const from = String((p as Record<string, unknown>).from || '')
+      const to = String((p as Record<string, unknown>).to || '')
+      const w = Number((p as Record<string, unknown>).weight || 0)
+      return {
+        key: `${from}->${to}`,
+        label: `${from} -> ${to}`,
+        detail: `转移权重 ${w.toFixed(2)}`,
+        from,
+        to,
+      }
+    })
+})
+const activeRecommendationPairKey = ref('')
+const canvasFocusNodeId = ref<string | null>(null)
+const previewTemplateSkillNodes = computed(() => {
+  const graph = buildTemplateGraph(selectedTemplateId.value)
+  return graph.nodes
+    .filter((n) => n.data?.type === 'skill')
+    .map((n) => ({
+      nodeId: n.id,
+      label: String(n.data?.label || n.id),
+      toolName: String((n.data?.config as Record<string, unknown>)?.tool_name || ''),
+    }))
+})
 const governanceMaturity = computed(() => {
   const ratio = reflectorCoverageSummary.value.ratio
   const healthyThreshold = Math.max(0, Math.min(1, Number(governanceHealthyThreshold.value || 0.1)))
@@ -531,6 +605,40 @@ function runPreflightCheck() {
   validationErrors.value = errors
 }
 
+function applyTemplate() {
+  const graph = buildTemplateGraph(selectedTemplateId.value)
+  editorNodes.value = graph.nodes
+  editorEdges.value = graph.edges
+  selectedNodeId.value = null
+  selectedEdge.value = null
+  trackTemplateUsage(selectedTemplateId.value)
+  const toolSequence = graph.nodes
+    .filter((n) => n.data?.type === 'skill')
+    .map((n) => String((n.data?.config as Record<string, unknown>)?.tool_name || ''))
+    .filter(Boolean)
+  recordToolCompositionUsage(workflowId, {
+    template_id: selectedTemplateId.value,
+    tool_sequence: toolSequence,
+  }).catch(() => undefined)
+  void refreshBackendRecommendations()
+}
+
+async function refreshBackendRecommendations() {
+  try {
+    const currentTools = editorNodes.value
+      .filter((n) => n.data?.type === 'skill')
+      .map((n) => String((n.data?.config as Record<string, unknown>)?.tool_name || ''))
+      .filter(Boolean)
+    const res = await getToolCompositionRecommendations(workflowId, {
+      current_tools: currentTools,
+      limit: 5,
+    })
+    backendRecommendedTemplates.value = res.items || []
+  } catch {
+    backendRecommendedTemplates.value = []
+  }
+}
+
 function onSelectNode(node: Node<WorkflowNodeData> | null) {
   selectedNodeId.value = node?.id ?? null
   if (node) selectedEdge.value = null
@@ -656,6 +764,32 @@ function focusNodeFromGovernanceDiff(nodeId: string) {
   governanceUiMessage.value = `节点 ${nodeId} 不在当前画布中，无法定位。`
 }
 
+function onRecommendationChipClick(chip: { key: string; label: string; detail: string; from: string; to: string }) {
+  governanceUiMessage.value = `推荐链路：${chip.label}（${chip.detail}）`
+  activeRecommendationPairKey.value = chip.key
+  const fromNode = editorNodes.value.find((n) => {
+    const cfg = (n.data?.config || {}) as Record<string, unknown>
+    return n.data?.type === 'skill' && String(cfg.tool_name || cfg.tool_id || '') === chip.from
+  })
+  const toNode = editorNodes.value.find((n) => {
+    const cfg = (n.data?.config || {}) as Record<string, unknown>
+    return n.data?.type === 'skill' && String(cfg.tool_name || cfg.tool_id || '') === chip.to
+  })
+  const target = toNode || fromNode
+  if (target) {
+    onSelectNodeById(target.id)
+    canvasFocusNodeId.value = target.id
+    window.setTimeout(() => {
+      if (canvasFocusNodeId.value === target.id) canvasFocusNodeId.value = null
+    }, 300)
+  }
+  void nextTick(() => {
+    const fromEl = document.querySelector(`[data-tool-name="${chip.from}"]`) as HTMLElement | null
+    const toEl = document.querySelector(`[data-tool-name="${chip.to}"]`) as HTMLElement | null
+    ;(fromEl || toEl)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  })
+}
+
 function onSelectEdge(edge: Edge | null) {
   // 仅在选择某条 edge 时清空节点选中；select-edge(null) 只清边，避免 drop 节点后配置被清空（onDrop 里会先 emit select-edge null 再 emit select-node-by-id）
   if (edge != null) selectedNodeId.value = null
@@ -746,6 +880,7 @@ onMounted(async () => {
     governanceHealthyThreshold.value = 0.1
     governanceWarningThreshold.value = 0.3
   }
+  await refreshBackendRecommendations()
   try {
     const wf = await getWorkflow(workflowId)
     workflowName.value = wf.name || 'Untitled Workflow'
@@ -851,6 +986,55 @@ onUnmounted(() => {
           <Rocket class="w-4 h-4 opacity-50" />
           <span class="opacity-70">{{ t('workflow_editor.deploy') }}</span>
         </Button>
+      </div>
+    </div>
+    <div class="px-6 py-3 border-b border-border/40 bg-muted/20 flex items-center gap-3">
+      <span class="text-sm font-medium">智能推荐模板</span>
+      <select
+        v-model="selectedTemplateId"
+        class="h-8 min-w-[220px] rounded-md border border-input bg-background px-2 text-sm"
+      >
+        <option
+          v-for="tpl in recommendedTemplates"
+          :key="tpl.id"
+          :value="tpl.id"
+        >
+          {{ tpl.name }}（推荐分: {{ tpl.score }}）
+        </option>
+      </select>
+      <Button variant="outline" size="sm" @click="applyTemplate">一键导入模板</Button>
+      <span class="text-xs text-muted-foreground">
+        {{ templates.find((t) => t.id === selectedTemplateId)?.description }}
+      </span>
+      <span v-if="selectedRecommendationReason" class="text-xs text-muted-foreground">
+        推荐原因：{{ selectedRecommendationReason }}
+      </span>
+      <div v-if="selectedRecommendationChips.length" class="flex items-center gap-2 flex-wrap">
+        <button
+          v-for="chip in selectedRecommendationChips"
+          :key="chip.key"
+          type="button"
+          class="rounded-full border border-border/70 bg-background px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted"
+          :class="activeRecommendationPairKey === chip.key ? 'border-primary text-primary' : ''"
+          :title="chip.detail"
+          @click="onRecommendationChipClick(chip)"
+        >
+          {{ chip.label }}
+        </button>
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-xs text-muted-foreground">模板节点预览：</span>
+        <button
+          v-for="node in previewTemplateSkillNodes"
+          :key="node.nodeId"
+          type="button"
+          class="rounded border px-2 py-0.5 text-[11px]"
+          :data-tool-name="node.toolName"
+          :class="activeRecommendationPairKey.includes(node.toolName) ? 'border-primary text-primary bg-primary/10' : 'border-border/70 text-muted-foreground bg-background'"
+          :title="node.nodeId"
+        >
+          {{ node.label }} · {{ node.toolName }}
+        </button>
       </div>
     </div>
     <div class="px-6 py-3 border-b border-border/40 bg-muted/20">
@@ -1107,6 +1291,7 @@ onUnmounted(() => {
         <WorkflowCanvas
           :nodes="editorNodes"
           :edges="editorEdges"
+          :focus-node-id="canvasFocusNodeId"
           @update:nodes="onNodesUpdate"
           @update:edges="onEdgesUpdate"
           @select-node="onSelectNode"

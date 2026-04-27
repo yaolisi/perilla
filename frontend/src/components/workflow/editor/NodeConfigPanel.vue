@@ -507,11 +507,24 @@ function readToolInputField(key: string, schema: Record<string, any>): string | 
     return schema.type === 'number' || schema.type === 'integer' ? 0 : ''
   }
   if (typeof value === 'number') return value
-  if (typeof value === 'boolean') return value ? 1 : 0
+  if (typeof value === 'boolean') return String(value)
   return String(value)
 }
 
+function isVariableMapping(raw: string): boolean {
+  const s = raw.trim()
+  return /^\{\{[^{}]+\}\}$/.test(s)
+}
+
+function isExpressionMapping(raw: string): boolean {
+  return raw.trim().startsWith('=')
+}
+
 function parseToolInputValue(raw: string, schema: Record<string, any>): unknown {
+  const trimmed = raw.trim()
+  if (isVariableMapping(trimmed) || isExpressionMapping(trimmed)) {
+    return trimmed
+  }
   if (schema.type === 'integer') {
     const parsed = parseInt(raw, 10)
     return Number.isNaN(parsed) ? schema.default ?? 0 : parsed
@@ -525,6 +538,26 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
   }
   return raw
 }
+
+const toolInputFieldErrors = computed<Record<string, string>>(() => {
+  const errs: Record<string, string> = {}
+  for (const [fieldName, schema] of toolSchemaProperties.value) {
+    const value = currentToolInputs()[fieldName]
+    if (value == null) continue
+    if (typeof value === 'string') {
+      const s = value.trim()
+      if (!s) continue
+      if (isVariableMapping(s) || isExpressionMapping(s)) continue
+      if ((schema.type === 'number' || schema.type === 'integer') && Number.isNaN(Number(s))) {
+        errs[fieldName] = '类型不匹配：该字段为数字类型，仅支持数字、{{变量映射}} 或 =表达式'
+      }
+      if (schema.type === 'boolean' && !['true', 'false'].includes(s.toLowerCase())) {
+        errs[fieldName] = '类型不匹配：该字段为布尔类型，仅支持 true/false、{{变量映射}} 或 =表达式'
+      }
+    }
+  }
+  return errs
+})
 </script>
 
 <template>
@@ -941,11 +974,17 @@ function parseToolInputValue(raw: string, schema: Record<string, any>): unknown 
               </div>
               <Input
                 v-else
-                :type="schema.type === 'number' || schema.type === 'integer' ? 'number' : 'text'"
+                type="text"
                 :model-value="readToolInputField(fieldName, schema)"
                 :placeholder="schema.description || fieldName"
                 @update:model-value="(value) => updateToolInputField(fieldName, parseToolInputValue(String(value ?? ''), schema))"
               />
+              <p class="text-[11px] text-muted-foreground">
+                支持静态值、变量映射（如 &#123;&#123;var.path&#125;&#125;）、或 = 表达式计算
+              </p>
+              <p v-if="toolInputFieldErrors[fieldName]" class="text-xs text-destructive">
+                {{ toolInputFieldErrors[fieldName] }}
+              </p>
               <p v-if="schema.description" class="text-xs text-muted-foreground">{{ schema.description }}</p>
             </div>
           </div>

@@ -40,6 +40,7 @@ from core.workflows.services import (
 )
 from core.workflows.repository import WorkflowGovernanceAuditRepository
 from core.workflows.governance import get_execution_manager, QuotaConfig
+from core.workflows.recommendation import WorkflowToolCompositionRecommender
 from core.workflows.runtime import WorkflowRuntime
 from core.workflows.debug_runtime import (
     kernel_debug_snapshot as _kernel_debug_snapshot_helper,
@@ -180,6 +181,16 @@ class WorkflowApprovalListResponse(BaseModel):
 class WorkflowGovernanceConfigRequest(BaseModel):
     max_queue_size: Optional[int] = Field(default=None, ge=1, le=10000)
     backpressure_strategy: Optional[str] = Field(default=None, description="wait or reject")
+
+
+class ToolCompositionUsageRequest(BaseModel):
+    template_id: str = Field(..., min_length=1, max_length=128)
+    tool_sequence: List[str] = Field(default_factory=list, max_length=200)
+
+
+class ToolCompositionRecommendResponse(BaseModel):
+    items: List[Dict[str, Any]]
+    total: int
 
 
 class ListResponse(BaseModel):
@@ -2294,6 +2305,96 @@ async def list_governance_audits(
     items = audit_repo.list_audits(workflow_id, limit=limit, offset=offset)
     total = audit_repo.count_audits(workflow_id)
     return ListResponse(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.post(
+    "/{workflow_id}/tool-composition/usage",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_tool_composition_usage(
+    http_request: Request,
+    workflow_id: str,
+    request: ToolCompositionUsageRequest,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[str, Depends(get_current_user)],
+) -> Dict[str, Any]:
+    """记录工具组合使用行为（用于推荐学习）"""
+    tenant_id = resolve_tenant_id(
+        http_request, default_tenant=getattr(settings, "tenant_default_id", "default")
+    )
+    workflow_service = WorkflowService(db)
+    workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
+    if not workflow:
+        raise_api_error(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="workflow_not_found",
+            message=MSG_WORKFLOW_NOT_FOUND,
+            details={"workflow_id": workflow_id},
+        )
+    workflow = _ensure_workflow_tenant(workflow, tenant_id)
+    if not workflow.has_permission(current_user, "read"):
+        raise_api_error(
+            status_code=status.HTTP_403_FORBIDDEN,
+            code="workflow_access_denied",
+            message=MSG_ACCESS_DENIED,
+            details={"workflow_id": workflow_id, "action": "read"},
+        )
+
+    recommender = WorkflowToolCompositionRecommender()
+    recommender.record_usage(
+        workflow_id=workflow_id,
+        user_id=current_user,
+        template_id=request.template_id.strip(),
+        tool_sequence=request.tool_sequence or [],
+    )
+    return {"ok": True}
+
+
+@router.get(
+    "/{workflow_id}/tool-composition/templates/recommend",
+    response_model=ToolCompositionRecommendResponse,
+)
+async def recommend_tool_composition_templates(
+    http_request: Request,
+    workflow_id: str,
+    current_tools: Annotated[str, Query(description="comma separated tool names")] = "",
+    limit: Annotated[int, Query(ge=1, le=20)] = 5,
+    *,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[str, Depends(get_current_user)],
+) -> ToolCompositionRecommendResponse:
+    """返回工具组合模板推荐"""
+    tenant_id = resolve_tenant_id(
+        http_request, default_tenant=getattr(settings, "tenant_default_id", "default")
+    )
+    workflow_service = WorkflowService(db)
+    workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
+    if not workflow:
+        raise_api_error(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="workflow_not_found",
+            message=MSG_WORKFLOW_NOT_FOUND,
+            details={"workflow_id": workflow_id},
+        )
+    workflow = _ensure_workflow_tenant(workflow, tenant_id)
+    if not workflow.has_permission(current_user, "read"):
+        raise_api_error(
+            status_code=status.HTTP_403_FORBIDDEN,
+            code="workflow_access_denied",
+            message=MSG_ACCESS_DENIED,
+            details={"workflow_id": workflow_id, "action": "read"},
+        )
+
+    tools = [x.strip() for x in (current_tools or "").split(",") if x.strip()]
+    recommender = WorkflowToolCompositionRecommender()
+    items = recommender.recommend(
+        workflow_id=workflow_id,
+        user_id=current_user,
+        current_tools=tools,
+        limit=limit,
+    )
+    return ToolCompositionRecommendResponse(items=items, total=len(items))
 
 
 # ==================== Helper Functions ====================
