@@ -1,4 +1,4 @@
-# OpenVitamin 产品术语表（非技术读者）
+# perilla 产品术语表（非技术读者）
 
 适用：产品、项目、运营、客户成功、业务分析。用业务语言对齐常见概念。
 
@@ -24,7 +24,7 @@
 
 | 术语 | 英文 | 一句话解释 |
 |---|---|---|
-| 平台 | Platform | OpenVitamin 的整体系统，不是单一聊天工具 |
+| 平台 | Platform | perilla 的整体系统，不是单一聊天工具 |
 | 控制台 | Console | 用户操作界面（前端） |
 | 推理网关 | Inference Gateway | 后端统一入口，负责调度和治理 |
 | 能力模块 | Capability Module | 平台可插拔能力，例如 Workflow、Agent、Tool |

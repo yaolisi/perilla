@@ -1,4 +1,4 @@
-# OpenVitamin 10-Minute Quickstart
+# perilla 10-Minute Quickstart
 
 **Goal**: from zero to *running services + health checks + CSRF write path + optional security regressions* in about ten minutes.
 
@@ -18,7 +18,7 @@ For the full narrative and troubleshooting, see **[tutorial.md](tutorial.md)** a
 ## Prerequisites
 
 - Python 3.11+, Node.js 18+, Conda (recommended)  
-- Current working directory is the **repository root** (standalone folder is often `openvitamin_enhanced_docker`)
+- Current working directory is the **repository root** (clone directory is often named `perilla`)
 
 ```bash
 python --version

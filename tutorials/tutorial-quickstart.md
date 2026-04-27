@@ -1,4 +1,4 @@
-# OpenVitamin 10 分钟极简上手
+# perilla 10 分钟极简上手
 
 目标：第一次接触仓库的人，在约 10 分钟内完成 **启动 → 健康检查 → CSRF 验证 → 安全回归脚本**。
 
@@ -18,7 +18,7 @@
 ## 前置条件
 
 - Python 3.11+、Node.js 18+、Conda（推荐）  
-- 已进入**项目根目录**（Standalone 常为 `openvitamin_enhanced_docker`）
+- 已进入**项目根目录**（Standalone 常为克隆目录 `perilla`）
 
 ```bash
 python --version

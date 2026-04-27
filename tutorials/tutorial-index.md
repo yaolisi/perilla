@@ -1,8 +1,8 @@
-# OpenVitamin 教程索引（统一入口）
+# perilla 教程索引（统一入口）
 
 按场景跳转；新手先看同目录 **[README.md](README.md)**（阅读顺序与错误码索引）。
 
-**仓库根目录**：Standalone 分发（例如 `openvitamin_enhanced_docker`）顶层，内含 `backend/`、`frontend/`、`scripts/`。下文命令默认在此目录执行。
+**仓库根目录**：Standalone 分发（例如克隆目录名为 `perilla`）顶层，内含 `backend/`、`frontend/`、`scripts/`。下文命令默认在此目录执行。
 
 ---
 

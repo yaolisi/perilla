@@ -1,4 +1,4 @@
-# OpenVitamin — Local AI Inference and Workflow Platform
+# perilla — Local AI Inference and Workflow Platform
 
 **Local-first, gateway-centric**: one console for LLM/VLM, image generation, workflows, agents, and knowledge bases. The Vue UI never talks to models directly; all traffic goes through the FastAPI inference gateway.
 

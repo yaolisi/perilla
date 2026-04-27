@@ -1,4 +1,4 @@
-# OpenVitamin: Security and Logic Review Hints (Archived)
+# perilla: Security and Logic Review Hints (Archived)
 
 Outcomes of a **static architecture / focused code review**. Complements [tutorial-security-baseline.md](tutorial-security-baseline.md) (MUST rules); **not** a penetration test or full production sign-off.
 

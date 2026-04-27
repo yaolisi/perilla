@@ -1,6 +1,6 @@
-# OpenVitamin 安全基线与审计规范
+# perilla 安全基线与审计规范
 
-适用于 **Standalone** 仓库（目录名常为 `openvitamin_enhanced_docker`）：约定最小安全基线、配置与审计要求、变更审批与回归门禁。
+适用于 **Standalone** 仓库（克隆目录名常为 `perilla`）：约定最小安全基线、配置与审计要求、变更审批与回归门禁。
 
 ---
 

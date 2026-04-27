@@ -1,4 +1,4 @@
-# OpenVitamin — 本地 AI 推理与工作流平台
+# perilla — 本地 AI 推理与工作流平台
 
 **本地优先、网关中心化**：统一管理 LLM/VLM、文生图、Workflow、Agent 与知识库；前端只做控制台，所有模型与控制面调用经 FastAPI 推理网关出口。
 

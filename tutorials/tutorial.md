@@ -1,4 +1,4 @@
-# OpenVitamin 上手教程（从环境到上线）
+# perilla 上手教程（从环境到上线）
 
 面向 **Standalone** 仓库新手：覆盖安装、启动、租户与 RBAC、CSRF/XSS、Workflow 与 Agent、回归测试与常见错误。**所有模型与控制面调用经 FastAPI 网关**；请勿绕过网关直连推理引擎。
 
@@ -21,7 +21,7 @@
 
 ## 1. 先理解：这个项目是做什么的
 
-**OpenVitamin** 是本地优先的 AI 平台，可概括为：
+**perilla** 是本地优先的 AI 平台，可概括为：
 
 - **前端控制台**：可视化操作界面（Vue）
 - **后端网关**：统一接入模型、工作流、审计、安全治理（FastAPI）
@@ -73,8 +73,8 @@ conda activate ai-inference-platform
 
 ```bash
 cd "你的工作目录"
-# Standalone 完整分发目录通常为 openvitamin_enhanced_docker（或你克隆的本仓库根目录）
-cd openvitamin_enhanced_docker
+# Standalone 完整分发目录通常为 perilla（或你克隆的本仓库根目录）
+cd perilla
 ```
 
 确认关键目录存在：
@@ -989,7 +989,7 @@ curl -s "${BASE_URL}/api/v1/audit/logs?limit=20&offset=0" \
 ### 20.13 一键安全回归脚本
 
 ```bash
-cd openvitamin_enhanced_docker
+cd perilla
 python backend/scripts/security_regression.py \
   --base http://127.0.0.1:8000 \
   --api-key "${ADMIN_KEY}" \
@@ -1005,7 +1005,7 @@ scripts/acceptance/run_security_regression.sh
 生成 JUnit 报告：
 
 ```bash
-cd openvitamin_enhanced_docker
+cd perilla
 JUNIT_XML_PATH=test-reports/tenant-security-regression.xml backend/scripts/test_tenant_security_regression.sh
 ```
 

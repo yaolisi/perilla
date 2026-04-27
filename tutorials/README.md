@@ -1,4 +1,4 @@
-# OpenVitamin 教程目录
+# perilla 教程目录
 
 面向 **Standalone** 仓库（本目录随代码分发）。不知从何读起时，先看 **[tutorial-index.md](tutorial-index.md)**。
 

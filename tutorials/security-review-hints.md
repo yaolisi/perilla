@@ -1,4 +1,4 @@
-# OpenVitamin：安全与逻辑审查提示（归档）
+# perilla：安全与逻辑审查提示（归档）
 
 **静态架构与关键点代码审查**结论摘要，与 [tutorial-security-baseline.md](tutorial-security-baseline.md) 中的 MUST 基线互补；**不能替代**渗透测试或线上专项测试。
 
