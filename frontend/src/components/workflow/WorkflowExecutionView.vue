@@ -14,6 +14,7 @@ import {
   Rows3,
   ExternalLink,
   Copy,
+  Upload,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -22,32 +23,98 @@ import {
   getWorkflow,
   getWorkflowVersion,
   getWorkflowExecution,
+  downloadWorkflowExecutionFailureReportArchive,
+  getWorkflowExecutionFailureReport,
   getWorkflowExecutionCallChain,
   getWorkflowExecutionStatus,
+  listWorkflowExecutionErrors,
   getCollaborationSessionsByCorrelation,
   listWorkflowExecutions,
   reconcileWorkflowExecution,
   runWorkflow,
   streamWorkflowExecutionStatus,
+  type WorkflowExecutionFailureReport,
   type WorkflowExecutionStatusRecord,
   type WorkflowExecutionRecord,
   type WorkflowExecutionCallChainItem,
   type WorkflowExecutionCallChainResponse,
+  type WorkflowExecutionErrorLogRecord,
   type WorkflowRecord,
   type CorrelationSummaryResponse,
 } from '@/services/api'
 import { normalizeExecutionStatus, normalizeNodeStatus, statusBadgeClass } from './status'
+import {
+  buildFailureAuditSummary,
+  verifyFailureBundleZipAgainstExpected,
+  verifyFailureReportSha256,
+  type FailureBundleZipVerifyResult,
+} from '@/utils/failureReportAudit'
 
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 const workflowId = route.params.id as string
 
+function formatFailureBundleZipVerifyNote(r: FailureBundleZipVerifyResult, scope: 'offline' | 'zip'): string {
+  const scopeLabel =
+    scope === 'offline'
+      ? t('workflow_run.failure_verify_scope_offline')
+      : t('workflow_run.failure_verify_scope_zip')
+  if (r.ok) {
+    if (r.sidecar_matches_json === true) {
+      return t('workflow_run.failure_verify_hash_ok_sidecar', { scope: scopeLabel, actual: r.actual })
+    }
+    return t('workflow_run.failure_verify_hash_ok', { scope: scopeLabel, actual: r.actual })
+  }
+  if (r.sidecar_matches_json === false && r.sidecar_sha256) {
+    return t('workflow_run.failure_verify_bundle_inconsistent', {
+      sidecar: r.sidecar_sha256,
+      actual: r.actual,
+    })
+  }
+  return t('workflow_run.failure_verify_hash_mismatch_scoped', {
+    scope: scopeLabel,
+    expected: r.expected,
+    actual: r.actual,
+  })
+}
+
 const workflow = ref<WorkflowRecord | null>(null)
 const currentExecution = ref<WorkflowExecutionRecord | null>(null)
 const loading = ref(false)
 const logs = ref<string[]>([])
 const runError = ref<string | null>(null)
+const errorLogs = ref<WorkflowExecutionErrorLogRecord[]>([])
+const errorLogsTotal = ref(0)
+const errorLogsLoading = ref(false)
+const errorLogsError = ref<string | null>(null)
+const failureExportNote = ref<string | null>(null)
+const failureExportAuditSummary = ref<string | null>(null)
+const failureExportSha256 = ref<string | null>(null)
+const failureHashVerifyNote = ref<string | null>(null)
+/** 用于成功/失败着色；不依赖文案中的 “verified” 子串（多语言安全） */
+const failureHashVerifySuccess = ref(false)
+const lastFailureReportForVerify = ref<WorkflowExecutionFailureReport | null>(null)
+const lastFailureExportKind = ref<'report' | 'bundle' | null>(null)
+const lastFailureExportExecutionId = ref<string | null>(null)
+const lastFailureExportFilters = ref<{
+  node_id?: string
+  error_type?: string
+  failure_strategy?: string
+  start_time?: string
+  end_time?: string
+}>({})
+/** 最近一次导出的 bundle zip，用于离线校验哈希（无需再请求 API）。 */
+const lastFailureBundleBlob = ref<Blob | null>(null)
+/** 可选：粘贴预期 SHA-256，用于校验磁盘上的 zip（会话外或覆盖上方展示值）。 */
+const failureZipExpectedHexOverride = ref('')
+const failureBundleZipInputRef = ref<HTMLInputElement | null>(null)
+const failureReportExporting = ref(false)
+const failureBundleExporting = ref(false)
+const errorFilterErrorType = ref('')
+const errorFilterFailureStrategy = ref('')
+const errorFilterStartTime = ref('')
+const errorFilterEndTime = ref('')
 const selectedNodeId = ref<string>('')
 const expandedErrorStackNodes = ref<Record<string, boolean>>({})
 const viewMode = ref<'graph' | 'timeline' | 'list' | 'delivery'>('timeline')
@@ -55,6 +122,7 @@ const viewMode = ref<'graph' | 'timeline' | 'list' | 'delivery'>('timeline')
 const waitForCompletion = ref(false)
 let pollTimer: number | null = null
 let elapsedTimer: number | null = null
+let timelineHighlightTimer: number | null = null
 let streamStop: (() => void) | null = null
 let pollInFlight = false
 let pollTick = 0
@@ -69,6 +137,8 @@ const runStartInFlight = ref(false)
 const currentRunIdempotencyKey = ref<string | null>(null)
 let fastPollUntilMs = 0
 const elapsedNowMs = ref(Date.now())
+const highlightedTimelineNodeId = ref<string>('')
+const timelineRowRefs = ref<Record<string, HTMLElement | null>>({})
 
 function isExecutionActive(exec: WorkflowExecutionRecord | null | undefined): boolean {
   const state = normalizeExecutionStatus(exec?.state)
@@ -83,6 +153,38 @@ function isExecutionActive(exec: WorkflowExecutionRecord | null | undefined): bo
 const isRunning = computed(() => {
   return isExecutionActive(currentExecution.value)
 })
+
+const verifyFailureHashButtonLabel = computed(() => {
+  if (lastFailureExportKind.value === 'bundle' && !lastFailureBundleBlob.value) {
+    return t('workflow_run.failure_verify_hash_server')
+  }
+  return t('workflow_run.failure_verify_hash')
+})
+
+const verifyFailureHashButtonTitle = computed(() => {
+  if (lastFailureExportKind.value === 'bundle' && lastFailureBundleBlob.value) {
+    return t('workflow_run.failure_verify_hash_title_bundle_mem')
+  }
+  if (lastFailureExportKind.value === 'bundle') {
+    return t('workflow_run.failure_verify_hash_title_bundle_api')
+  }
+  return t('workflow_run.failure_verify_hash_title_report')
+})
+
+function resolveFailureExpectedHexForZip(): string | null {
+  const o = failureZipExpectedHexOverride.value.trim().toLowerCase().replace(/\s+/g, '')
+  if (/^[a-f0-9]{64}$/.test(o)) return o
+  const main = String(failureExportSha256.value || '').trim().toLowerCase()
+  if (/^[a-f0-9]{64}$/.test(main)) return main
+  return null
+}
+
+function setFailureHashVerifyNoteMessage(message: string | null, success: boolean) {
+  failureHashVerifyNote.value = message
+  failureHashVerifySuccess.value = success && Boolean(message)
+}
+
+const canVerifyFailureZipFromDisk = computed(() => resolveFailureExpectedHexForZip() !== null)
 
 const nodeStates = computed<any[]>(() => currentExecution.value?.node_states || [])
 
@@ -437,6 +539,14 @@ watch(
     executionCallChainError.value = null
     lastCallChainQuietRefreshAt = 0
     if (eid) void refreshExecutionCallChain()
+    void loadExecutionErrorLogs()
+  }
+)
+
+watch(
+  () => selectedNodeId.value,
+  () => {
+    void loadExecutionErrorLogs()
   }
 )
 
@@ -667,6 +777,324 @@ function parseServerTime(v: string | null | undefined): number {
   return Number.isNaN(ts) ? new Date(s).getTime() : ts
 }
 
+function formatErrorEventTs(ts?: string | null): string {
+  if (!ts) return '-'
+  const ms = parseServerTime(ts)
+  if (Number.isNaN(ms)) return String(ts)
+  return new Date(ms).toLocaleString()
+}
+
+async function loadExecutionErrorLogs() {
+  const executionId = currentExecution.value?.execution_id
+  if (!executionId) {
+    errorLogs.value = []
+    errorLogsTotal.value = 0
+    errorLogsError.value = null
+    return
+  }
+  errorLogsLoading.value = true
+  errorLogsError.value = null
+  try {
+    const res = await listWorkflowExecutionErrors(workflowId, executionId, {
+      node_id: selectedNodeId.value || undefined,
+      error_type: errorFilterErrorType.value.trim() || undefined,
+      failure_strategy: errorFilterFailureStrategy.value.trim() || undefined,
+      start_time: errorFilterStartTime.value || undefined,
+      end_time: errorFilterEndTime.value || undefined,
+      limit: 100,
+      offset: 0,
+    })
+    errorLogs.value = res.items || []
+    errorLogsTotal.value = Number(res.total || 0)
+  } catch (e) {
+    errorLogsError.value = e instanceof Error ? e.message : String(e)
+    errorLogs.value = []
+    errorLogsTotal.value = 0
+  } finally {
+    errorLogsLoading.value = false
+  }
+}
+
+function clearErrorFilters() {
+  errorFilterErrorType.value = ''
+  errorFilterFailureStrategy.value = ''
+  errorFilterStartTime.value = ''
+  errorFilterEndTime.value = ''
+  void loadExecutionErrorLogs()
+}
+
+function focusNodeFromErrorLog(item: WorkflowExecutionErrorLogRecord) {
+  const nodeId = String(item.node_id || '').trim()
+  if (!nodeId) return
+  viewMode.value = 'timeline'
+  selectedNodeId.value = nodeId
+  highlightedTimelineNodeId.value = nodeId
+  if (timelineHighlightTimer != null) {
+    window.clearTimeout(timelineHighlightTimer)
+    timelineHighlightTimer = null
+  }
+  timelineHighlightTimer = window.setTimeout(() => {
+    if (highlightedTimelineNodeId.value === nodeId) {
+      highlightedTimelineNodeId.value = ''
+    }
+  }, 3000)
+  void nextTick(() => {
+    const el = timelineRowRefs.value[nodeId]
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+  })
+}
+
+function escapeCsvCell(value: unknown): string {
+  const raw = value == null ? '' : String(value)
+  const escaped = raw.replace(/"/g, '""')
+  return `"${escaped}"`
+}
+
+function downloadTextFile(filename: string, content: string, mimeType: string): void {
+  const blob = new Blob([content], { type: `${mimeType};charset=utf-8` })
+  downloadBlobFile(filename, blob)
+}
+
+function downloadBlobFile(filename: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function exportErrorLogsJson() {
+  const executionId = currentExecution.value?.execution_id || 'execution'
+  const filename = `workflow-error-logs-${executionId}.json`
+  downloadTextFile(filename, JSON.stringify(errorLogs.value, null, 2), 'application/json')
+}
+
+function exportErrorLogsCsv() {
+  const header = [
+    'execution_id',
+    'event_id',
+    'sequence',
+    'timestamp',
+    'node_id',
+    'event_type',
+    'failure_strategy',
+    'error_type',
+    'retry_count',
+    'error_message',
+  ]
+  const lines = [header.join(',')]
+  for (const item of errorLogs.value) {
+    const row = [
+      item.execution_id,
+      item.event_id,
+      item.sequence,
+      item.timestamp,
+      item.node_id,
+      item.event_type,
+      item.failure_strategy || '',
+      item.error_type || '',
+      item.retry_count ?? 0,
+      item.error_message || '',
+    ].map(escapeCsvCell)
+    lines.push(row.join(','))
+  }
+  const executionId = currentExecution.value?.execution_id || 'execution'
+  const filename = `workflow-error-logs-${executionId}.csv`
+  downloadTextFile(filename, lines.join('\n'), 'text/csv')
+}
+
+async function exportFailureReportJson() {
+  const exec = currentExecution.value
+  if (!exec) return
+  failureReportExporting.value = true
+  failureExportNote.value = null
+  failureExportAuditSummary.value = null
+  failureExportSha256.value = null
+  setFailureHashVerifyNoteMessage(null, false)
+  lastFailureReportForVerify.value = null
+  lastFailureBundleBlob.value = null
+  try {
+    const filters = {
+      node_id: selectedNodeId.value || undefined,
+      error_type: errorFilterErrorType.value || undefined,
+      failure_strategy: errorFilterFailureStrategy.value || undefined,
+      start_time: errorFilterStartTime.value || undefined,
+      end_time: errorFilterEndTime.value || undefined,
+    }
+    const report = await getWorkflowExecutionFailureReport(workflowId, exec.execution_id, filters)
+    const filename = `workflow-failure-report-${exec.execution_id}.json`
+    downloadTextFile(filename, JSON.stringify(report, null, 2), 'application/json')
+    const schema = report.report_schema_version || 'unknown'
+    const redacted = report.redacted_key_count ?? 0
+    const sha = report.report_sha256 || 'na'
+    failureExportSha256.value = report.report_sha256 || null
+    lastFailureReportForVerify.value = report
+    lastFailureExportKind.value = 'report'
+    lastFailureExportExecutionId.value = exec.execution_id
+    lastFailureExportFilters.value = filters
+    failureExportAuditSummary.value = buildFailureAuditSummary({
+      schema,
+      redaction: report.redaction_applied,
+      redactedKeys: redacted,
+    })
+    failureExportNote.value = t('workflow_run.failure_export_note_report', {
+      audit: failureExportAuditSummary.value || '',
+      sha,
+    })
+  } catch (e) {
+    errorLogsError.value = String(
+      (e as Error)?.message || e || t('workflow_run.failure_export_report_error'),
+    )
+  } finally {
+    failureReportExporting.value = false
+  }
+}
+
+async function exportFailureBundleZip() {
+  const exec = currentExecution.value
+  if (!exec) return
+  failureBundleExporting.value = true
+  failureExportNote.value = null
+  failureExportAuditSummary.value = null
+  failureExportSha256.value = null
+  setFailureHashVerifyNoteMessage(null, false)
+  lastFailureReportForVerify.value = null
+  try {
+    const filters = {
+      node_id: selectedNodeId.value || undefined,
+      error_type: errorFilterErrorType.value || undefined,
+      failure_strategy: errorFilterFailureStrategy.value || undefined,
+      start_time: errorFilterStartTime.value || undefined,
+      end_time: errorFilterEndTime.value || undefined,
+    }
+    const data = await downloadWorkflowExecutionFailureReportArchive(workflowId, exec.execution_id, filters)
+    lastFailureBundleBlob.value = data.blob
+    downloadBlobFile(data.filename, data.blob)
+    const schema = data.report_schema_version || 'unknown'
+    const redacted = data.redacted_key_count ?? 0
+    const sha = data.report_sha256 || 'na'
+    failureExportSha256.value = data.report_sha256 || null
+    lastFailureExportKind.value = 'bundle'
+    lastFailureExportExecutionId.value = exec.execution_id
+    lastFailureExportFilters.value = filters
+    failureExportAuditSummary.value = buildFailureAuditSummary({
+      schema,
+      redaction: data.redaction_applied,
+      redactedKeys: redacted,
+    })
+    failureExportNote.value = t('workflow_run.failure_export_note_bundle', {
+      audit: failureExportAuditSummary.value || '',
+      sha,
+    })
+  } catch (e) {
+    errorLogsError.value = String(
+      (e as Error)?.message || e || t('workflow_run.failure_export_bundle_error'),
+    )
+  } finally {
+    failureBundleExporting.value = false
+  }
+}
+
+async function copyFailureExportAuditSummary() {
+  const text = failureExportAuditSummary.value || ''
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    failureExportNote.value = t('workflow_run.failure_audit_copied', { text })
+  } catch (e) {
+    errorLogsError.value = String(
+      (e as Error)?.message || e || t('workflow_run.failure_copy_audit_error'),
+    )
+  }
+}
+
+async function verifyFailureReportHash() {
+  const expected = String(failureExportSha256.value || '').trim().toLowerCase()
+  if (!expected) {
+    setFailureHashVerifyNoteMessage(t('workflow_run.failure_verify_missing_sha'), false)
+    return
+  }
+  if (lastFailureExportKind.value === 'bundle') {
+    const blob = lastFailureBundleBlob.value
+    if (blob) {
+      try {
+        const offline = await verifyFailureBundleZipAgainstExpected(blob, expected)
+        setFailureHashVerifyNoteMessage(formatFailureBundleZipVerifyNote(offline, 'offline'), offline.ok)
+        return
+      } catch {
+        // Corrupt or non-zip: fall through to server replay.
+      }
+    }
+    const executionId = String(lastFailureExportExecutionId.value || '').trim()
+    if (!executionId) {
+      setFailureHashVerifyNoteMessage(t('workflow_run.failure_verify_missing_execution'), false)
+      return
+    }
+    try {
+      const latest = await getWorkflowExecutionFailureReport(workflowId, executionId, lastFailureExportFilters.value || {})
+      const actual = String(latest.report_sha256 || '').trim().toLowerCase()
+      const ok = actual === expected
+      setFailureHashVerifyNoteMessage(
+        ok
+          ? t('workflow_run.failure_verify_server_ok', { actual })
+          : t('workflow_run.failure_verify_mismatch', { expected, actual }),
+        ok,
+      )
+    } catch (e) {
+      setFailureHashVerifyNoteMessage(
+        t('workflow_run.failure_verify_failed', { message: String((e as Error)?.message || e) }),
+        false,
+      )
+    }
+    return
+  }
+  const report = lastFailureReportForVerify.value
+  if (!report) {
+    setFailureHashVerifyNoteMessage(t('workflow_run.failure_verify_report_unavailable'), false)
+    return
+  }
+  try {
+    const verified = await verifyFailureReportSha256(report as unknown as Record<string, unknown>)
+    const actual = verified.actual.toLowerCase()
+    const ok = actual === expected
+    setFailureHashVerifyNoteMessage(
+      ok
+        ? t('workflow_run.failure_verify_json_ok', { actual })
+        : t('workflow_run.failure_verify_mismatch', { expected, actual }),
+      ok,
+    )
+  } catch (e) {
+    setFailureHashVerifyNoteMessage(
+      t('workflow_run.failure_verify_failed', { message: String((e as Error)?.message || e) }),
+      false,
+    )
+  }
+}
+
+async function onVerifyFailureBundleFromDisk(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  const expected = resolveFailureExpectedHexForZip()
+  if (!expected) {
+    setFailureHashVerifyNoteMessage(t('workflow_run.failure_zip_needs_expected'), false)
+    return
+  }
+  try {
+    const r = await verifyFailureBundleZipAgainstExpected(file, expected)
+    setFailureHashVerifyNoteMessage(formatFailureBundleZipVerifyNote(r, 'zip'), r.ok)
+  } catch (e) {
+    setFailureHashVerifyNoteMessage(
+      t('workflow_run.failure_zip_verify_failed', { message: String((e as Error)?.message || e) }),
+      false,
+    )
+  }
+}
+
 function displayNodeName(nodeId: string): string {
   const meta = nodeMetaMap.value[nodeId]
   if (meta?.type === 'agent' && meta?.agentName) return meta.agentName
@@ -714,6 +1142,14 @@ const nodeCollabStatsByNodeId = computed(() => {
   }
   return m
 })
+
+function hasNodeCollabStats(nodeId: string): boolean {
+  return !!nodeCollabStatsByNodeId.value[nodeId]
+}
+
+function getNodeCollabStats(nodeId: string): { total: number; errors: number; retries: number } {
+  return nodeCollabStatsByNodeId.value[nodeId] || { total: 0, errors: 0, retries: 0 }
+}
 
 function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000))
@@ -903,7 +1339,8 @@ function timelineCollabRiskMarkers(node: any): TimelineCollabRiskMarker[] {
   const k = Math.ceil(merged.length / maxMarks)
   const thinned: TimelineCollabRiskMarker[] = []
   for (let i = 0; i < merged.length; i += k) {
-    thinned.push(merged[i])
+    const marker = merged[i]
+    if (marker) thinned.push(marker)
   }
   return thinned.slice(0, maxMarks)
 }
@@ -1275,6 +1712,10 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if (timelineHighlightTimer != null) {
+    window.clearTimeout(timelineHighlightTimer)
+    timelineHighlightTimer = null
+  }
   if (elapsedTimer != null) {
     window.clearInterval(elapsedTimer)
     elapsedTimer = null
@@ -1405,24 +1846,21 @@ onUnmounted(() => {
               </div>
               <span class="w-2 h-2 shrink-0 rounded-full" :class="nodeTrackClass(n.state)" />
             </div>
-            <div
-              v-if="nodeCollabStatsByNodeId[n.node_id]"
-              class="mt-1 flex flex-wrap items-center gap-0.5"
-            >
+            <div v-if="hasNodeCollabStats(n.node_id)" class="mt-1 flex flex-wrap items-center gap-0.5">
               <Badge
                 variant="secondary"
                 class="text-[9px] border border-violet-500/30 bg-violet-500/10 text-violet-200 px-1 py-0"
-              >{{ t('workflow_run.execution_collab_msgs', { count: nodeCollabStatsByNodeId[n.node_id].total }) }}</Badge>
+              >{{ t('workflow_run.execution_collab_msgs', { count: getNodeCollabStats(n.node_id).total }) }}</Badge>
               <Badge
-                v-if="nodeCollabStatsByNodeId[n.node_id].errors > 0"
+                v-if="getNodeCollabStats(n.node_id).errors > 0"
                 variant="secondary"
                 class="text-[9px] border border-rose-500/30 bg-rose-500/10 text-rose-200 px-1 py-0"
-              >E {{ nodeCollabStatsByNodeId[n.node_id].errors }}</Badge>
+              >E {{ getNodeCollabStats(n.node_id).errors }}</Badge>
               <Badge
-                v-if="nodeCollabStatsByNodeId[n.node_id].retries > 0"
+                v-if="getNodeCollabStats(n.node_id).retries > 0"
                 variant="secondary"
                 class="text-[9px] border border-amber-500/30 bg-amber-500/10 text-amber-200 px-1 py-0"
-              >RT {{ nodeCollabStatsByNodeId[n.node_id].retries }}</Badge>
+              >RT {{ getNodeCollabStats(n.node_id).retries }}</Badge>
             </div>
           </button>
           <div v-if="!timelineRows.length" class="text-xs text-slate-500 px-2 py-3">
@@ -1448,8 +1886,12 @@ onUnmounted(() => {
             <div
               v-for="n in timelineRows"
               :key="`row-${n.node_id}`"
+              :ref="(el) => { timelineRowRefs[n.node_id] = (el as HTMLElement | null) }"
               class="relative h-12 border-b border-slate-800/60 cursor-pointer hover:bg-slate-800/25 transition-colors"
-              :class="selectedNodeId === n.node_id ? 'bg-blue-600/10' : ''"
+              :class="[
+                selectedNodeId === n.node_id ? 'bg-blue-600/10' : '',
+                highlightedTimelineNodeId === n.node_id ? 'ring-1 ring-orange-400/80 bg-orange-500/10' : '',
+              ]"
               :title="t('workflow_run.timeline_row_select_hint')"
               @click="selectedNodeId = n.node_id"
             >
@@ -1493,21 +1935,21 @@ onUnmounted(() => {
               <div class="flex items-center justify-between">
                 <span class="font-medium">{{ n.node_id }}</span>
                 <div class="flex flex-wrap items-center justify-end gap-2">
-                  <template v-if="nodeCollabStatsByNodeId[n.node_id]">
+                  <template v-if="hasNodeCollabStats(n.node_id)">
                     <Badge
                       variant="secondary"
                       class="text-[10px] border border-violet-500/30 bg-violet-500/10 text-violet-200"
-                    >{{ t('workflow_run.execution_collab_msgs', { count: nodeCollabStatsByNodeId[n.node_id].total }) }}</Badge>
+                    >{{ t('workflow_run.execution_collab_msgs', { count: getNodeCollabStats(n.node_id).total }) }}</Badge>
                     <Badge
-                      v-if="nodeCollabStatsByNodeId[n.node_id].errors > 0"
+                      v-if="getNodeCollabStats(n.node_id).errors > 0"
                       variant="secondary"
                       class="text-[10px] border border-rose-500/30 bg-rose-500/10 text-rose-200"
-                    >E {{ nodeCollabStatsByNodeId[n.node_id].errors }}</Badge>
+                    >E {{ getNodeCollabStats(n.node_id).errors }}</Badge>
                     <Badge
-                      v-if="nodeCollabStatsByNodeId[n.node_id].retries > 0"
+                      v-if="getNodeCollabStats(n.node_id).retries > 0"
                       variant="secondary"
                       class="text-[10px] border border-amber-500/30 bg-amber-500/10 text-amber-200"
-                    >RT {{ nodeCollabStatsByNodeId[n.node_id].retries }}</Badge>
+                    >RT {{ getNodeCollabStats(n.node_id).retries }}</Badge>
                   </template>
                   <Badge
                     v-if="hasNodeFallbackUsed(n.node_id)"
@@ -2036,6 +2478,223 @@ onUnmounted(() => {
                 class="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 text-[11px] text-red-100"
               >{{ selectedNode.error_stack }}</pre>
             </div>
+          </div>
+
+          <div
+            v-if="currentExecution?.execution_id"
+            class="rounded border border-orange-500/30 bg-orange-500/10 p-3 text-xs space-y-2"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-slate-200 font-medium">{{ t('workflow_run.error_logs_title') }}</span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                class="h-7 border-orange-500/40 bg-slate-900/60 text-[11px] text-orange-200"
+                :disabled="errorLogsLoading"
+                @click="loadExecutionErrorLogs"
+              >
+                <Loader2 v-if="errorLogsLoading" class="w-3.5 h-3.5 animate-spin" />
+                <span v-else>{{ t('workflow_run.error_logs_refresh') }}</span>
+              </Button>
+            </div>
+            <p class="text-[10px] text-slate-400">
+              {{ t('workflow_run.error_logs_filter_hint', { total: errorLogsTotal }) }}
+            </p>
+            <div class="grid grid-cols-2 gap-2">
+              <Input
+                v-model="errorFilterErrorType"
+                class="h-7 text-[11px]"
+                :placeholder="t('workflow_run.error_filter_placeholder_error_type')"
+                @keydown.enter.prevent="loadExecutionErrorLogs"
+              />
+              <Input
+                v-model="errorFilterFailureStrategy"
+                class="h-7 text-[11px]"
+                :placeholder="t('workflow_run.error_filter_placeholder_failure_strategy')"
+                @keydown.enter.prevent="loadExecutionErrorLogs"
+              />
+              <Input
+                v-model="errorFilterStartTime"
+                class="h-7 text-[11px]"
+                :placeholder="t('workflow_run.error_filter_placeholder_start')"
+                @keydown.enter.prevent="loadExecutionErrorLogs"
+              />
+              <Input
+                v-model="errorFilterEndTime"
+                class="h-7 text-[11px]"
+                :placeholder="t('workflow_run.error_filter_placeholder_end')"
+                @keydown.enter.prevent="loadExecutionErrorLogs"
+              />
+            </div>
+            <div class="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                class="h-7 border-orange-500/30 bg-slate-900/60 text-[11px] text-orange-200"
+                :disabled="errorLogsLoading"
+                @click="loadExecutionErrorLogs"
+              >
+                {{ t('workflow_run.error_logs_query') }}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                class="h-7 border-orange-500/30 bg-slate-900/60 text-[11px] text-orange-200"
+                :disabled="!currentExecution || failureReportExporting"
+                @click="() => { void exportFailureReportJson() }"
+              >
+                {{
+                  failureReportExporting
+                    ? t('workflow_run.failure_export_reporting')
+                    : t('workflow_run.failure_export_report')
+                }}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                class="h-7 border-amber-500/30 bg-slate-900/60 text-[11px] text-amber-200"
+                :disabled="!currentExecution || failureBundleExporting"
+                @click="() => { void exportFailureBundleZip() }"
+              >
+                {{
+                  failureBundleExporting
+                    ? t('workflow_run.failure_export_bundling')
+                    : t('workflow_run.failure_export_bundle')
+                }}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                class="h-7 border-orange-500/30 bg-slate-900/60 text-[11px] text-orange-200"
+                :disabled="errorLogsLoading || !errorLogs.length"
+                @click="exportErrorLogsJson"
+              >
+                {{ t('workflow_run.error_logs_export_json') }}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                class="h-7 border-orange-500/30 bg-slate-900/60 text-[11px] text-orange-200"
+                :disabled="errorLogsLoading || !errorLogs.length"
+                @click="exportErrorLogsCsv"
+              >
+                {{ t('workflow_run.error_logs_export_csv') }}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                class="h-7 text-[11px] text-slate-300"
+                :disabled="errorLogsLoading"
+                @click="clearErrorFilters"
+              >
+                {{ t('workflow_run.error_logs_clear') }}
+              </Button>
+            </div>
+            <p v-if="errorLogsError" class="text-red-400 text-[11px]">{{ errorLogsError }}</p>
+            <p v-if="failureExportNote" class="text-emerald-300 text-[11px]">{{ failureExportNote }}</p>
+            <div v-if="failureExportAuditSummary" class="flex items-center gap-1 text-[11px] text-emerald-200/90">
+              <code class="rounded bg-slate-900/70 px-1.5 py-0.5">{{ failureExportAuditSummary }}</code>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                class="h-6 w-6 text-emerald-300/90 hover:text-emerald-200"
+                :title="t('workflow_run.failure_copy_audit_title')"
+                @click="() => { void copyFailureExportAuditSummary() }"
+              >
+                <Copy class="w-3.5 h-3.5" />
+              </Button>
+            </div>
+            <div v-if="failureExportSha256" class="flex flex-wrap items-center gap-1 text-[11px] text-slate-300">
+              <code class="rounded bg-slate-900/70 px-1.5 py-0.5 break-all">{{ failureExportSha256 }}</code>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                class="h-6 border-emerald-500/35 text-[10px] text-emerald-200"
+                :disabled="!failureExportSha256"
+                :title="verifyFailureHashButtonTitle"
+                @click="() => { void verifyFailureReportHash() }"
+              >
+                {{ verifyFailureHashButtonLabel }}
+              </Button>
+            </div>
+            <div class="flex flex-wrap items-end gap-2 pt-1">
+              <Input
+                v-model="failureZipExpectedHexOverride"
+                class="h-7 min-w-[10rem] max-w-full flex-1 text-[11px]"
+                :placeholder="t('workflow_run.failure_expected_sha_placeholder')"
+                :title="t('workflow_run.failure_expected_sha_input_title')"
+              />
+              <input
+                ref="failureBundleZipInputRef"
+                type="file"
+                accept=".zip,application/zip"
+                class="sr-only"
+                @change="(e) => { void onVerifyFailureBundleFromDisk(e) }"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                class="h-7 shrink-0 border-slate-500/40 text-[10px] text-slate-200"
+                :disabled="!canVerifyFailureZipFromDisk"
+                :title="t('workflow_run.failure_verify_zip_button_title')"
+                @click="() => failureBundleZipInputRef?.click()"
+              >
+                <Upload class="mr-1 h-3 w-3" />
+                {{ t('workflow_run.failure_verify_zip_button') }}
+              </Button>
+            </div>
+            <p
+              v-if="failureHashVerifyNote"
+              class="text-[11px]"
+              :class="failureHashVerifySuccess ? 'text-emerald-300' : 'text-amber-300'"
+            >
+              {{ failureHashVerifyNote }}
+            </p>
+            <div v-if="!errorLogsLoading && !errorLogs.length" class="text-[11px] text-slate-500">
+              {{ t('workflow_run.error_logs_empty') }}
+            </div>
+            <ul v-else class="max-h-56 overflow-auto space-y-1">
+              <li
+                v-for="item in errorLogs"
+                :key="item.event_id"
+                class="rounded border border-orange-500/20 bg-slate-950/40 p-2 cursor-pointer hover:bg-orange-500/5"
+                :title="`Focus node ${item.node_id}`"
+                @click="focusNodeFromErrorLog(item)"
+              >
+                <div class="flex flex-wrap items-center gap-1 text-[10px] text-slate-400">
+                  <code class="text-slate-300">{{ item.node_id }}</code>
+                  <span>·</span>
+                  <span>{{ formatErrorEventTs(item.timestamp) }}</span>
+                  <Badge
+                    v-if="item.failure_strategy"
+                    variant="secondary"
+                    class="text-[9px] border border-amber-500/30 bg-amber-500/10 text-amber-200"
+                  >
+                    {{ item.failure_strategy }}
+                  </Badge>
+                  <Badge
+                    v-if="item.error_type"
+                    variant="secondary"
+                    class="text-[9px] border border-rose-500/30 bg-rose-500/10 text-rose-200"
+                  >
+                    {{ item.error_type }}
+                  </Badge>
+                </div>
+                <div class="mt-1 text-[11px] text-slate-200 break-words">
+                  {{ item.error_message || '-' }}
+                </div>
+              </li>
+            </ul>
           </div>
         </div>
       </aside>

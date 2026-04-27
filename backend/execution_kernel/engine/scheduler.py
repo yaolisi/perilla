@@ -836,7 +836,7 @@ class Scheduler:
                 eh = node_def.config.get("error_handling")
                 if isinstance(eh, dict):
                     fs = str(eh.get("on_failure") or "").strip().lower()
-                    if fs in {"stop", "continue", "replan"}:
+                    if fs in {"stop", "continue", "skip", "replan", "degrade"}:
                         failure_strategy = fs
             if failure_strategy == "replan":
                 async with self.db.async_session() as session:

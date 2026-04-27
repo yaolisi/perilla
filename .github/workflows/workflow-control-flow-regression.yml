@@ -8,6 +8,9 @@ on:
       - "backend/execution_kernel/engine/**"
       - "backend/api/workflows.py"
       - "backend/tests/test_workflow_control_flow_regression.py"
+      - "backend/tests/test_workflow_execution_api_integration.py"
+      - "backend/tests/test_workflow_error_handling_runtime.py"
+      - "backend/tests/test_workflow_node_failure_strategies.py"
       - "backend/scripts/test_workflow_control_flow_regression.sh"
       - ".github/workflows/workflow-control-flow-regression.yml"
   push:
@@ -19,6 +22,9 @@ on:
       - "backend/execution_kernel/engine/**"
       - "backend/api/workflows.py"
       - "backend/tests/test_workflow_control_flow_regression.py"
+      - "backend/tests/test_workflow_execution_api_integration.py"
+      - "backend/tests/test_workflow_error_handling_runtime.py"
+      - "backend/tests/test_workflow_node_failure_strategies.py"
       - "backend/scripts/test_workflow_control_flow_regression.sh"
       - ".github/workflows/workflow-control-flow-regression.yml"
 

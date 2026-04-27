@@ -235,7 +235,7 @@ class Executor:
         cfg = node_def.config if isinstance(node_def.config, dict) else {}
         error_handling = cfg.get("error_handling") if isinstance(cfg.get("error_handling"), dict) else {}
         failure_strategy = str(error_handling.get("on_failure") or "stop").strip().lower()
-        if failure_strategy not in {"stop", "continue", "replan"}:
+        if failure_strategy not in {"stop", "continue", "skip", "replan", "degrade"}:
             failure_strategy = "stop"
 
         max_retries = node_def.retry_policy.max_retries
@@ -250,7 +250,7 @@ class Executor:
             try:
                 return await self.execute_node(node_runtime, node_def, context)
                 
-            except (NodeExecutionError, NodeTimeoutError) as e:
+            except NodeExecutionError as e:
                 if _is_non_retryable_error(e):
                     logger.error(
                         f"Node {node_runtime.id} non-retryable error, skip retries: {e}"
@@ -267,20 +267,18 @@ class Executor:
                     logger.error(
                         f"Node {node_runtime.id} exceeded max retries ({max_retries})"
                     )
-                    if failure_strategy in {"continue", "replan"}:
+                    if failure_strategy in {"continue", "skip", "replan", "degrade"}:
                         handled_error = str(e)
-                        # 失败降级：将节点标记为 SKIPPED，使工作流可以继续向后调度。
-                        await self.state_machine.skip(
-                            node_runtime.id,
-                            reason=f"degraded_by_{failure_strategy}: {handled_error}",
+                        return await self._build_failure_strategy_output(
+                            node_runtime=node_runtime,
+                            node_def=node_def,
+                            context=context,
+                            input_data=dict(getattr(current_node, "input_data", {}) or {}),
+                            error_handling=error_handling,
+                            failure_strategy=failure_strategy,
+                            handled_error=handled_error,
+                            retry_count=retry_count,
                         )
-                        return {
-                            "degraded": True,
-                            "failure_strategy": failure_strategy,
-                            "error": handled_error,
-                            "retry_count": retry_count,
-                            "replan_requested": failure_strategy == "replan",
-                        }
                     raise
                 
                 # 计算退避时间
@@ -320,3 +318,125 @@ class Executor:
                     created_at=current_node.created_at,
                     updated_at=current_node.updated_at,
                 )
+
+    async def _build_failure_strategy_output(
+        self,
+        *,
+        node_runtime: NodeRuntime,
+        node_def: NodeDefinition,
+        context: GraphContext,
+        input_data: Dict[str, Any],
+        error_handling: Dict[str, Any],
+        failure_strategy: str,
+        handled_error: str,
+        retry_count: int,
+    ) -> Dict[str, Any]:
+        # 失败后降级：将节点标记为 SKIPPED，使工作流可以继续向后调度。
+        await self.state_machine.skip(
+            node_runtime.id,
+            reason=f"degraded_by_{failure_strategy}: {handled_error}",
+        )
+        if failure_strategy == "degrade":
+            fallback_output = await self._execute_degrade_fallback(
+                node_def=node_def,
+                input_data=input_data,
+                context=context,
+                error_handling=error_handling,
+            )
+            return {
+                **fallback_output,
+                "degraded": True,
+                "failure_strategy": failure_strategy,
+                "error": handled_error,
+                "retry_count": retry_count,
+                "replan_requested": False,
+            }
+        return {
+            "degraded": True,
+            "failure_strategy": failure_strategy,
+            "error": handled_error,
+            "retry_count": retry_count,
+            "replan_requested": failure_strategy == "replan",
+        }
+
+    async def _execute_degrade_fallback(
+        self,
+        *,
+        node_def: NodeDefinition,
+        input_data: Dict[str, Any],
+        context: GraphContext,
+        error_handling: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        degrade_cfg = error_handling.get("degrade")
+        if isinstance(degrade_cfg, dict):
+            fallback_output = degrade_cfg.get("fallback_output")
+            if isinstance(fallback_output, dict):
+                return dict(fallback_output)
+            fallback_node = degrade_cfg.get("fallback_node")
+            if isinstance(fallback_node, dict):
+                return await self._execute_fallback_node(
+                    base_node_def=node_def,
+                    fallback_node=fallback_node,
+                    input_data=input_data,
+                    context=context,
+                )
+        fallback_output = error_handling.get("fallback_output")
+        if isinstance(fallback_output, dict):
+            return dict(fallback_output)
+        return {}
+
+    async def _execute_fallback_node(
+        self,
+        *,
+        base_node_def: NodeDefinition,
+        fallback_node: Dict[str, Any],
+        input_data: Dict[str, Any],
+        context: GraphContext,
+    ) -> Dict[str, Any]:
+        fallback_type = str(fallback_node.get("type") or base_node_def.type.value).strip().lower()
+        try:
+            fallback_node_type = NodeType(fallback_type)
+        except ValueError as exc:
+            raise NodeExecutionError(
+                f"Invalid degrade fallback node type: {fallback_type}",
+                "FallbackConfigError",
+            ) from exc
+        handler = self.node_handlers.get(fallback_node_type.value)
+        if handler is None:
+            raise NodeExecutionError(
+                f"No handler for degrade fallback node type: {fallback_node_type.value}",
+                "FallbackHandlerMissing",
+            )
+        fallback_config = fallback_node.get("config")
+        if not isinstance(fallback_config, dict):
+            fallback_config = {
+                k: v for k, v in fallback_node.items() if k not in {"type", "timeout_seconds", "id"}
+            }
+        fallback_timeout_raw = fallback_node.get("timeout_seconds")
+        timeout_seconds = (
+            float(fallback_timeout_raw)
+            if isinstance(fallback_timeout_raw, (int, float))
+            else base_node_def.timeout_seconds
+        )
+        fallback_def = NodeDefinition(
+            id=str(fallback_node.get("id") or f"{base_node_def.id}__fallback"),
+            type=fallback_node_type,
+            input_schema={},
+            output_schema={},
+            retry_policy=base_node_def.retry_policy,
+            timeout_seconds=timeout_seconds,
+            cacheable=False,
+            config=fallback_config,
+        )
+        result = await asyncio.wait_for(
+            handler(fallback_def, input_data, context),
+            timeout=max(1.0, timeout_seconds),
+        )
+        if isinstance(result, dict) and result.get("error"):
+            raise NodeExecutionError(
+                f"Degrade fallback node failed: {result.get('error')}",
+                "FallbackExecutionError",
+            )
+        if isinstance(result, dict):
+            return result
+        return {"output": result}

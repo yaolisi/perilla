@@ -1072,6 +1072,53 @@ export interface WorkflowExecutionStatusRecord {
   }>
 }
 
+export interface WorkflowExecutionErrorLogRecord {
+  execution_id: string
+  event_id: string
+  sequence: number
+  timestamp: string
+  node_id: string
+  event_type: string
+  error_message?: string | null
+  error_type?: string | null
+  error_stack?: string | null
+  failure_strategy?: string | null
+  retry_count?: number
+}
+
+export interface WorkflowExecutionFailureReport {
+  report_schema_version?: string
+  redaction_applied?: boolean
+  redacted_key_count?: number
+  report_sha256?: string
+  exported_at: string
+  workflow_id: string
+  execution_id: string
+  execution_state: string
+  trigger_type?: string | null
+  triggered_by?: string | null
+  created_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  duration_ms?: number | null
+  queue_position?: number | null
+  wait_duration_ms?: number | null
+  global_context?: Record<string, any>
+  global_error_details?: Record<string, any> | null
+  recovery_actions?: Array<Record<string, any>>
+  node_timeline?: Array<Record<string, any>>
+  node_states?: Array<Record<string, any>>
+  filtered_error_logs: WorkflowExecutionErrorLogRecord[]
+  filter_snapshot?: {
+    selected_node_id?: string | null
+    error_type?: string | null
+    failure_strategy?: string | null
+    start_time?: string | null
+    end_time?: string | null
+  }
+  execution?: WorkflowExecutionRecord
+}
+
 export interface ToolCompositionRecommendationItem {
   id: string
   name: string
@@ -1386,6 +1433,108 @@ export async function getWorkflowExecutionStatus(
   )
   if (!response.ok) throw new Error(`API error: ${response.statusText}`)
   return response.json()
+}
+
+export async function listWorkflowExecutionErrors(
+  workflowId: string,
+  executionId: string,
+  params: {
+    node_id?: string
+    error_type?: string
+    failure_strategy?: string
+    start_time?: string
+    end_time?: string
+    limit?: number
+    offset?: number
+  } = {}
+): Promise<{ items: WorkflowExecutionErrorLogRecord[]; total: number; limit: number; offset: number }> {
+  const usp = new URLSearchParams()
+  if (params.node_id) usp.set('node_id', params.node_id)
+  if (params.error_type) usp.set('error_type', params.error_type)
+  if (params.failure_strategy) usp.set('failure_strategy', params.failure_strategy)
+  if (params.start_time) usp.set('start_time', params.start_time)
+  if (params.end_time) usp.set('end_time', params.end_time)
+  if (typeof params.limit === 'number') usp.set('limit', String(params.limit))
+  if (typeof params.offset === 'number') usp.set('offset', String(params.offset))
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/v1/workflows/${workflowId}/executions/${executionId}/errors${usp.toString() ? `?${usp.toString()}` : ''}`,
+    { method: 'GET' }
+  )
+  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  return response.json()
+}
+
+export async function getWorkflowExecutionFailureReport(
+  workflowId: string,
+  executionId: string,
+  params: {
+    node_id?: string
+    error_type?: string
+    failure_strategy?: string
+    start_time?: string
+    end_time?: string
+  } = {}
+): Promise<WorkflowExecutionFailureReport> {
+  const usp = new URLSearchParams()
+  if (params.node_id) usp.set('node_id', params.node_id)
+  if (params.error_type) usp.set('error_type', params.error_type)
+  if (params.failure_strategy) usp.set('failure_strategy', params.failure_strategy)
+  if (params.start_time) usp.set('start_time', params.start_time)
+  if (params.end_time) usp.set('end_time', params.end_time)
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/v1/workflows/${workflowId}/executions/${executionId}/failure-report${usp.toString() ? `?${usp.toString()}` : ''}`,
+    { method: 'GET' }
+  )
+  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  return response.json()
+}
+
+export async function downloadWorkflowExecutionFailureReportArchive(
+  workflowId: string,
+  executionId: string,
+  params: {
+    node_id?: string
+    error_type?: string
+    failure_strategy?: string
+    start_time?: string
+    end_time?: string
+  } = {}
+): Promise<{
+  filename: string
+  blob: Blob
+  report_schema_version?: string
+  redaction_applied?: boolean
+  redacted_key_count?: number
+  report_sha256?: string
+}> {
+  const usp = new URLSearchParams()
+  if (params.node_id) usp.set('node_id', params.node_id)
+  if (params.error_type) usp.set('error_type', params.error_type)
+  if (params.failure_strategy) usp.set('failure_strategy', params.failure_strategy)
+  if (params.start_time) usp.set('start_time', params.start_time)
+  if (params.end_time) usp.set('end_time', params.end_time)
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/v1/workflows/${workflowId}/executions/${executionId}/failure-report/archive${usp.toString() ? `?${usp.toString()}` : ''}`,
+    { method: 'GET' }
+  )
+  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const matched = disposition.match(/filename="?([^"]+)"?/)
+  const filename = matched?.[1] || `workflow-failure-bundle-${executionId}.zip`
+  const schemaVersion = response.headers.get('X-Report-Schema-Version') || undefined
+  const redactionApplied = (response.headers.get('X-Redaction-Applied') || '').toLowerCase() === 'true'
+  const redactedCountRaw = response.headers.get('X-Redacted-Key-Count')
+  const reportSha256 = response.headers.get('X-Report-Sha256') || undefined
+  const redactedCount = redactedCountRaw == null ? undefined : Number(redactedCountRaw)
+  return {
+    filename,
+    blob,
+    report_schema_version: schemaVersion,
+    redaction_applied: redactionApplied,
+    redacted_key_count: Number.isFinite(redactedCount) ? redactedCount : undefined,
+    report_sha256: reportSha256,
+  }
 }
 
 export type WorkflowExecutionStatusStreamMessage =

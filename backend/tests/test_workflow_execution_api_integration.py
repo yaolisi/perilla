@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import io
+import json
 import sys
 import types
+import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -445,4 +448,115 @@ def test_create_execution_same_key_different_payload_returns_conflict(
     assert resp_b.status_code == 409
     body = resp_b.json()
     assert body.get("error", {}).get("code") == "idempotency_conflict"
+    assert fallback_probe == []
+
+
+@pytest.mark.no_fallback
+def test_failure_report_endpoint_returns_audit_and_hash_fields(tmp_path, monkeypatch, fallback_probe):
+    workflows_api = _load_workflows_api_module()
+    session_factory = _make_session_factory(tmp_path)
+    _seed_workflow(session_factory)
+    client = _build_client(session_factory, workflows_api)
+
+    now = datetime.now(timezone.utc)
+    execution = WorkflowExecution(
+        execution_id="exec_failure_report_1",
+        workflow_id="wf_exec_1",
+        version_id="v-test",
+        state=WorkflowExecutionState.FAILED,
+        graph_instance_id="gi_1",
+        input_data={"question": "x"},
+        global_context={"env": "test"},
+        error_details={"recovery_actions": [{"kind": "alert", "status": "ok"}], "api_key": "secret"},
+        created_at=now,
+        started_at=now,
+        finished_at=now + timedelta(seconds=1),
+        duration_ms=1000,
+        node_states=[],
+    )
+
+    monkeypatch.setattr(workflows_api.WorkflowExecutionService, "get_execution", lambda self, _eid: execution)
+
+    async def _fake_hydrate(ex):
+        return ex
+
+    async def _fake_timeline(_instance_id):
+        return [{"node_id": "n1", "state": "failed"}]
+
+    async def _fake_errors(**kwargs):
+        return [{"node_id": "n1", "error_type": "RuntimeError"}]
+
+    monkeypatch.setattr(workflows_api, "_hydrate_execution_live_from_kernel", _fake_hydrate)
+    monkeypatch.setattr(workflows_api, "_node_timeline_from_event_store", _fake_timeline)
+    monkeypatch.setattr(workflows_api, "_execution_error_logs_from_event_store", _fake_errors)
+
+    resp = client.get("/api/v1/workflows/wf_exec_1/executions/exec_failure_report_1/failure-report")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["report_schema_version"] == "1.1"
+    assert body["redaction_applied"] is True
+    assert isinstance(body["redacted_key_count"], int)
+    assert isinstance(body["report_sha256"], str) and len(body["report_sha256"]) == 64
+    assert body["global_error_details"]["api_key"] == "***REDACTED***"
+    assert body["recovery_actions"][0]["kind"] == "alert"
+    assert fallback_probe == []
+
+
+@pytest.mark.no_fallback
+def test_failure_report_archive_endpoint_returns_headers_and_zip_payload(tmp_path, monkeypatch, fallback_probe):
+    workflows_api = _load_workflows_api_module()
+    session_factory = _make_session_factory(tmp_path)
+    _seed_workflow(session_factory)
+    client = _build_client(session_factory, workflows_api)
+
+    execution = WorkflowExecution(
+        execution_id="exec_failure_bundle_1",
+        workflow_id="wf_exec_1",
+        version_id="v-test",
+        state=WorkflowExecutionState.FAILED,
+        graph_instance_id="gi_bundle_1",
+        input_data={},
+        global_context={},
+        node_states=[],
+    )
+    monkeypatch.setattr(workflows_api.WorkflowExecutionService, "get_execution", lambda self, _eid: execution)
+
+    async def _fake_hydrate(ex):
+        return ex
+
+    async def _fake_timeline(_instance_id):
+        return [{"node_id": "n1", "state": "failed"}]
+
+    async def _fake_errors(**kwargs):
+        return [{"node_id": "n1", "error_type": "RuntimeError"}]
+
+    async def _fake_events(_instance_id):
+        return [{"event_id": "e1", "payload": {"token": "secret"}}]
+
+    monkeypatch.setattr(workflows_api, "_hydrate_execution_live_from_kernel", _fake_hydrate)
+    monkeypatch.setattr(workflows_api, "_node_timeline_from_event_store", _fake_timeline)
+    monkeypatch.setattr(workflows_api, "_execution_error_logs_from_event_store", _fake_errors)
+    monkeypatch.setattr(workflows_api, "_execution_events_from_event_store", _fake_events)
+
+    resp = client.get("/api/v1/workflows/wf_exec_1/executions/exec_failure_bundle_1/failure-report/archive")
+    assert resp.status_code == 200
+    assert resp.headers.get("content-type", "").startswith("application/zip")
+    assert resp.headers.get("x-report-schema-version") == "1.1"
+    assert resp.headers.get("x-redaction-applied") == "true"
+    assert resp.headers.get("x-redacted-key-count") is not None
+    assert isinstance(resp.headers.get("x-report-sha256"), str)
+
+    with zipfile.ZipFile(io.BytesIO(resp.content), "r") as zf:
+        names = set(zf.namelist())
+        assert {"README.txt", "failure-report.json", "failure-report.sha256", "execution-events.json"}.issubset(
+            names
+        )
+        report_payload = json.loads(zf.read("failure-report.json").decode("utf-8"))
+        events_payload = json.loads(zf.read("execution-events.json").decode("utf-8"))
+        readme = zf.read("README.txt").decode("utf-8")
+        assert report_payload["report_schema_version"] == "1.1"
+        assert report_payload["report_sha256"] == resp.headers.get("x-report-sha256")
+        assert zf.read("failure-report.sha256").decode("utf-8").strip() == resp.headers.get("x-report-sha256")
+        assert events_payload[0]["payload"]["token"] == "***REDACTED***"
+        assert "report_sha256:" in readme
     assert fallback_probe == []

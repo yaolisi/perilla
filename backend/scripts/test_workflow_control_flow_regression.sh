@@ -12,11 +12,18 @@ mkdir -p "$REPORT_DIR"
 
 PYTHONPATH=backend pytest \
   backend/tests/test_workflow_control_flow_regression.py \
+  backend/tests/test_workflow_execution_api_integration.py \
+  backend/tests/test_workflow_error_handling_runtime.py \
+  backend/tests/test_workflow_node_failure_strategies.py \
   --junitxml "$JUNIT_PATH"
 
 {
   echo "## Workflow Control-Flow Regression"
-  echo "- suite: \`backend/tests/test_workflow_control_flow_regression.py\`"
+  echo "- suite:"
+  echo "  - \`backend/tests/test_workflow_control_flow_regression.py\`"
+  echo "  - \`backend/tests/test_workflow_execution_api_integration.py\` (incl. failure-report / archive)"
+  echo "  - \`backend/tests/test_workflow_error_handling_runtime.py\`"
+  echo "  - \`backend/tests/test_workflow_node_failure_strategies.py\`"
   echo "- junit: \`$JUNIT_PATH\`"
   echo "- status: passed"
 } > "$SUMMARY_PATH"

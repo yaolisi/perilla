@@ -6,8 +6,10 @@ Workflow Control Plane 的 REST API 接口。
 
 from typing import Annotated, List, Optional, Dict, Any, Union, AsyncIterator, Callable, cast
 import asyncio
+import io
 import json
 import hashlib
+import zipfile
 from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, Query, status, BackgroundTasks, Request, Response
 from fastapi.responses import StreamingResponse
@@ -68,6 +70,19 @@ MSG_ACCESS_DENIED = "Access denied"
 MSG_VERSION_NOT_FOUND = "Version not found"
 MSG_EXECUTION_NOT_FOUND = "Execution not found"
 MSG_ADMIN_ACCESS_REQUIRED = "Admin access required"
+FAILURE_REPORT_SCHEMA_VERSION = "1.1"
+SENSITIVE_FIELD_KEYS = {
+    "authorization",
+    "api_key",
+    "apikey",
+    "secret",
+    "token",
+    "password",
+    "access_token",
+    "refresh_token",
+    "client_secret",
+    "private_key",
+}
 
 
 def _ensure_workflow_tenant(workflow: Optional[Workflow], tenant_id: str) -> Workflow:
@@ -1350,6 +1365,255 @@ async def get_execution(
     if execution.graph_instance_id:
         node_timeline_override = await _node_timeline_from_event_store(execution.graph_instance_id)
     return _execution_to_response(execution, node_timeline_override=node_timeline_override)
+
+
+@router.get("/{workflow_id}/executions/{execution_id}/errors", response_model=ListResponse)
+async def list_execution_errors(
+    http_request: Request,
+    workflow_id: str,
+    execution_id: str,
+    node_id: Optional[str] = None,
+    error_type: Optional[str] = None,
+    failure_strategy: Optional[str] = None,
+    start_time: Optional[str] = Query(default=None, description="ISO8601 start time"),
+    end_time: Optional[str] = Query(default=None, description="ISO8601 end time"),
+    limit: Annotated[int, Query(ge=1, le=2000)] = 200,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    *,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[str, Depends(get_current_user)],
+) -> ListResponse:
+    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    workflow_service = WorkflowService(db)
+    workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
+    if not workflow:
+        raise_api_error(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="workflow_not_found",
+            message=MSG_WORKFLOW_NOT_FOUND,
+            details={"workflow_id": workflow_id},
+        )
+    workflow = _ensure_workflow_tenant(workflow, tenant_id)
+    if not workflow.has_permission(current_user, "read"):
+        raise_api_error(
+            status_code=status.HTTP_403_FORBIDDEN,
+            code="workflow_access_denied",
+            message=MSG_ACCESS_DENIED,
+            details={"workflow_id": workflow_id, "action": "read"},
+        )
+    execution = WorkflowExecutionService(db).get_execution(execution_id)
+    if not execution or execution.workflow_id != workflow_id:
+        raise_api_error(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="workflow_execution_not_found",
+            message=MSG_EXECUTION_NOT_FOUND,
+            details={"workflow_id": workflow_id, "execution_id": execution_id},
+        )
+        raise AssertionError("unreachable")
+    if not execution.graph_instance_id:
+        return ListResponse(items=[], total=0, limit=limit, offset=offset)
+    start_dt = _parse_query_iso_datetime(start_time)
+    end_dt = _parse_query_iso_datetime(end_time)
+    if start_time and start_dt is None:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="workflow_invalid_start_time",
+            message="start_time must be valid ISO8601 datetime",
+            details={"start_time": start_time},
+        )
+    if end_time and end_dt is None:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="workflow_invalid_end_time",
+            message="end_time must be valid ISO8601 datetime",
+            details={"end_time": end_time},
+        )
+    if start_dt and end_dt and start_dt > end_dt:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="workflow_invalid_time_range",
+            message="start_time must be earlier than or equal to end_time",
+            details={"start_time": start_time, "end_time": end_time},
+        )
+    rows = await _execution_error_logs_from_event_store(
+        instance_id=execution.graph_instance_id,
+        execution_id=execution.execution_id,
+        node_id=node_id,
+        error_type=error_type,
+        failure_strategy=failure_strategy,
+        start_dt=start_dt,
+        end_dt=end_dt,
+    )
+    total = len(rows)
+    sliced = rows[offset : offset + limit]
+    return ListResponse(items=sliced, total=total, limit=limit, offset=offset)
+
+
+@router.get("/{workflow_id}/executions/{execution_id}/failure-report", response_model=Dict[str, Any])
+async def get_execution_failure_report(
+    http_request: Request,
+    workflow_id: str,
+    execution_id: str,
+    node_id: Optional[str] = None,
+    error_type: Optional[str] = None,
+    failure_strategy: Optional[str] = None,
+    start_time: Optional[str] = Query(default=None, description="ISO8601 start time"),
+    end_time: Optional[str] = Query(default=None, description="ISO8601 end time"),
+    redact_sensitive: Annotated[bool, Query(description="Redact sensitive fields in report payload")] = True,
+    *,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[str, Depends(get_current_user)],
+) -> Dict[str, Any]:
+    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    workflow_service = WorkflowService(db)
+    workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
+    if not workflow:
+        raise_api_error(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="workflow_not_found",
+            message=MSG_WORKFLOW_NOT_FOUND,
+            details={"workflow_id": workflow_id},
+        )
+    workflow = _ensure_workflow_tenant(workflow, tenant_id)
+    if not workflow.has_permission(current_user, "read"):
+        raise_api_error(
+            status_code=status.HTTP_403_FORBIDDEN,
+            code="workflow_access_denied",
+            message=MSG_ACCESS_DENIED,
+            details={"workflow_id": workflow_id, "action": "read"},
+        )
+    execution = WorkflowExecutionService(db).get_execution(execution_id)
+    if not execution or execution.workflow_id != workflow_id:
+        raise_api_error(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="workflow_execution_not_found",
+            message=MSG_EXECUTION_NOT_FOUND,
+            details={"workflow_id": workflow_id, "execution_id": execution_id},
+        )
+        raise AssertionError("unreachable")
+
+    start_dt = _parse_query_iso_datetime(start_time)
+    end_dt = _parse_query_iso_datetime(end_time)
+    if start_time and start_dt is None:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="workflow_invalid_start_time",
+            message="start_time must be valid ISO8601 datetime",
+            details={"start_time": start_time},
+        )
+    if end_time and end_dt is None:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="workflow_invalid_end_time",
+            message="end_time must be valid ISO8601 datetime",
+            details={"end_time": end_time},
+        )
+    if start_dt and end_dt and start_dt > end_dt:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            code="workflow_invalid_time_range",
+            message="start_time must be earlier than or equal to end_time",
+            details={"start_time": start_time, "end_time": end_time},
+        )
+
+    execution = await _hydrate_execution_live_from_kernel(execution)
+    node_timeline_override: Optional[List[Dict[str, Any]]] = None
+    if execution.graph_instance_id:
+        node_timeline_override = await _node_timeline_from_event_store(execution.graph_instance_id)
+
+    execution_payload = _execution_to_response(
+        execution,
+        node_timeline_override=node_timeline_override,
+    ).model_dump()
+    error_rows: List[Dict[str, Any]] = []
+    if execution.graph_instance_id:
+        error_rows = await _execution_error_logs_from_event_store(
+            instance_id=execution.graph_instance_id,
+            execution_id=execution.execution_id,
+            node_id=node_id,
+            error_type=error_type,
+            failure_strategy=failure_strategy,
+            start_dt=start_dt,
+            end_dt=end_dt,
+        )
+
+    report = _build_failure_report_payload(
+        workflow_id=workflow_id,
+        execution=execution,
+        execution_payload=execution_payload,
+        error_rows=error_rows,
+        selected_node_id=node_id,
+        error_type=error_type,
+        failure_strategy=failure_strategy,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    if redact_sensitive:
+        redacted_report, redacted_count = _redact_sensitive_value_with_count(report)
+        if isinstance(redacted_report, dict):
+            redacted_report["redaction_applied"] = True
+            redacted_report["redacted_key_count"] = redacted_count
+            redacted_report["report_sha256"] = _compute_report_sha256(redacted_report)
+        return cast(Dict[str, Any], redacted_report)
+    report["redaction_applied"] = False
+    report["redacted_key_count"] = 0
+    report["report_sha256"] = _compute_report_sha256(report)
+    return report
+
+
+@router.get("/{workflow_id}/executions/{execution_id}/failure-report/archive")
+async def download_execution_failure_report_archive(
+    http_request: Request,
+    workflow_id: str,
+    execution_id: str,
+    node_id: Optional[str] = None,
+    error_type: Optional[str] = None,
+    failure_strategy: Optional[str] = None,
+    start_time: Optional[str] = Query(default=None, description="ISO8601 start time"),
+    end_time: Optional[str] = Query(default=None, description="ISO8601 end time"),
+    redact_sensitive: Annotated[bool, Query(description="Redact sensitive fields in archive payload")] = True,
+    *,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[str, Depends(get_current_user)],
+) -> Response:
+    report = await get_execution_failure_report(
+        http_request=http_request,
+        workflow_id=workflow_id,
+        execution_id=execution_id,
+        node_id=node_id,
+        error_type=error_type,
+        failure_strategy=failure_strategy,
+        start_time=start_time,
+        end_time=end_time,
+        redact_sensitive=redact_sensitive,
+        db=db,
+        current_user=current_user,
+    )
+    events: List[Dict[str, Any]] = []
+    graph_instance_id = report.get("execution", {}).get("graph_instance_id")
+    if isinstance(graph_instance_id, str) and graph_instance_id.strip():
+        events = await _execution_events_from_event_store(graph_instance_id)
+    if redact_sensitive:
+        redacted_events, events_redacted_count = _redact_sensitive_value_with_count(events)
+        events = cast(List[Dict[str, Any]], redacted_events)
+        report["redacted_key_count"] = int(report.get("redacted_key_count") or 0) + int(events_redacted_count)
+    archive_bytes = _build_failure_report_archive_bytes(report=report, events=events)
+    filename = f"workflow-failure-bundle-{execution_id}.zip"
+    schema_version = str(report.get("report_schema_version") or "")
+    redaction_applied = "true" if bool(report.get("redaction_applied")) else "false"
+    redacted_key_count = str(int(report.get("redacted_key_count") or 0))
+    report_sha256 = str(report.get("report_sha256") or "")
+    return Response(
+        content=archive_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Report-Schema-Version": schema_version,
+            "X-Redaction-Applied": redaction_applied,
+            "X-Redacted-Key-Count": redacted_key_count,
+            "X-Report-Sha256": report_sha256,
+        },
+    )
 
 
 @router.get("/{workflow_id}/executions/{execution_id}/call-chain", response_model=Dict[str, Any])
@@ -2670,6 +2934,206 @@ async def _node_timeline_from_event_store(instance_id: str) -> Optional[List[Dic
         return None
 
 
+def _parse_query_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        candidate = str(value).strip()
+        if candidate.endswith("Z"):
+            candidate = candidate[:-1] + "+00:00"
+        dt = datetime.fromisoformat(candidate)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    except Exception:
+        return None
+
+
+def _build_error_row_from_event(ev: ExecutionEvent, execution_id: str) -> Optional[Dict[str, Any]]:
+    payload = ev.payload or {}
+    node = str(payload.get("node_id") or "").strip()
+    if not node:
+        return None
+    ts_iso = _timeline_ts_to_iso(ev.timestamp)
+    return {
+        "execution_id": execution_id,
+        "event_id": ev.event_id,
+        "sequence": ev.sequence,
+        "timestamp": ts_iso,
+        "node_id": node,
+        "event_type": ev.event_type.value if hasattr(ev.event_type, "value") else str(ev.event_type),
+        "error_message": payload.get("error_message"),
+        "error_type": payload.get("error_type"),
+        "error_stack": payload.get("stack_trace"),
+        "failure_strategy": payload.get("failure_strategy"),
+        "retry_count": int(payload.get("retry_count") or 0),
+    }
+
+
+def _error_row_match_filters(
+    row: Dict[str, Any],
+    *,
+    node_id: Optional[str],
+    error_type: Optional[str],
+    failure_strategy: Optional[str],
+    start_dt: Optional[datetime],
+    end_dt: Optional[datetime],
+) -> bool:
+    if node_id and str(row.get("node_id") or "") != str(node_id):
+        return False
+    if error_type and str(row.get("error_type") or "") != str(error_type):
+        return False
+    if failure_strategy and str(row.get("failure_strategy") or "") != str(failure_strategy):
+        return False
+    if start_dt or end_dt:
+        row_dt = _parse_query_iso_datetime(str(row.get("timestamp") or ""))
+        if row_dt is None:
+            return False
+        if start_dt and row_dt < start_dt:
+            return False
+        if end_dt and row_dt > end_dt:
+            return False
+    return True
+
+
+async def _execution_error_logs_from_event_store(
+    *,
+    instance_id: str,
+    execution_id: str,
+    node_id: Optional[str],
+    error_type: Optional[str],
+    failure_strategy: Optional[str],
+    start_dt: Optional[datetime],
+    end_dt: Optional[datetime],
+) -> List[Dict[str, Any]]:
+    try:
+        kernel_db = Database()
+        async with kernel_db.async_session() as session:
+            store = EventStore(session)
+            events = await store.get_events(instance_id=instance_id)
+        out: List[Dict[str, Any]] = []
+        for ev in events or []:
+            if ev.event_type not in {ExecutionEventType.NODE_FAILED, ExecutionEventType.NODE_TIMEOUT}:
+                continue
+            row = _build_error_row_from_event(ev, execution_id=execution_id)
+            if not isinstance(row, dict):
+                continue
+            if not _error_row_match_filters(
+                row,
+                node_id=node_id,
+                error_type=error_type,
+                failure_strategy=failure_strategy,
+                start_dt=start_dt,
+                end_dt=end_dt,
+            ):
+                continue
+            out.append(row)
+        return out
+    except Exception as e:
+        logger.debug(
+            f"[WorkflowAPI] execution error logs from events skipped: instance_id={instance_id} err={e}"
+        )
+        return []
+
+
+async def _execution_events_from_event_store(instance_id: str) -> List[Dict[str, Any]]:
+    try:
+        kernel_db = Database()
+        async with kernel_db.async_session() as session:
+            store = EventStore(session)
+            events = await store.get_events(instance_id=instance_id)
+        out: List[Dict[str, Any]] = []
+        for ev in events or []:
+            event_type = ev.event_type.value if hasattr(ev.event_type, "value") else str(ev.event_type)
+            out.append(
+                {
+                    "event_id": ev.event_id,
+                    "instance_id": ev.instance_id,
+                    "sequence": ev.sequence,
+                    "event_type": event_type,
+                    "timestamp": ev.timestamp,
+                    "payload": ev.payload or {},
+                    "schema_version": getattr(ev, "schema_version", None),
+                }
+            )
+        return out
+    except Exception as e:
+        logger.debug(
+            f"[WorkflowAPI] execution events from events skipped: instance_id={instance_id} err={e}"
+        )
+        return []
+
+
+def _build_failure_report_archive_bytes(
+    *,
+    report: Dict[str, Any],
+    events: List[Dict[str, Any]],
+) -> bytes:
+    report_sha256 = str(report.get("report_sha256") or "")
+    schema = str(report.get("report_schema_version") or "unknown")
+    redaction = "on" if bool(report.get("redaction_applied")) else "off"
+    redacted_keys = int(report.get("redacted_key_count") or 0)
+    audit_summary = f"schema={schema};redaction={redaction};redacted_keys={redacted_keys}"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        readme = (
+            "Workflow Failure Bundle\n"
+            "=======================\n\n"
+            "- failure-report.json: Unified execution failure report payload.\n"
+            "- failure-report.sha256: Hex digest of the canonical JSON (same algorithm as report.report_sha256).\n"
+            "- execution-events.json: Raw execution event stream snapshot.\n\n"
+            "Notes:\n"
+            "- Timestamps are ISO8601 in UTC unless otherwise specified.\n"
+            "- Sensitive fields may be masked by server-side redaction.\n"
+            "- failure-report.json includes report_schema_version, redaction_applied, and redacted_key_count.\n"
+            f"- audit_summary: {audit_summary}\n"
+            f"- report_sha256: {report_sha256}\n"
+        )
+        zf.writestr("README.txt", readme)
+        zf.writestr("failure-report.json", json.dumps(report, ensure_ascii=False, indent=2))
+        if report_sha256:
+            zf.writestr("failure-report.sha256", report_sha256 + "\n")
+        zf.writestr("execution-events.json", json.dumps(events, ensure_ascii=False, indent=2))
+    return buffer.getvalue()
+
+
+def _redact_sensitive_value(value: Any) -> Any:
+    redacted, _ = _redact_sensitive_value_with_count(value)
+    return redacted
+
+
+def _redact_sensitive_value_with_count(value: Any) -> tuple[Any, int]:
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        count = 0
+        for key, raw in value.items():
+            key_norm = str(key).strip().lower()
+            if key_norm in SENSITIVE_FIELD_KEYS:
+                out[key] = "***REDACTED***"
+                count += 1
+                continue
+            redacted_raw, sub_count = _redact_sensitive_value_with_count(raw)
+            out[key] = redacted_raw
+            count += sub_count
+        return out, count
+    if isinstance(value, list):
+        out_list: List[Any] = []
+        count = 0
+        for item in value:
+            redacted_item, sub_count = _redact_sensitive_value_with_count(item)
+            out_list.append(redacted_item)
+            count += sub_count
+        return out_list, count
+    return value, 0
+
+
+def _compute_report_sha256(report: Dict[str, Any]) -> str:
+    payload = dict(report)
+    payload.pop("report_sha256", None)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _merge_timeline_with_node_states(
     node_timeline_override: List[Dict[str, Any]],
     execution: WorkflowExecution,
@@ -2882,6 +3346,51 @@ def _execution_to_response(
         },
         agent_summaries=agent_summaries,
     )
+
+
+def _build_failure_report_payload(
+    *,
+    workflow_id: str,
+    execution: WorkflowExecution,
+    execution_payload: Dict[str, Any],
+    error_rows: List[Dict[str, Any]],
+    selected_node_id: Optional[str],
+    error_type: Optional[str],
+    failure_strategy: Optional[str],
+    start_time: Optional[str],
+    end_time: Optional[str],
+) -> Dict[str, Any]:
+    error_details = execution.error_details if isinstance(execution.error_details, dict) else None
+    recovery_actions = error_details.get("recovery_actions") if isinstance(error_details, dict) else None
+    return {
+        "report_schema_version": FAILURE_REPORT_SCHEMA_VERSION,
+        "exported_at": datetime.now(UTC).isoformat(),
+        "workflow_id": workflow_id,
+        "execution_id": execution.execution_id,
+        "execution_state": execution.state.value if hasattr(execution.state, "value") else str(execution.state),
+        "trigger_type": execution.trigger_type,
+        "triggered_by": execution.triggered_by,
+        "created_at": execution_payload.get("created_at"),
+        "started_at": execution_payload.get("started_at"),
+        "finished_at": execution_payload.get("finished_at"),
+        "duration_ms": execution.duration_ms,
+        "queue_position": execution.queue_position,
+        "wait_duration_ms": execution.wait_duration_ms,
+        "global_context": execution.global_context or {},
+        "global_error_details": error_details,
+        "recovery_actions": recovery_actions if isinstance(recovery_actions, list) else [],
+        "node_timeline": execution_payload.get("node_timeline") or [],
+        "node_states": execution_payload.get("node_states") or [],
+        "filtered_error_logs": error_rows,
+        "filter_snapshot": {
+            "selected_node_id": selected_node_id,
+            "error_type": error_type,
+            "failure_strategy": failure_strategy,
+            "start_time": start_time,
+            "end_time": end_time,
+        },
+        "execution": execution_payload,
+    }
 
 
 def _execution_to_status_response(

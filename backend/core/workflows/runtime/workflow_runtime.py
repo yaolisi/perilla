@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, Callable, List, Awaitable, cast, Tuple
 from datetime import UTC, datetime, timedelta
 import asyncio
 import json
+import traceback
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -361,7 +362,10 @@ class WorkflowRuntime:
             "exception_type": exception_type,
             "message": error_message,
             "failed_nodes": failed_nodes,
+            "failed_at": datetime.now(UTC).isoformat(),
+            "recovery_actions": [],
         }
+        action_logs = details["recovery_actions"]
         if on_failure_cfg.get("alert"):
             logger.error(
                 "[WorkflowRuntime] GLOBAL_FAILURE_ALERT execution_id=%s workflow_id=%s failed_nodes=%s message=%s",
@@ -371,9 +375,48 @@ class WorkflowRuntime:
                 error_message,
             )
             details["alert_triggered"] = True
+            action_logs.append(
+                {
+                    "action": "alert",
+                    "status": "triggered",
+                    "channel": on_failure_cfg.get("alert_channel") or "log",
+                }
+            )
         if on_failure_cfg.get("rollback"):
             details["rollback_requested"] = True
             details["rollback_note"] = "rollback request captured; executor should handle rollback action."
+            action_logs.append(
+                {
+                    "action": "rollback",
+                    "status": "requested",
+                    "strategy": on_failure_cfg.get("rollback_strategy") or "best_effort",
+                }
+            )
+        hook_name = str(on_failure_cfg.get("hook") or "").strip()
+        if hook_name:
+            try:
+                logger.info(
+                    "[WorkflowRuntime] GLOBAL_FAILURE_HOOK_CAPTURED execution_id=%s hook=%s",
+                    execution.execution_id,
+                    hook_name,
+                )
+                action_logs.append(
+                    {
+                        "action": "hook",
+                        "status": "captured",
+                        "hook": hook_name,
+                    }
+                )
+            except Exception as hook_error:
+                action_logs.append(
+                    {
+                        "action": "hook",
+                        "status": "failed",
+                        "hook": hook_name,
+                        "error": str(hook_error),
+                        "stack_trace": traceback.format_exc(),
+                    }
+                )
         return details
 
     def _ensure_execution_not_cancelled(self, context: GraphContext) -> None:
