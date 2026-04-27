@@ -1,0 +1,327 @@
+name: Knowledge RAG CI
+
+on:
+  push:
+    paths:
+      - "backend/core/knowledge/**"
+      - "backend/core/plugins/builtin/rag/**"
+      - "backend/core/rag/**"
+      - "backend/api/knowledge.py"
+      - "backend/core/types.py"
+      - "backend/scripts/knowledge_acceptance_smoke.py"
+      - "backend/tests/test_knowledge_*.py"
+      - ".github/workflows/knowledge-rag-ci.yml"
+  pull_request:
+    paths:
+      - "backend/core/knowledge/**"
+      - "backend/core/plugins/builtin/rag/**"
+      - "backend/core/rag/**"
+      - "backend/api/knowledge.py"
+      - "backend/core/types.py"
+      - "backend/scripts/knowledge_acceptance_smoke.py"
+      - "backend/tests/test_knowledge_*.py"
+      - ".github/workflows/knowledge-rag-ci.yml"
+  workflow_dispatch:
+    inputs:
+      run_smoke:
+        description: "Run live API smoke script against a reachable backend"
+        required: false
+        default: "false"
+      base_url:
+        description: "Backend base URL for smoke run"
+        required: false
+        default: "http://127.0.0.1:8000"
+      embedding_model_id:
+        description: "Embedding model ID for smoke script"
+        required: false
+        default: "embedding:test"
+      top_k:
+        description: "Search top_k used by smoke script"
+        required: false
+        default: "5"
+      auto_create_issue:
+        description: "Create GitHub issue automatically when smoke fails"
+        required: false
+        default: "false"
+
+concurrency:
+  group: knowledge-rag-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  knowledge-tests:
+    name: Knowledge unit/integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run knowledge test suites
+        working-directory: backend
+        run: |
+          pytest \
+            tests/test_knowledge_base_store.py \
+            tests/test_knowledge_versioning_api_integration.py \
+            tests/test_knowledge_full_flow_api_integration.py -q
+
+  knowledge-smoke:
+    name: Knowledge API smoke (live backend)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_smoke == 'true'
+    runs-on: ubuntu-latest
+    needs: knowledge-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install smoke dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install httpx
+
+      - name: Run knowledge acceptance smoke
+        working-directory: backend
+        env:
+          API_KEY: ${{ secrets.OPENVITAMIN_API_KEY }}
+        run: |
+          args=(
+            --base-url "${{ inputs.base_url }}"
+            --embedding-model-id "${{ inputs.embedding_model_id }}"
+            --top-k "${{ inputs.top_k }}"
+            --output-file "./test-reports/knowledge-smoke-report.json"
+          )
+          if [ -n "${API_KEY}" ]; then
+            args+=(--api-key "${API_KEY}")
+          fi
+          python scripts/knowledge_acceptance_smoke.py "${args[@]}"
+
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowledge-smoke-report
+          path: backend/test-reports/knowledge-smoke-report.json
+          if-no-files-found: warn
+
+      - name: Publish smoke summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          report = Path("backend/test-reports/knowledge-smoke-report.json")
+          out = ["## Knowledge Smoke Summary"]
+          if not report.exists():
+              out.append("- report: not found")
+          else:
+              obj = json.loads(report.read_text(encoding="utf-8"))
+              out.append(f"- ok: `{bool(obj.get('ok', False))}`")
+              out.append(f"- base_url: `{obj.get('base_url', '')}`")
+              failures = obj.get("failures", [])
+              if isinstance(failures, list) and failures:
+                  out.append("- failures:")
+                  for f in failures[:12]:
+                      out.append(f"  - {f}")
+          p = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          if p:
+              Path(p).write_text("\n".join(out), encoding="utf-8")
+          PY
+
+      - name: Prepare failure issue draft
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = Path("backend/test-reports/knowledge-smoke-report.json")
+          out = Path("backend/test-reports/knowledge-smoke-issue.md")
+          if not report.exists():
+              out.write_text(
+                  "# Knowledge smoke failed\n\n"
+                  "- report file missing: `backend/test-reports/knowledge-smoke-report.json`\n",
+                  encoding="utf-8",
+              )
+              raise SystemExit(0)
+          obj = json.loads(report.read_text(encoding="utf-8"))
+          ok = bool(obj.get("ok", False))
+          failures = obj.get("failures", [])
+          base_url = obj.get("base_url", "")
+          lines = []
+          lines.append("# Knowledge smoke failure report")
+          lines.append("")
+          lines.append(f"- workflow run: https://github.com/${{{{ github.repository }}}}/actions/runs/${{{{ github.run_id }}}}")
+          lines.append(f"- base_url: `{base_url}`")
+          lines.append(f"- ok: `{ok}`")
+          lines.append("")
+          if isinstance(failures, list) and failures:
+              lines.append("## Failures")
+              for f in failures:
+                  lines.append(f"- {f}")
+              lines.append("")
+          steps = obj.get("steps", {}) if isinstance(obj.get("steps"), dict) else {}
+          if steps:
+              lines.append("## Step snapshots")
+              for k, v in steps.items():
+                  lines.append(f"### {k}")
+                  lines.append("```json")
+                  try:
+                      lines.append(json.dumps(v, ensure_ascii=False, indent=2)[:3000])
+                  except Exception:
+                      lines.append(str(v)[:3000])
+                  lines.append("```")
+                  lines.append("")
+          out.write_text("\n".join(lines), encoding="utf-8")
+          PY
+
+      - name: Upload issue draft
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowledge-smoke-issue-draft
+          path: backend/test-reports/knowledge-smoke-issue.md
+          if-no-files-found: warn
+
+      - name: Create issue when smoke fails
+        if: always() && inputs.auto_create_issue == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = 'backend/test-reports/knowledge-smoke-report.json';
+            const issuePath = 'backend/test-reports/knowledge-smoke-issue.md';
+            if (!fs.existsSync(reportPath) || !fs.existsSync(issuePath)) {
+              core.info('report or issue draft missing, skip creating issue');
+              return;
+            }
+            const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+            if (report.ok) {
+              core.info('smoke passed, skip creating issue');
+              return;
+            }
+            const body = fs.readFileSync(issuePath, 'utf8');
+            const issuePrefix = 'Knowledge smoke failed';
+            const title = `${issuePrefix}: run #${context.runNumber}`;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const labels = ['bug', 'ci', 'knowledge-rag'];
+
+            // 去重策略：若存在同前缀 + 同标签的 open issue，则追加评论，不重复建单
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              labels: labels.join(','),
+              per_page: 100
+            });
+            const duplicate = existing.find(
+              (it) =>
+                !it.pull_request &&
+                typeof it.title === 'string' &&
+                it.title.startsWith(issuePrefix)
+            );
+
+            if (duplicate) {
+              const comment = [
+                `Detected another failure in run #${context.runNumber}.`,
+                '',
+                `Run URL: https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+                '',
+                '---',
+                body
+              ].join('\n');
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: duplicate.number,
+                body: comment
+              });
+              core.info(`Duplicate issue found (#${duplicate.number}); appended comment instead of creating new issue.`);
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title,
+              body,
+              labels
+            });
+
+      - name: Auto close issue when smoke recovers
+        if: always() && inputs.auto_create_issue == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = 'backend/test-reports/knowledge-smoke-report.json';
+            if (!fs.existsSync(reportPath)) {
+              core.info('report missing, skip recovery close');
+              return;
+            }
+            const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+            if (!report.ok) {
+              core.info('smoke not recovered, skip auto close');
+              return;
+            }
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const labels = ['bug', 'ci', 'knowledge-rag'];
+            const issuePrefix = 'Knowledge smoke failed';
+
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              labels: labels.join(','),
+              per_page: 100
+            });
+            const targets = existing.filter(
+              (it) =>
+                !it.pull_request &&
+                typeof it.title === 'string' &&
+                it.title.startsWith(issuePrefix)
+            );
+            if (!targets.length) {
+              core.info('no open knowledge smoke issue to close');
+              return;
+            }
+            for (const it of targets) {
+              const comment = [
+                `Smoke has recovered in run #${context.runNumber}.`,
+                '',
+                `Run URL: https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+                '',
+                'Closing this issue automatically.'
+              ].join('\n');
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: it.number,
+                body: comment
+              });
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: it.number,
+                state: 'closed'
+              });
+              core.info(`Closed recovered issue #${it.number}`);
+            }
+
