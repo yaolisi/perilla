@@ -5,6 +5,7 @@ import psutil  # type: ignore[import-untyped]
 import time
 import os
 import json
+import hashlib
 import secrets
 import aiofiles  # type: ignore[import-untyped]
 from pathlib import Path
@@ -29,6 +30,20 @@ from core.system.runtime_settings import (
     get_inference_priority_panel_high_slo_critical_rate,
     get_inference_priority_panel_high_slo_warning_rate,
     get_inference_priority_panel_preemption_cooldown_busy_threshold,
+)
+from core.plugins import get_plugin_manager
+from core.models.registry import get_model_registry
+from core.data.base import SessionLocal
+from core.idempotency.service import (
+    IDEMPOTENCY_STATUS_FAILED,
+    IDEMPOTENCY_STATUS_SUCCEEDED,
+    IdempotencyService,
+)
+from core.events import (
+    clear_event_bus_dlq,
+    get_event_bus_dlq,
+    get_event_bus_runtime_status,
+    replay_event_bus_dlq,
 )
 
 router = APIRouter(
@@ -542,6 +557,296 @@ def _compact_schema_hints(schema_hints: Dict[str, Dict[str, Any]]) -> Dict[str, 
             continue
         compacted[key] = {k: v for k, v in hint.items() if k in keep_fields}
     return compacted
+
+
+class PluginRegisterBody(BaseModel):
+    manifest_path: str = Field(..., min_length=1, max_length=4096)
+    set_default: bool = True
+
+
+class PluginUnregisterBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=256)
+    version: Optional[str] = Field(default=None, max_length=128)
+
+
+class PluginReloadBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=256)
+    version: Optional[str] = Field(default=None, max_length=128)
+
+
+class PluginSetDefaultBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=256)
+    version: str = Field(..., min_length=1, max_length=128)
+
+
+class EventBusDlqClearBody(BaseModel):
+    confirm: bool = Field(default=False, description="必须为 true 才会执行清理")
+
+
+class EventBusDlqReplayBody(BaseModel):
+    event_type: Optional[str] = Field(default=None, max_length=128)
+    since_ts: Optional[int] = Field(default=None, ge=0)
+    limit: int = Field(default=20, ge=1, le=200)
+    dry_run: bool = Field(default=False, description="仅预览将重放的条目，不实际投递")
+    confirm: bool = Field(default=False, description="必须为 true 才会执行重放")
+
+
+def _extract_idempotency_key(request: Request) -> Optional[str]:
+    return (
+        request.headers.get("Idempotency-Key")
+        or request.headers.get("X-Idempotency-Key")
+        or request.headers.get("X-Request-Id")
+    )
+
+
+def _stable_request_hash(payload: Dict[str, Any]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+async def _run_replay_with_rate_limit(body: "EventBusDlqReplayBody") -> Dict[str, Any]:
+    try:
+        return await replay_event_bus_dlq(
+            event_type=body.event_type,
+            since_ts=body.since_ts,
+            limit=body.limit,
+            dry_run=body.dry_run,
+        )
+    except RuntimeError as e:
+        raise_api_error(
+            status_code=429,
+            code="event_bus_dlq_replay_rate_limited",
+            message=str(e),
+        )
+        raise AssertionError("unreachable")
+
+
+def _raise_idempotency_in_progress() -> None:
+    raise_api_error(
+        status_code=409,
+        code="idempotency_in_progress",
+        message="Idempotent replay request is still processing; retry later",
+        details={"scope": "event_bus_dlq_replay"},
+    )
+
+
+async def _run_replay_with_optional_idempotency(body: "EventBusDlqReplayBody", request: Request) -> Dict[str, Any]:
+    idem_key = _extract_idempotency_key(request)
+    if not idem_key:
+        return await _run_replay_with_rate_limit(body)
+
+    owner_id = str(getattr(request.state, "user_id", None) or "platform_admin")
+    idem_db = SessionLocal()
+    idem_service = IdempotencyService(idem_db)
+    req_hash = _stable_request_hash(
+        {
+            "event_type": body.event_type,
+            "since_ts": body.since_ts,
+            "limit": body.limit,
+            "dry_run": body.dry_run,
+            "confirm": body.confirm,
+        }
+    )
+    claim = idem_service.claim(
+        scope="event_bus_dlq_replay",
+        owner_id=owner_id,
+        key=idem_key,
+        request_hash=req_hash,
+        ttl_seconds=3600,
+    )
+    if claim.conflict:
+        idem_db.close()
+        raise_api_error(
+            status_code=409,
+            code="idempotency_conflict",
+            message="Idempotency-Key already used with different request payload",
+            details={"scope": "event_bus_dlq_replay"},
+        )
+    if not claim.is_new:
+        cached = _resolve_cached_replay_response(claim.record.status, claim.record.error_message)
+        idem_db.close()
+        if cached is not None:
+            return cached
+        _raise_idempotency_in_progress()
+
+    try:
+        result = await _run_replay_with_rate_limit(body)
+        claim.record.status = IDEMPOTENCY_STATUS_SUCCEEDED
+        claim.record.response_ref = "inline_json"
+        claim.record.error_message = json.dumps(result, ensure_ascii=False)[:2000]
+        idem_db.commit()
+    except Exception as e:
+        claim.record.status = IDEMPOTENCY_STATUS_FAILED
+        claim.record.error_message = str(e)[:2000]
+        idem_db.commit()
+        idem_db.close()
+        raise
+    idem_db.close()
+    return result
+
+
+def _resolve_cached_replay_response(status: str, error_message: Optional[str]) -> Optional[Dict[str, Any]]:
+    if status == IDEMPOTENCY_STATUS_SUCCEEDED and error_message:
+        try:
+            return json.loads(error_message)
+        except Exception:
+            return None
+    if status == IDEMPOTENCY_STATUS_FAILED and error_message:
+        raise_api_error(
+            status_code=409,
+            code="idempotency_previous_failed",
+            message="Previous idempotent replay request failed",
+            details={"scope": "event_bus_dlq_replay", "reason": error_message},
+        )
+    return None
+
+
+def _plugin_init_context() -> tuple[Any, Any]:
+    model_registry = get_model_registry()
+    memory = None
+    try:
+        from api.chat import memory_store  # lazy import to avoid bootstrap cycle
+
+        memory = memory_store
+    except Exception:
+        memory = None
+    return model_registry, memory
+
+
+@router.get("/plugins")
+async def list_plugins(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
+    manager = get_plugin_manager()
+    plugins = manager.list_plugins()
+    return {"count": len(plugins), "plugins": plugins}
+
+
+@router.post("/plugins/register")
+async def register_plugin(
+    body: PluginRegisterBody,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    manager = get_plugin_manager()
+    model_registry, memory = _plugin_init_context()
+    ok = await manager.register_from_manifest(
+        body.manifest_path,
+        logger=logger,
+        memory=memory,
+        model_registry=model_registry,
+        set_default=body.set_default,
+    )
+    if not ok:
+        raise_api_error(
+            status_code=400,
+            code="plugin_register_failed",
+            message="Plugin register failed",
+            details={"manifest_path": body.manifest_path},
+        )
+    return {"success": True}
+
+
+@router.post("/plugins/unregister")
+async def unregister_plugin(
+    body: PluginUnregisterBody,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    manager = get_plugin_manager()
+    ok = await manager.unregister(body.name, body.version)
+    if not ok:
+        raise_api_error(
+            status_code=404,
+            code="plugin_not_found",
+            message="Plugin not found",
+            details={"name": body.name, "version": body.version},
+        )
+    return {"success": True}
+
+
+@router.post("/plugins/reload")
+async def reload_plugin(
+    body: PluginReloadBody,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    manager = get_plugin_manager()
+    model_registry, memory = _plugin_init_context()
+    ok = await manager.reload(
+        body.name,
+        body.version,
+        logger=logger,
+        memory=memory,
+        model_registry=model_registry,
+    )
+    if not ok:
+        raise_api_error(
+            status_code=404,
+            code="plugin_reload_failed",
+            message="Plugin reload failed",
+            details={"name": body.name, "version": body.version},
+        )
+    return {"success": True}
+
+
+@router.post("/plugins/default")
+async def set_default_plugin_version(
+    body: PluginSetDefaultBody,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    manager = get_plugin_manager()
+    manager.set_default_version(body.name, body.version)
+    return {"success": True}
+
+
+@router.get("/event-bus/status")
+async def event_bus_status(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
+    return await get_event_bus_runtime_status()
+
+
+@router.get("/event-bus/dlq")
+async def event_bus_dlq(
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    event_type: Annotated[Optional[str], Query(max_length=128)] = None,
+    since_ts: Annotated[Optional[int], Query(ge=0)] = None,
+) -> Dict[str, Any]:
+    items = await get_event_bus_dlq(limit=limit, event_type=event_type, since_ts=since_ts)
+    return {"count": len(items), "items": items}
+
+
+@router.post("/event-bus/dlq/clear")
+async def event_bus_dlq_clear(
+    body: EventBusDlqClearBody,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    if not body.confirm:
+        raise_api_error(
+            status_code=400,
+            code="event_bus_dlq_clear_confirmation_required",
+            message="confirm=true is required to clear event bus DLQ.",
+        )
+    cleared = await clear_event_bus_dlq()
+    return {"success": True, "cleared": cleared}
+
+
+@router.post("/event-bus/dlq/replay")
+async def event_bus_dlq_replay(
+    body: EventBusDlqReplayBody,
+    request: Request,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    if not body.confirm:
+        raise_api_error(
+            status_code=400,
+            code="event_bus_dlq_replay_confirmation_required",
+            message="confirm=true is required to replay event bus DLQ.",
+        )
+    result = await _run_replay_with_optional_idempotency(body, request)
+    return {"success": True, **result}
 
 @router.post("/engine/reload")
 async def reload_engine(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:

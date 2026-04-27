@@ -1,0 +1,615 @@
+name: Event Bus DLQ Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Target backend base URL"
+        required: true
+        default: "http://127.0.0.1:8000"
+      event_type:
+        description: "Optional DLQ filter event_type"
+        required: false
+        default: "agent.status.changed"
+      limit:
+        description: "Replay/query limit"
+        required: false
+        default: "20"
+      expected_schema_version:
+        description: "Expected schema_version for smoke result contract"
+        required: false
+        default: "1"
+      expected_summary_schema_version:
+        description: "Expected summary_schema_version for summary artifact contract (strict示例: version=1 + mode=strict; compatible示例: version=2 + mode=compatible)"
+        required: false
+        default: "1"
+      summary_schema_mode:
+        description: "Summary schema validation mode: strict(==) or compatible(<=). 推荐: 日常回归= strict, 升级演练= compatible"
+        required: false
+        default: "strict"
+      payload_sha256_mode:
+        description: "Payload sha256 validation mode: strict(validate) or off(skip)"
+        required: false
+        default: "strict"
+      result_file_stale_threshold_ms:
+        description: "Stale threshold(ms) for smoke result file age in summary"
+        required: false
+        default: "600000"
+      file_suffix:
+        description: "Optional suffix appended to smoke result/log filenames (e.g. run id)"
+        required: false
+        default: ""
+
+jobs:
+  event-bus-smoke:
+    name: Event bus external smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve smoke artifact filenames
+        run: |
+          suffix="${{ inputs.file_suffix }}"
+          if [ -n "${suffix}" ]; then
+            result="event-bus-smoke-result-${suffix}.json"
+            log="event-bus-smoke-${suffix}.log"
+            preflight="event-bus-smoke-preflight-${suffix}.log"
+            guard="event-bus-smoke-contract-guard-${suffix}.log"
+            summary_json="event-bus-smoke-summary-${suffix}.json"
+          else
+            result="event-bus-smoke-result.json"
+            log="event-bus-smoke.log"
+            preflight="event-bus-smoke-preflight.log"
+            guard="event-bus-smoke-contract-guard.log"
+            summary_json="event-bus-smoke-summary.json"
+          fi
+          echo "EVENT_BUS_SMOKE_RESULT_FILE=${result}" >> "$GITHUB_ENV"
+          echo "EVENT_BUS_SMOKE_LOG_FILE=${log}" >> "$GITHUB_ENV"
+          echo "EVENT_BUS_SMOKE_PREFLIGHT_LOG_FILE=${preflight}" >> "$GITHUB_ENV"
+          echo "EVENT_BUS_SMOKE_CONTRACT_GUARD_LOG_FILE=${guard}" >> "$GITHUB_ENV"
+          echo "EVENT_BUS_SMOKE_SUMMARY_JSON_FILE=${summary_json}" >> "$GITHUB_ENV"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+
+      - name: Validate smoke result schema version (Makefile gate)
+        env:
+          EVENT_BUS_SMOKE_SCHEMA_VERSION: ${{ inputs.expected_schema_version }}
+        run: make event-bus-smoke-validate-schema-version
+
+      - name: Run smoke preflight gate
+        run: |
+          make event-bus-smoke-preflight | tee "${EVENT_BUS_SMOKE_PREFLIGHT_LOG_FILE}"
+
+      - name: Run smoke unit local gates
+        run: |
+          make event-bus-smoke-unit
+
+      - name: Run smoke contract guard gate
+        run: |
+          make event-bus-smoke-contract-guard | tee "${EVENT_BUS_SMOKE_CONTRACT_GUARD_LOG_FILE}"
+
+      - name: Validate required secret
+        env:
+          ADMIN_TOKEN: ${{ secrets.OPENVITAMIN_PLATFORM_ADMIN_TOKEN }}
+        run: |
+          if [ -z "${ADMIN_TOKEN}" ]; then
+            echo "Missing required secret: OPENVITAMIN_PLATFORM_ADMIN_TOKEN"
+            exit 2
+          fi
+
+      - name: Validate schema version input
+        run: |
+          v="${{ inputs.expected_schema_version }}"
+          if ! [[ "${v}" =~ ^[0-9]+$ ]]; then
+            echo "expected_schema_version must be a positive integer, got: ${v}"
+            exit 2
+          fi
+          if [ "${v}" -le 0 ]; then
+            echo "expected_schema_version must be > 0, got: ${v}"
+            exit 2
+          fi
+
+      - name: Validate summary schema version input
+        run: |
+          v="${{ inputs.expected_summary_schema_version }}"
+          if ! [[ "${v}" =~ ^[0-9]+$ ]]; then
+            echo "expected_summary_schema_version must be a positive integer, got: ${v}"
+            exit 2
+          fi
+          if [ "${v}" -le 0 ]; then
+            echo "expected_summary_schema_version must be > 0, got: ${v}"
+            exit 2
+          fi
+
+      - name: Validate summary schema mode input
+        run: |
+          m="${{ inputs.summary_schema_mode }}"
+          if [ "${m}" != "strict" ] && [ "${m}" != "compatible" ]; then
+            echo "summary_schema_mode must be one of: strict,compatible; got: ${m}"
+            exit 2
+          fi
+
+      - name: Validate payload sha256 mode input
+        run: |
+          m="${{ inputs.payload_sha256_mode }}"
+          if [ "${m}" != "strict" ] && [ "${m}" != "off" ]; then
+            echo "payload_sha256_mode must be one of: strict,off; got: ${m}"
+            exit 2
+          fi
+
+      - name: Validate stale threshold input
+        run: |
+          v="${{ inputs.result_file_stale_threshold_ms }}"
+          if ! [[ "${v}" =~ ^[0-9]+$ ]]; then
+            echo "result_file_stale_threshold_ms must be a non-negative integer, got: ${v}"
+            exit 2
+          fi
+
+      - name: Validate file suffix input
+        run: |
+          s="${{ inputs.file_suffix }}"
+          if [ -n "${s}" ]; then
+            if ! [[ "${s}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+              echo "file_suffix contains invalid characters: ${s}"
+              echo "Allowed pattern: [A-Za-z0-9._-]+"
+              exit 2
+            fi
+            if [ "${#s}" -gt 64 ]; then
+              echo "file_suffix is too long (${#s}), max allowed is 64"
+              exit 2
+            fi
+          fi
+
+      - name: Run smoke script directly
+        env:
+          EVENT_BUS_BASE_URL: ${{ inputs.base_url }}
+          EVENT_BUS_SMOKE_EVENT_TYPE: ${{ inputs.event_type }}
+          EVENT_BUS_SMOKE_LIMIT: ${{ inputs.limit }}
+          EVENT_BUS_SMOKE_SCHEMA_VERSION: ${{ inputs.expected_schema_version }}
+          EVENT_BUS_SMOKE_ADMIN_TOKEN: ${{ secrets.OPENVITAMIN_PLATFORM_ADMIN_TOKEN }}
+        run: |
+          make event-bus-smoke-run-validated | tee "${EVENT_BUS_SMOKE_LOG_FILE}"
+
+      - name: Run pytest wrapper smoke
+        env:
+          EVENT_BUS_SMOKE_BASE_URL: ${{ inputs.base_url }}
+          EVENT_BUS_SMOKE_ADMIN_TOKEN: ${{ secrets.OPENVITAMIN_PLATFORM_ADMIN_TOKEN }}
+          EVENT_BUS_SMOKE_EVENT_TYPE: ${{ inputs.event_type }}
+          EVENT_BUS_SMOKE_LIMIT: ${{ inputs.limit }}
+        run: |
+          make event-bus-smoke-pytest
+
+      - name: Upload smoke log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: event-bus-dlq-smoke-log
+          path: |
+            ${{ env.EVENT_BUS_SMOKE_PREFLIGHT_LOG_FILE }}
+            ${{ env.EVENT_BUS_SMOKE_CONTRACT_GUARD_LOG_FILE }}
+            ${{ env.EVENT_BUS_SMOKE_LOG_FILE }}
+            ${{ env.EVENT_BUS_SMOKE_RESULT_FILE }}
+          if-no-files-found: warn
+
+      - name: Publish smoke summary
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          from datetime import datetime, timezone
+          import importlib.util
+          import sys
+          health_module_path = Path("backend/scripts/event_bus_smoke_summary_health.py")
+          spec = importlib.util.spec_from_file_location("event_bus_smoke_summary_health", health_module_path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("failed to load event_bus_smoke_summary_health module")
+          health_module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = health_module
+          spec.loader.exec_module(health_module)
+          classify_health = health_module.classify_health
+          reason_module_path = Path("backend/scripts/event_bus_smoke_reason_codes.py")
+          reason_spec = importlib.util.spec_from_file_location("event_bus_smoke_reason_codes", reason_module_path)
+          if reason_spec is None or reason_spec.loader is None:
+              raise SystemExit("failed to load event_bus_smoke_reason_codes module")
+          reason_module = importlib.util.module_from_spec(reason_spec)
+          sys.modules[reason_spec.name] = reason_module
+          reason_spec.loader.exec_module(reason_module)
+          map_preflight_error_to_reason = reason_module.map_preflight_error_to_reason
+          preflight_machine_error_lines = reason_module.preflight_machine_error_lines
+          smoke_dlq_log_error_lines = reason_module.smoke_dlq_log_error_lines
+          build_contract_reason_code = reason_module.build_contract_reason_code
+          is_known_preflight_reason_code = reason_module.is_known_preflight_reason_code
+          find_unknown_contract_reason_codes = reason_module.find_unknown_contract_reason_codes
+          PREFLIGHT_REASON_MISSING_PREFLIGHT_LOG = reason_module.PREFLIGHT_REASON_MISSING_PREFLIGHT_LOG
+          PREFLIGHT_REASON_PREFLIGHT_PASSED = reason_module.PREFLIGHT_REASON_PREFLIGHT_PASSED
+          PREFLIGHT_REASON_MISSING_PREFLIGHT_STATUS = reason_module.PREFLIGHT_REASON_MISSING_PREFLIGHT_STATUS
+          CONTRACT_REASON_PARSE_ERROR = reason_module.CONTRACT_REASON_PARSE_ERROR
+          CONTRACT_REASON_MISSING_RESULT_FILE = reason_module.CONTRACT_REASON_MISSING_RESULT_FILE
+          CONTRACT_REASON_SCHEMA_VERSION_MISMATCH = reason_module.CONTRACT_REASON_SCHEMA_VERSION_MISMATCH
+          CONTRACT_REASON_MISSING_SCHEMA_VERSION = reason_module.CONTRACT_REASON_MISSING_SCHEMA_VERSION
+          CONTRACT_REASON_MISSING_GENERATED_AT_MS = reason_module.CONTRACT_REASON_MISSING_GENERATED_AT_MS
+          CONTRACT_REASON_INVALID_GENERATED_AT_MS = reason_module.CONTRACT_REASON_INVALID_GENERATED_AT_MS
+          summary_keys_module_path = Path("backend/scripts/event_bus_smoke_summary_keys.py")
+          summary_keys_spec = importlib.util.spec_from_file_location("event_bus_smoke_summary_keys", summary_keys_module_path)
+          if summary_keys_spec is None or summary_keys_spec.loader is None:
+              raise SystemExit("failed to load event_bus_smoke_summary_keys module")
+          summary_keys_module = importlib.util.module_from_spec(summary_keys_spec)
+          sys.modules[summary_keys_spec.name] = summary_keys_module
+          summary_keys_spec.loader.exec_module(summary_keys_module)
+          KEY_SUMMARY_SCHEMA_VERSION = summary_keys_module.KEY_SUMMARY_SCHEMA_VERSION
+          KEY_HEALTH = summary_keys_module.KEY_HEALTH
+          KEY_HEALTH_REASON = summary_keys_module.KEY_HEALTH_REASON
+          KEY_HEALTH_REASON_CODES = summary_keys_module.KEY_HEALTH_REASON_CODES
+          KEY_PREFLIGHT_CHECK = summary_keys_module.KEY_PREFLIGHT_CHECK
+          KEY_PREFLIGHT_REASON = summary_keys_module.KEY_PREFLIGHT_REASON
+          KEY_PREFLIGHT_REASON_KNOWN = summary_keys_module.KEY_PREFLIGHT_REASON_KNOWN
+          KEY_CONTRACT_CHECK = summary_keys_module.KEY_CONTRACT_CHECK
+          KEY_CONTRACT_REASON_CODE = summary_keys_module.KEY_CONTRACT_REASON_CODE
+          KEY_CONTRACT_REASON_KNOWN = summary_keys_module.KEY_CONTRACT_REASON_KNOWN
+          KEY_RESULT_SCHEMA_VERSION = summary_keys_module.KEY_RESULT_SCHEMA_VERSION
+          KEY_RESULT_GENERATED_AT_MS = summary_keys_module.KEY_RESULT_GENERATED_AT_MS
+          KEY_RESULT_FILE = summary_keys_module.KEY_RESULT_FILE
+          KEY_RESULT_FILE_EXISTS = summary_keys_module.KEY_RESULT_FILE_EXISTS
+          KEY_LOG_FILE = summary_keys_module.KEY_LOG_FILE
+          KEY_LOG_FILE_EXISTS = summary_keys_module.KEY_LOG_FILE_EXISTS
+          KEY_CONTRACT_GUARD_LOG_FILE = summary_keys_module.KEY_CONTRACT_GUARD_LOG_FILE
+          KEY_CONTRACT_GUARD_LOG_FILE_EXISTS = summary_keys_module.KEY_CONTRACT_GUARD_LOG_FILE_EXISTS
+          KEY_CONTRACT_GUARD_SECTIONS_SEEN = summary_keys_module.KEY_CONTRACT_GUARD_SECTIONS_SEEN
+          KEY_CONTRACT_GUARD_STATUS = summary_keys_module.KEY_CONTRACT_GUARD_STATUS
+          KEY_PAYLOAD_SHA256 = summary_keys_module.KEY_PAYLOAD_SHA256
+          summary_payload_module_path = Path("backend/scripts/event_bus_smoke_summary_payload.py")
+          summary_payload_spec = importlib.util.spec_from_file_location("event_bus_smoke_summary_payload", summary_payload_module_path)
+          if summary_payload_spec is None or summary_payload_spec.loader is None:
+              raise SystemExit("failed to load event_bus_smoke_summary_payload module")
+          summary_payload_module = importlib.util.module_from_spec(summary_payload_spec)
+          sys.modules[summary_payload_spec.name] = summary_payload_module
+          summary_payload_spec.loader.exec_module(summary_payload_module)
+          build_summary_payload = summary_payload_module.build_summary_payload
+          with_payload_sha256 = summary_payload_module.with_payload_sha256
+          SummaryPayloadKeyMismatchError = summary_payload_module.SummaryPayloadKeyMismatchError
+          summary_reason_module_path = Path("backend/scripts/event_bus_smoke_summary_reason_codes.py")
+          summary_reason_spec = importlib.util.spec_from_file_location("event_bus_smoke_summary_reason_codes", summary_reason_module_path)
+          if summary_reason_spec is None or summary_reason_spec.loader is None:
+              raise SystemExit("failed to load event_bus_smoke_summary_reason_codes module")
+          summary_reason_module = importlib.util.module_from_spec(summary_reason_spec)
+          sys.modules[summary_reason_spec.name] = summary_reason_module
+          summary_reason_spec.loader.exec_module(summary_reason_module)
+          REASON_SUMMARY_PAYLOAD_KEY_MISMATCH = summary_reason_module.REASON_SUMMARY_PAYLOAD_KEY_MISMATCH
+          guard_summary_module_path = Path("backend/scripts/event_bus_smoke_contract_guard_summary.py")
+          guard_summary_spec = importlib.util.spec_from_file_location(
+              "event_bus_smoke_contract_guard_summary", guard_summary_module_path
+          )
+          if guard_summary_spec is None or guard_summary_spec.loader is None:
+              raise SystemExit("failed to load event_bus_smoke_contract_guard_summary module")
+          guard_summary_module = importlib.util.module_from_spec(guard_summary_spec)
+          sys.modules[guard_summary_spec.name] = guard_summary_module
+          guard_summary_spec.loader.exec_module(guard_summary_module)
+          summarize_guard_log = guard_summary_module.summarize_guard_log
+          sections_seen_from_status = guard_summary_module.sections_seen_from_status
+          GUARD_SECTIONS = tuple(guard_summary_module.GUARD_SECTIONS)
+          ss = os.environ.get("GITHUB_STEP_SUMMARY")
+          if not ss:
+              raise SystemExit(0)
+          summary_json_file = os.environ.get("EVENT_BUS_SMOKE_SUMMARY_JSON_FILE", "event-bus-smoke-summary.json")
+          summary_schema_version = int("${{ inputs.expected_summary_schema_version }}")
+          out = []
+          out.append("## Event Bus DLQ Smoke Summary")
+          out.append(f"- base_url: `${{ inputs.base_url }}`")
+          out.append(f"- event_type: `${{ inputs.event_type }}`")
+          out.append(f"- limit: `${{ inputs.limit }}`")
+          out.append(f"- expected_schema_version: `${{ inputs.expected_schema_version }}`")
+          out.append(f"- expected_summary_schema_version: `${{ inputs.expected_summary_schema_version }}`")
+          out.append(f"- summary_schema_mode: `${{ inputs.summary_schema_mode }}`")
+          out.append(f"- payload_sha256_mode: `${{ inputs.payload_sha256_mode }}`")
+          summary_mode_hint = "daily_regression" if "${{ inputs.summary_schema_mode }}" == "strict" else "upgrade_rehearsal"
+          out.append(f"- summary_schema_mode_recommended_usage: `{summary_mode_hint}`")
+          out.append(f"- summary_schema_version: `{summary_schema_version}`")
+          out.append(f"- result_file_stale_threshold_ms: `${{ inputs.result_file_stale_threshold_ms }}`")
+          out.append(f"- file_suffix: `${{ inputs.file_suffix }}`")
+          out.append(f"- summary_json_file: `{summary_json_file}`")
+          preflight_check = "mismatch"
+          preflight_reason = PREFLIGHT_REASON_MISSING_PREFLIGHT_LOG
+          preflight_reason_raw = ""
+          preflight_reason_known = False
+          contract_check = "mismatch"
+          contract_reason_code = CONTRACT_REASON_MISSING_RESULT_FILE
+          contract_reason_raw = ""
+          contract_reason_code_known = True
+          result_schema_version = None
+          result_generated_at_ms = None
+          preflight_log_file = os.environ.get("EVENT_BUS_SMOKE_PREFLIGHT_LOG_FILE", "event-bus-smoke-preflight.log")
+          out.append(f"- preflight_log_file: `{preflight_log_file}`")
+          preflight_log_path = Path(preflight_log_file)
+          out.append(f"- preflight_log_file_exists: `{preflight_log_path.exists()}`")
+          if preflight_log_path.exists():
+              preflight_lines = preflight_log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+              preflight_err_lines = preflight_machine_error_lines(preflight_lines)
+              preflight_ok = any("[OK] EventBus smoke preflight passed" in ln for ln in preflight_lines)
+              if preflight_err_lines:
+                  preflight_check = "mismatch"
+                  first_err = preflight_err_lines[0].strip()
+                  preflight_reason_raw = first_err
+                  preflight_reason = map_preflight_error_to_reason(first_err)
+              elif preflight_ok:
+                  preflight_check = "ok"
+                  preflight_reason = PREFLIGHT_REASON_PREFLIGHT_PASSED
+              else:
+                  preflight_check = "mismatch"
+                  preflight_reason = PREFLIGHT_REASON_MISSING_PREFLIGHT_STATUS
+          out.append(f"- preflight_contract_check: `{preflight_check}`")
+          out.append(f"- preflight_contract_check_reason: `{preflight_reason}`")
+          preflight_reason_known = is_known_preflight_reason_code(preflight_reason)
+          out.append(f"- preflight_reason_code_known: `{preflight_reason_known}`")
+          if not preflight_reason_known:
+              out.append(f"- preflight_reason_code_registry_check: `unknown_reason_code_detected ({preflight_reason})`")
+          if preflight_reason_raw:
+              out.append(f"- preflight_contract_check_reason_raw: `{preflight_reason_raw}`")
+          guard_log_file = os.environ.get("EVENT_BUS_SMOKE_CONTRACT_GUARD_LOG_FILE", "event-bus-smoke-contract-guard.log")
+          out.append(f"- contract_guard_log_file: `{guard_log_file}`")
+          guard_log_path = Path(guard_log_file)
+          out.append(f"- contract_guard_log_file_exists: `{guard_log_path.exists()}`")
+          guard_status, _guard_seen_sections_raw = summarize_guard_log(guard_log_file, sections=GUARD_SECTIONS)
+          guard_seen_sections = sections_seen_from_status(guard_status, sections=GUARD_SECTIONS)
+          out.append("- contract_guard_sections_seen: `" + (",".join(guard_seen_sections) if guard_seen_sections else "none") + "`")
+          out.append("- contract_guard_status:")
+          for section in GUARD_SECTIONS:
+              out.append(f"  - {section}: `{guard_status[section]}`")
+          result_file = os.environ.get("EVENT_BUS_SMOKE_RESULT_FILE", "event-bus-smoke-result.json")
+          out.append(f"- result_file: `{result_file}`")
+          result_path = Path(result_file)
+          out.append(f"- result_file_exists: `{result_path.exists()}`")
+          if result_path.exists():
+              try:
+                  stat = result_path.stat()
+                  out.append(f"- result_file_size_bytes: `{stat.st_size}`")
+                  try:
+                      mtime_iso = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+                      out.append(f"- result_file_mtime_utc: `{mtime_iso}`")
+                      age_ms = int((datetime.now(timezone.utc).timestamp() - stat.st_mtime) * 1000)
+                      age_ms = max(age_ms, 0)
+                      out.append(f"- result_file_age_ms: `{age_ms}`")
+                      try:
+                          stale_threshold_ms = int("${{ inputs.result_file_stale_threshold_ms }}")
+                      except Exception:
+                          stale_threshold_ms = 10 * 60 * 1000
+                      if stale_threshold_ms < 0:
+                          stale_threshold_ms = 0
+                      out.append(f"- result_file_stale_threshold_ms_effective: `{stale_threshold_ms}`")
+                      stale = age_ms > stale_threshold_ms
+                      out.append(f"- result_file_stale: `{stale}`")
+                      out.append(f"- result_file_stale_reason: `{'stale' if stale else 'fresh'}`")
+                  except Exception:
+                      out.append("- result_file_mtime_utc: `parse_error`")
+                      out.append("- result_file_stale_reason: `unknown`")
+              except Exception:
+                  out.append("- result_file_size_bytes: `read_error`")
+          if result_path.exists():
+              try:
+                  robj = __import__("json").loads(result_path.read_text(encoding="utf-8"))
+                  expected_schema_version = int("${{ inputs.expected_schema_version }}")
+                  out.append("")
+                  out.append("### Structured Result")
+                  schema_version = robj.get("schema_version")
+                  generated_at_ms = robj.get("generated_at_ms")
+                  result_schema_version = schema_version if isinstance(schema_version, int) else None
+                  result_generated_at_ms = generated_at_ms if isinstance(generated_at_ms, int) else None
+                  schema_match = isinstance(schema_version, int) and schema_version == expected_schema_version
+                  generated_at_valid = isinstance(generated_at_ms, int) and generated_at_ms > 0
+                  contract_reasons = []
+                  out.append(f"- schema_match: `{schema_match}`")
+                  out.append(f"- generated_at_valid: `{generated_at_valid}`")
+                  if isinstance(schema_version, int):
+                      out.append(f"- schema_version: `{schema_version}`")
+                      if schema_version != expected_schema_version:
+                          out.append(f"- schema_check: `unexpected_schema_version (expected={expected_schema_version}, actual={schema_version})`")
+                          contract_reasons.append(CONTRACT_REASON_SCHEMA_VERSION_MISMATCH)
+                      else:
+                          out.append(f"- schema_check: `ok (expected={expected_schema_version}, actual={schema_version})`")
+                  if isinstance(generated_at_ms, int):
+                      out.append(f"- generated_at_ms: `{generated_at_ms}`")
+                      try:
+                          iso = datetime.fromtimestamp(generated_at_ms / 1000, tz=timezone.utc).isoformat()
+                          out.append(f"- generated_at_utc: `{iso}`")
+                      except Exception:
+                          out.append("- generated_at_utc: `parse_error`")
+                  if not isinstance(schema_version, int):
+                      out.append(f"- schema_check: `missing_schema_version (expected={expected_schema_version})`")
+                      contract_reasons.append(CONTRACT_REASON_MISSING_SCHEMA_VERSION)
+                  if not isinstance(generated_at_ms, int):
+                      out.append("- schema_check: `missing_generated_at_ms (expected positive int ms timestamp)`")
+                      contract_reasons.append(CONTRACT_REASON_MISSING_GENERATED_AT_MS)
+                  elif generated_at_ms <= 0:
+                      out.append("- schema_check: `invalid_generated_at_ms (must be > 0)`")
+                      contract_reasons.append(CONTRACT_REASON_INVALID_GENERATED_AT_MS)
+                  contract_ok = schema_match and generated_at_valid
+                  contract_check = "ok" if contract_ok else "mismatch"
+                  out.append(f"- contract_check: `{contract_check}`")
+                  contract_reasons = sorted(set(contract_reasons))
+                  contract_reason_code = build_contract_reason_code(contract_reasons, contract_ok=contract_ok)
+                  contract_reason_raw = ""
+                  if not contract_ok and contract_reasons:
+                      raw_parts = []
+                      if CONTRACT_REASON_SCHEMA_VERSION_MISMATCH in contract_reasons:
+                          raw_parts.append(f"schema_version expected={expected_schema_version}, actual={schema_version}")
+                      if CONTRACT_REASON_MISSING_SCHEMA_VERSION in contract_reasons:
+                          raw_parts.append("schema_version missing or non-int")
+                      if CONTRACT_REASON_MISSING_GENERATED_AT_MS in contract_reasons:
+                          raw_parts.append("generated_at_ms missing or non-int")
+                      if CONTRACT_REASON_INVALID_GENERATED_AT_MS in contract_reasons:
+                          raw_parts.append(f"generated_at_ms invalid (actual={generated_at_ms}, required>0)")
+                      contract_reason_raw = "; ".join(raw_parts)
+                  out.append(
+                      f"- contract_check_reason: `{contract_reason_code}`"
+                  )
+                  out.append(f"- contract_check_reason_code: `{contract_reason_code}`")
+                  unknown_contract_reason_codes = find_unknown_contract_reason_codes(contract_reason_code)
+                  contract_reason_code_known = not bool(unknown_contract_reason_codes)
+                  out.append(f"- contract_reason_code_known: `{contract_reason_code_known}`")
+                  if unknown_contract_reason_codes:
+                      out.append(
+                          f"- contract_reason_code_registry_check: `unknown_reason_code_detected ({','.join(unknown_contract_reason_codes)})`"
+                      )
+                  if contract_reason_raw:
+                      out.append(f"- contract_check_reason_raw: `{contract_reason_raw}`")
+                  out.append(f"- ok: `{bool(robj.get('ok', False))}`")
+                  total_steps = robj.get("total_steps")
+                  ok_steps = robj.get("ok_steps")
+                  err_steps = robj.get("err_steps")
+                  if all(isinstance(v, int) for v in (total_steps, ok_steps, err_steps)):
+                      out.append(f"- step_total: `{total_steps}`")
+                      out.append(f"- step_ok: `{ok_steps}`")
+                      out.append(f"- step_err: `{err_steps}`")
+                  else:
+                      steps = robj.get("steps", [])
+                      if isinstance(steps, list):
+                          ok_steps = len([s for s in steps if isinstance(s, dict) and s.get("ok") is True])
+                          err_steps = len([s for s in steps if isinstance(s, dict) and s.get("ok") is False])
+                          out.append(f"- step_total: `{len(steps)}`")
+                          out.append(f"- step_ok: `{ok_steps}`")
+                          out.append(f"- step_err: `{err_steps}`")
+                  failed_step = robj.get("failed_step")
+                  if failed_step:
+                      out.append(f"- failed_step: `{failed_step}`")
+              except Exception as e:
+                  out.append(f"- structured result parse error: `{e}`")
+                  out.append("- contract_check: `mismatch`")
+                  out.append("- contract_check_reason: `parse_error`")
+                  contract_check = "mismatch"
+                  contract_reason_code = CONTRACT_REASON_PARSE_ERROR
+                  contract_reason_raw = str(e)
+                  out.append(f"- contract_check_reason_code: `{CONTRACT_REASON_PARSE_ERROR}`")
+                  contract_reason_code_known = True
+                  out.append(f"- contract_reason_code_known: `{contract_reason_code_known}`")
+                  out.append(f"- contract_check_reason_raw: `{e}`")
+          else:
+              out.append("")
+              out.append("### Structured Result")
+              out.append("- contract_check: `mismatch`")
+              out.append(f"- contract_check_reason: `{CONTRACT_REASON_MISSING_RESULT_FILE}`")
+              contract_check = "mismatch"
+              contract_reason_code = CONTRACT_REASON_MISSING_RESULT_FILE
+              out.append(f"- contract_check_reason_code: `{CONTRACT_REASON_MISSING_RESULT_FILE}`")
+              contract_reason_code_known = True
+              out.append(f"- contract_reason_code_known: `{contract_reason_code_known}`")
+          health, health_reason = classify_health(
+              preflight_check=preflight_check,
+              preflight_reason=preflight_reason,
+              contract_check=contract_check,
+              contract_reason_code=contract_reason_code,
+              preflight_reason_known=preflight_reason_known,
+              contract_reason_code_known=contract_reason_code_known,
+          )
+          out.insert(1, f"- health: `{health}`")
+          out.insert(2, f"- health_reason: `{health_reason}`")
+          health_reason_codes = [part for part in str(health_reason).split(",") if part]
+          if health_reason == "all_checks_ok":
+              health_reason_codes = ["all_checks_ok"]
+          out.insert(3, f"- health_reason_codes: `{','.join(health_reason_codes)}`")
+          log_file = os.environ.get("EVENT_BUS_SMOKE_LOG_FILE", "event-bus-smoke.log")
+          out.append(f"- log_file: `{log_file}`")
+          log_path = Path(log_file)
+          out.append(f"- log_file_exists: `{log_path.exists()}`")
+          if log_path.exists():
+              lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+              ok_lines = [ln for ln in lines if ln.startswith("[OK]")]
+              err_lines = smoke_dlq_log_error_lines(lines)
+              out.append("")
+              out.append("### Assertion Stats")
+              out.append(f"- OK lines: `{len(ok_lines)}`")
+              out.append(f"- ERR lines: `{len(err_lines)}`")
+              if err_lines:
+                  out.append("- Failed steps:")
+                  for ln in err_lines[:10]:
+                      out.append(f"  - {ln}")
+              preview = lines[-40:] if len(lines) > 40 else lines
+              out.append("")
+              out.append("### Smoke Log Tail")
+              out.append("```text")
+              out.extend(preview)
+              out.append("```")
+          else:
+              out.append("- smoke log not found")
+          summary_values_by_key = {
+              KEY_SUMMARY_SCHEMA_VERSION: summary_schema_version,
+              KEY_HEALTH: health,
+              KEY_HEALTH_REASON: health_reason,
+              KEY_HEALTH_REASON_CODES: health_reason_codes,
+              KEY_PREFLIGHT_CHECK: preflight_check,
+              KEY_PREFLIGHT_REASON: preflight_reason,
+              KEY_PREFLIGHT_REASON_KNOWN: preflight_reason_known,
+              KEY_CONTRACT_CHECK: contract_check,
+              KEY_CONTRACT_REASON_CODE: contract_reason_code,
+              KEY_CONTRACT_REASON_KNOWN: contract_reason_code_known,
+              KEY_RESULT_SCHEMA_VERSION: result_schema_version,
+              KEY_RESULT_GENERATED_AT_MS: result_generated_at_ms,
+              KEY_RESULT_FILE: result_file,
+              KEY_RESULT_FILE_EXISTS: result_path.exists(),
+              KEY_LOG_FILE: log_file,
+              KEY_LOG_FILE_EXISTS: log_path.exists(),
+              KEY_CONTRACT_GUARD_LOG_FILE: guard_log_file,
+              KEY_CONTRACT_GUARD_LOG_FILE_EXISTS: guard_log_path.exists(),
+              KEY_CONTRACT_GUARD_SECTIONS_SEEN: guard_seen_sections,
+              KEY_CONTRACT_GUARD_STATUS: guard_status,
+          }
+          try:
+              summary_payload = build_summary_payload(summary_values_by_key)
+          except SummaryPayloadKeyMismatchError as e:
+              out.append("")
+              out.append("### Summary Payload Check")
+              out.append("- summary_payload_check: `mismatch`")
+              out.append(f"- summary_payload_check_reason: `{REASON_SUMMARY_PAYLOAD_KEY_MISMATCH}`")
+              out.append(f"- summary_payload_check_reason_raw: `{e}`")
+              summary_payload = {
+                  KEY_SUMMARY_SCHEMA_VERSION: summary_schema_version,
+                  KEY_HEALTH: "red",
+                  KEY_HEALTH_REASON: REASON_SUMMARY_PAYLOAD_KEY_MISMATCH,
+                  KEY_HEALTH_REASON_CODES: [REASON_SUMMARY_PAYLOAD_KEY_MISMATCH],
+                  KEY_PREFLIGHT_CHECK: preflight_check,
+                  KEY_PREFLIGHT_REASON: preflight_reason,
+                  KEY_PREFLIGHT_REASON_KNOWN: preflight_reason_known,
+                  KEY_CONTRACT_CHECK: contract_check,
+                  KEY_CONTRACT_REASON_CODE: contract_reason_code,
+                  KEY_CONTRACT_REASON_KNOWN: contract_reason_code_known,
+                  KEY_RESULT_SCHEMA_VERSION: result_schema_version,
+                  KEY_RESULT_GENERATED_AT_MS: result_generated_at_ms,
+                  KEY_RESULT_FILE: result_file,
+                  KEY_RESULT_FILE_EXISTS: result_path.exists(),
+                  KEY_LOG_FILE: log_file,
+                  KEY_LOG_FILE_EXISTS: log_path.exists(),
+                  KEY_CONTRACT_GUARD_LOG_FILE: guard_log_file,
+                  KEY_CONTRACT_GUARD_LOG_FILE_EXISTS: guard_log_path.exists(),
+                  KEY_CONTRACT_GUARD_SECTIONS_SEEN: guard_seen_sections,
+                  KEY_CONTRACT_GUARD_STATUS: guard_status,
+                  KEY_PAYLOAD_SHA256: "",
+              }
+              summary_payload = with_payload_sha256(summary_payload)
+          Path(summary_json_file).write_text(__import__("json").dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+          Path(ss).write_text("\n".join(out), encoding="utf-8")
+          PY
+
+      - name: Validate smoke summary contract
+        if: always()
+        run: |
+          make event-bus-smoke-summary-contract \
+            EVENT_BUS_SMOKE_SUMMARY_JSON_FILE="${EVENT_BUS_SMOKE_SUMMARY_JSON_FILE}" \
+            EVENT_BUS_SMOKE_SUMMARY_SCHEMA_VERSION="${{ inputs.expected_summary_schema_version }}" \
+            EVENT_BUS_SMOKE_SUMMARY_SCHEMA_MODE="${{ inputs.summary_schema_mode }}" \
+            EVENT_BUS_SMOKE_PAYLOAD_SHA256_MODE="${{ inputs.payload_sha256_mode }}"
+
+      - name: Upload smoke summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: event-bus-dlq-smoke-summary
+          path: ${{ env.EVENT_BUS_SMOKE_SUMMARY_JSON_FILE }}
+          if-no-files-found: warn

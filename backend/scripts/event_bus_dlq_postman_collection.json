@@ -1,0 +1,318 @@
+{
+  "info": {
+    "_postman_id": "f3a7d4ae-35f8-4ec6-9230-3d3d2b6e1f02",
+    "name": "OpenVitamin EventBus DLQ Verification",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "EventBus DLQ status, query, replay(dry-run/real), rate-limit and clear verification."
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000"
+    },
+    {
+      "key": "adminToken",
+      "value": "<ADMIN_TOKEN>"
+    },
+    {
+      "key": "sinceTs",
+      "value": "1745740000000"
+    },
+    {
+      "key": "idemReplayReal",
+      "value": "postman-replay-real-001"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Event Bus Status",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{adminToken}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/system/event-bus/status",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "system",
+            "event-bus",
+            "status"
+          ]
+        }
+      }
+    },
+    {
+      "name": "2. Query DLQ (event_type filter)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{adminToken}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/system/event-bus/dlq?limit=50&event_type=agent.status.changed",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "system",
+            "event-bus",
+            "dlq"
+          ],
+          "query": [
+            {
+              "key": "limit",
+              "value": "50"
+            },
+            {
+              "key": "event_type",
+              "value": "agent.status.changed"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "3. Query DLQ (since_ts filter)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{adminToken}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/system/event-bus/dlq?limit=50&since_ts={{sinceTs}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "system",
+            "event-bus",
+            "dlq"
+          ],
+          "query": [
+            {
+              "key": "limit",
+              "value": "50"
+            },
+            {
+              "key": "since_ts",
+              "value": "{{sinceTs}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "4. Replay DLQ (dry-run)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{adminToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "postman-replay-dryrun-001",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"confirm\": true,\n  \"dry_run\": true,\n  \"limit\": 20,\n  \"event_type\": \"agent.status.changed\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/system/event-bus/dlq/replay",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "system",
+            "event-bus",
+            "dlq",
+            "replay"
+          ]
+        }
+      }
+    },
+    {
+      "name": "5. Replay DLQ (real replay)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{adminToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{idemReplayReal}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"confirm\": true,\n  \"dry_run\": false,\n  \"limit\": 20\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/system/event-bus/dlq/replay",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "system",
+            "event-bus",
+            "dlq",
+            "replay"
+          ]
+        }
+      }
+    },
+    {
+      "name": "5.1 Replay DLQ (duplicate idempotent hit)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{adminToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{idemReplayReal}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"confirm\": true,\n  \"dry_run\": false,\n  \"limit\": 20\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/system/event-bus/dlq/replay",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "system",
+            "event-bus",
+            "dlq",
+            "replay"
+          ]
+        }
+      }
+    },
+    {
+      "name": "5.2 Replay DLQ (idempotency conflict)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{adminToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{idemReplayReal}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"confirm\": true,\n  \"dry_run\": true,\n  \"limit\": 20\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/system/event-bus/dlq/replay",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "system",
+            "event-bus",
+            "dlq",
+            "replay"
+          ]
+        }
+      }
+    },
+    {
+      "name": "6. Clear DLQ",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{adminToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"confirm\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/system/event-bus/dlq/clear",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "system",
+            "event-bus",
+            "dlq",
+            "clear"
+          ]
+        }
+      }
+    }
+  ]
+}

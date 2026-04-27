@@ -476,3 +476,398 @@ def test_challenge_issue_and_validate_uses_redis(monkeypatch):
 
     assert ok is True
     assert reused is False
+
+
+def test_event_bus_dlq_replay_idempotency_hit_returns_cached_result(monkeypatch):
+    client = _build_client()
+    calls = {"n": 0}
+
+    class _FakeDB:
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    class _FakeRecord:
+        def __init__(self, request_hash: str):
+            self.request_hash = request_hash
+            self.status = "processing"
+            self.error_message = None
+            self.response_ref = None
+
+    class _FakeClaim:
+        def __init__(self, record, is_new: bool, conflict: bool):
+            self.record = record
+            self.is_new = is_new
+            self.conflict = conflict
+
+    class _FakeIdempotencyService:
+        _store: dict[tuple[str, str, str], _FakeRecord] = {}
+
+        def __init__(self, db):
+            self.db = db
+
+        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600):
+            _ = ttl_seconds
+            k = (scope, owner_id, key)
+            row = self._store.get(k)
+            if row is not None:
+                return _FakeClaim(row, is_new=False, conflict=row.request_hash != request_hash)
+            row = _FakeRecord(request_hash=request_hash)
+            self._store[k] = row
+            return _FakeClaim(row, is_new=True, conflict=False)
+
+    async def _fake_replay(**kwargs):
+        _ = kwargs
+        await asyncio.sleep(0)
+        calls["n"] += 1
+        return {"dry_run": False, "candidate": 1, "replayed": 1, "failed": 0, "grouped": {"x": {"total": 1, "replayed": 1, "failed": 0}}}
+
+    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
+    monkeypatch.setattr(system_api, "replay_event_bus_dlq", _fake_replay)
+
+    headers = {"Idempotency-Key": "idem-replay-hit-1"}
+    body = {"confirm": True, "dry_run": False, "limit": 1}
+    resp1 = client.post("/api/system/event-bus/dlq/replay", json=body, headers=headers)
+    resp2 = client.post("/api/system/event-bus/dlq/replay", json=body, headers=headers)
+
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+    assert calls["n"] == 1
+    assert resp2.json().get("replayed") == 1
+
+
+def test_event_bus_dlq_replay_idempotency_conflict(monkeypatch):
+    client = _build_client()
+
+    class _FakeDB:
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    class _FakeRecord:
+        def __init__(self, request_hash: str):
+            self.request_hash = request_hash
+            self.status = "processing"
+            self.error_message = None
+            self.response_ref = None
+
+    class _FakeClaim:
+        def __init__(self, record, is_new: bool, conflict: bool):
+            self.record = record
+            self.is_new = is_new
+            self.conflict = conflict
+
+    class _FakeIdempotencyService:
+        _store: dict[tuple[str, str, str], _FakeRecord] = {}
+
+        def __init__(self, db):
+            self.db = db
+
+        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600):
+            _ = ttl_seconds
+            k = (scope, owner_id, key)
+            row = self._store.get(k)
+            if row is not None:
+                return _FakeClaim(row, is_new=False, conflict=row.request_hash != request_hash)
+            row = _FakeRecord(request_hash=request_hash)
+            self._store[k] = row
+            return _FakeClaim(row, is_new=True, conflict=False)
+
+    async def _fake_replay(**kwargs):
+        _ = kwargs
+        await asyncio.sleep(0)
+        return {"dry_run": False, "candidate": 1, "replayed": 1, "failed": 0, "grouped": {}}
+
+    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
+    monkeypatch.setattr(system_api, "replay_event_bus_dlq", _fake_replay)
+
+    headers = {"Idempotency-Key": "idem-replay-conflict-1"}
+    resp1 = client.post("/api/system/event-bus/dlq/replay", json={"confirm": True, "dry_run": False, "limit": 1}, headers=headers)
+    resp2 = client.post("/api/system/event-bus/dlq/replay", json={"confirm": True, "dry_run": True, "limit": 1}, headers=headers)
+
+    assert resp1.status_code == 200
+    assert resp2.status_code == 409
+    assert resp2.json().get("error", {}).get("code") == "idempotency_conflict"
+
+
+def test_event_bus_dlq_replay_dry_run_response_shape(monkeypatch):
+    client = _build_client()
+
+    async def _fake_replay(**kwargs):
+        await asyncio.sleep(0)
+        assert kwargs.get("dry_run") is True
+        return {
+            "dry_run": True,
+            "candidate": 3,
+            "replayed": 0,
+            "failed": 0,
+            "grouped": {"agent.status.changed": {"total": 3, "replayed": 0, "failed": 0}},
+        }
+
+    monkeypatch.setattr(system_api, "replay_event_bus_dlq", _fake_replay)
+
+    resp = client.post(
+        "/api/system/event-bus/dlq/replay",
+        json={"confirm": True, "dry_run": True, "limit": 5, "event_type": "agent.status.changed"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body.get("success") is True
+    assert body.get("dry_run") is True
+    assert body.get("candidate") == 3
+    assert "agent.status.changed" in (body.get("grouped") or {})
+
+
+def test_event_bus_dlq_replay_rate_limited_returns_structured_error(monkeypatch):
+    client = _build_client()
+
+    async def _fake_replay(**kwargs):
+        _ = kwargs
+        await asyncio.sleep(0)
+        raise RuntimeError("event bus replay is rate limited by min interval")
+
+    monkeypatch.setattr(system_api, "replay_event_bus_dlq", _fake_replay)
+
+    resp = client.post(
+        "/api/system/event-bus/dlq/replay",
+        json={"confirm": True, "dry_run": False, "limit": 1},
+    )
+    assert resp.status_code == 429
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "event_bus_dlq_replay_rate_limited"
+
+
+def test_event_bus_dlq_clear_requires_confirm():
+    client = _build_client()
+    resp = client.post("/api/system/event-bus/dlq/clear", json={"confirm": False})
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "event_bus_dlq_clear_confirmation_required"
+
+
+def test_event_bus_dlq_replay_requires_confirm():
+    client = _build_client()
+    resp = client.post(
+        "/api/system/event-bus/dlq/replay",
+        json={"confirm": False, "dry_run": True, "limit": 5},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "event_bus_dlq_replay_confirmation_required"
+
+
+def test_event_bus_dlq_limit_validation():
+    client = _build_client()
+    resp = client.get("/api/system/event-bus/dlq", params={"limit": 0})
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("header_name", ["Idempotency-Key", "X-Idempotency-Key", "X-Request-Id"])
+def test_event_bus_dlq_replay_accepts_multiple_idempotency_headers(monkeypatch, header_name: str):
+    client = _build_client()
+    calls = {"n": 0}
+
+    class _FakeDB:
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    class _FakeRecord:
+        def __init__(self, request_hash: str):
+            self.request_hash = request_hash
+            self.status = "processing"
+            self.error_message = None
+            self.response_ref = None
+
+    class _FakeClaim:
+        def __init__(self, record, is_new: bool, conflict: bool):
+            self.record = record
+            self.is_new = is_new
+            self.conflict = conflict
+
+    class _FakeIdempotencyService:
+        _store: dict[tuple[str, str, str], _FakeRecord] = {}
+
+        def __init__(self, db):
+            self.db = db
+
+        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600):
+            _ = ttl_seconds
+            k = (scope, owner_id, key)
+            row = self._store.get(k)
+            if row is not None:
+                return _FakeClaim(row, is_new=False, conflict=row.request_hash != request_hash)
+            row = _FakeRecord(request_hash=request_hash)
+            self._store[k] = row
+            return _FakeClaim(row, is_new=True, conflict=False)
+
+    async def _fake_replay(**kwargs):
+        _ = kwargs
+        await asyncio.sleep(0)
+        calls["n"] += 1
+        return {"dry_run": False, "candidate": 1, "replayed": 1, "failed": 0, "grouped": {}}
+
+    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
+    monkeypatch.setattr(system_api, "replay_event_bus_dlq", _fake_replay)
+
+    headers = {header_name: f"idem-{header_name}"}
+    body = {"confirm": True, "dry_run": False, "limit": 1}
+    resp1 = client.post("/api/system/event-bus/dlq/replay", json=body, headers=headers)
+    resp2 = client.post("/api/system/event-bus/dlq/replay", json=body, headers=headers)
+
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+    assert calls["n"] == 1
+
+
+def test_event_bus_dlq_replay_idempotency_header_priority(monkeypatch):
+    client = _build_client()
+    observed = {"key": None}
+
+    class _FakeDB:
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    class _FakeRecord:
+        def __init__(self, request_hash: str):
+            self.request_hash = request_hash
+            self.status = "processing"
+            self.error_message = None
+            self.response_ref = None
+
+    class _FakeClaim:
+        def __init__(self, record, is_new: bool, conflict: bool):
+            self.record = record
+            self.is_new = is_new
+            self.conflict = conflict
+
+    class _FakeIdempotencyService:
+        def __init__(self, db):
+            self.db = db
+
+        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600):
+            _ = (scope, owner_id, request_hash, ttl_seconds)
+            observed["key"] = key
+            return _FakeClaim(_FakeRecord(request_hash=request_hash), is_new=True, conflict=False)
+
+    async def _fake_replay(**kwargs):
+        _ = kwargs
+        await asyncio.sleep(0)
+        return {"dry_run": False, "candidate": 1, "replayed": 1, "failed": 0, "grouped": {}}
+
+    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
+    monkeypatch.setattr(system_api, "replay_event_bus_dlq", _fake_replay)
+
+    headers = {
+        "Idempotency-Key": "primary-key",
+        "X-Idempotency-Key": "secondary-key",
+        "X-Request-Id": "request-id-key",
+    }
+    resp = client.post(
+        "/api/system/event-bus/dlq/replay",
+        json={"confirm": True, "dry_run": False, "limit": 1},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert observed["key"] == "primary-key"
+
+
+def test_event_bus_dlq_replay_idempotency_in_progress(monkeypatch):
+    client = _build_client()
+
+    class _FakeDB:
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    class _FakeRecord:
+        def __init__(self):
+            self.request_hash = "h1"
+            self.status = "processing"
+            self.error_message = None
+            self.response_ref = None
+
+    class _FakeClaim:
+        def __init__(self, record, is_new: bool, conflict: bool):
+            self.record = record
+            self.is_new = is_new
+            self.conflict = conflict
+
+    class _FakeIdempotencyService:
+        def __init__(self, db):
+            self.db = db
+
+        def claim(self, **kwargs):
+            _ = kwargs
+            return _FakeClaim(_FakeRecord(), is_new=False, conflict=False)
+
+    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
+
+    resp = client.post(
+        "/api/system/event-bus/dlq/replay",
+        headers={"Idempotency-Key": "idem-replay-processing"},
+        json={"confirm": True, "dry_run": False, "limit": 1},
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "idempotency_in_progress"
+
+
+def test_event_bus_dlq_replay_idempotency_previous_failed(monkeypatch):
+    client = _build_client()
+
+    class _FakeDB:
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    class _FakeRecord:
+        def __init__(self):
+            self.request_hash = "h1"
+            self.status = "failed"
+            self.error_message = "previous replay failed"
+            self.response_ref = None
+
+    class _FakeClaim:
+        def __init__(self, record, is_new: bool, conflict: bool):
+            self.record = record
+            self.is_new = is_new
+            self.conflict = conflict
+
+    class _FakeIdempotencyService:
+        def __init__(self, db):
+            self.db = db
+
+        def claim(self, **kwargs):
+            _ = kwargs
+            return _FakeClaim(_FakeRecord(), is_new=False, conflict=False)
+
+    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
+
+    resp = client.post(
+        "/api/system/event-bus/dlq/replay",
+        headers={"Idempotency-Key": "idem-replay-failed"},
+        json={"confirm": True, "dry_run": False, "limit": 1},
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "idempotency_previous_failed"

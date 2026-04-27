@@ -21,6 +21,7 @@ from core.data.models.workflow import (
 from core.data.models.image_generation import ImageGenerationJobORM, ImageGenerationWarmupORM
 from core.data.models.audit import AuditLogORM
 from core.data.models.idempotency import IdempotencyRecordORM
+from core.data.models.event_dlq import EventDlqORM
 
 __all__ = [
     "SystemSetting",
@@ -45,4 +46,5 @@ __all__ = [
     "ImageGenerationWarmupORM",
     "AuditLogORM",
     "IdempotencyRecordORM",
+    "EventDlqORM",
 ]

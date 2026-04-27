@@ -69,7 +69,8 @@ class PluginExecutor:
         self,
         name: str,
         input_data: Dict[str, Any],
-        context: PluginContext
+        context: PluginContext,
+        version: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         执行指定名称的插件
@@ -79,7 +80,12 @@ class PluginExecutor:
         :return: 插件执行结果
         :raises ValueError: 如果插件不存在、权限不足或 Schema 验证失败
         """
-        plugin = self.registry.get(name)
+        resolved_name = name
+        resolved_version = version
+        if "@" in name and version is None:
+            resolved_name, resolved_version = name.split("@", 1)
+
+        plugin = self.registry.get(resolved_name, resolved_version)
         if not plugin:
             raise ValueError(f"Plugin '{name}' not found")
 

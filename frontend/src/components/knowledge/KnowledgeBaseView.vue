@@ -97,6 +97,107 @@ const storageBackend = ref('SQLite-vec')
 
 // System status
 const indexingQueueStatus = ref<'idle' | 'active'>('idle')
+const ENRICH_CONCURRENCY = 4
+
+const formatRelativeTime = (iso?: string | null): string => {
+  if (!iso) return t('common.time.never')
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return t('common.time.unknown')
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+  if (diffMins < 1) return t('common.time.just_now')
+  if (diffMins < 60) {
+    return diffMins === 1 ? t('common.time.min_ago', { n: diffMins }) : t('common.time.mins_ago', { n: diffMins })
+  }
+  if (diffHours < 24) {
+    return diffHours === 1 ? t('common.time.hour_ago', { n: diffHours }) : t('common.time.hours_ago', { n: diffHours })
+  }
+  if (diffDays < 7) {
+    return diffDays === 1 ? t('common.time.day_ago', { n: diffDays }) : t('common.time.days_ago', { n: diffDays })
+  }
+  return date.toLocaleDateString()
+}
+
+const resolveKnowledgeIcon = (description?: string): any => {
+  const desc = (description || '').toLowerCase()
+  if (desc.includes('wiki') || desc.includes('notion')) return Globe
+  if (desc.includes('pdf') || desc.includes('document')) return File
+  if (desc.includes('team') || desc.includes('project')) return Users
+  return Folder
+}
+
+const applyKnowledgeBasePatch = (kbId: string, patch: Partial<KnowledgeBase>) => {
+  const index = knowledgeBases.value.findIndex((item) => item.id === kbId)
+  if (index < 0) return
+  const current = knowledgeBases.value[index]
+  if (!current) return
+  knowledgeBases.value[index] = {
+    ...current,
+    ...patch,
+  }
+}
+
+const runWithConcurrency = async (tasks: Array<() => Promise<void>>, concurrency: number) => {
+  let cursor = 0
+  const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
+    while (cursor < tasks.length) {
+      const current = cursor
+      cursor += 1
+      const task = tasks[current]
+      if (!task) continue
+      await task()
+    }
+  })
+  await Promise.all(workers)
+}
+
+const enrichKnowledgeBase = async (kbId: string) => {
+  try {
+    const docsResponse = await listDocuments(kbId)
+    const docs = docsResponse.data || []
+    const docsCount = docs.length
+    const chunksResponse = await listChunks(kbId, 1)
+    const chunksCount = chunksResponse.total || 0
+
+    let status: 'READY' | 'INDEXING' | 'ERROR' = 'READY'
+    const hasIndexing = docs.some((d: any) =>
+      d.status === 'PARSING' ||
+      d.status === 'CHUNKING' ||
+      d.status === 'EMBEDDING' ||
+      d.status === 'INDEXING'
+    )
+    const hasError = docs.some((d: any) =>
+      d.status === 'FAILED_PARSE' ||
+      d.status === 'FAILED_EMBED'
+    )
+    if (hasIndexing) status = 'INDEXING'
+    else if (hasError) status = 'ERROR'
+
+    const mostRecent = docs.reduce((latest: any, doc: any) => {
+      const docDate = new Date(doc.updated_at || doc.created_at)
+      const latestDate = latest ? new Date(latest.updated_at || latest.created_at) : new Date(0)
+      return docDate > latestDate ? doc : latest
+    }, null)
+
+    applyKnowledgeBasePatch(kbId, {
+      status,
+      docs: docsCount,
+      chunks: chunksCount,
+      lastIndexed: formatRelativeTime(mostRecent?.updated_at || mostRecent?.created_at || null),
+    })
+  } catch (err) {
+    console.error(`Failed to enrich KB ${kbId}:`, err)
+    applyKnowledgeBasePatch(kbId, {
+      status: 'ERROR',
+      docs: 0,
+      chunks: 0,
+      lastIndexed: t('common.time.unknown'),
+    })
+  }
+}
 
 // Load knowledge bases
 const loadKnowledgeBases = async () => {
@@ -105,116 +206,27 @@ const loadKnowledgeBases = async () => {
   try {
     const response = await listKnowledgeBases()
     const kbs = response.data || []
-    
-    // Load additional data for each KB
-    const enrichedKBs = await Promise.all(
-      kbs.map(async (kb: any) => {
-        try {
-          // Load documents count
-          const docsResponse = await listDocuments(kb.id)
-          const docs = docsResponse.data || []
-          const docsCount = docs.length
-          
-          // Load chunks count
-          const chunksResponse = await listChunks(kb.id, 1) // Just get total
-          const chunksCount = chunksResponse.total || 0
-          
-          // Determine status based on documents
-          let status: 'READY' | 'INDEXING' | 'ERROR' = 'READY'
-          const hasIndexing = docs.some((d: any) => 
-            d.status === 'PARSING' || 
-            d.status === 'CHUNKING' || 
-            d.status === 'EMBEDDING' ||
-            d.status === 'INDEXING'
-          )
-          const hasError = docs.some((d: any) => 
-            d.status === 'FAILED_PARSE' || 
-            d.status === 'FAILED_EMBED'
-          )
-          
-          if (hasIndexing) {
-            status = 'INDEXING'
-          } else if (hasError) {
-            status = 'ERROR'
-          }
-          
-          // Map embedding model ID to display name
-          const embeddingModel = kb.embedding_model_id || 'Unknown'
-          
-          // Format last indexed (use most recent document updated_at)
-          let lastIndexed = t('common.time.never')
-          if (docs.length > 0) {
-            const mostRecent = docs.reduce((latest: any, doc: any) => {
-              const docDate = new Date(doc.updated_at || doc.created_at)
-              const latestDate = latest ? new Date(latest.updated_at || latest.created_at) : new Date(0)
-              return docDate > latestDate ? doc : latest
-            }, null)
-            
-            if (mostRecent) {
-              const date = new Date(mostRecent.updated_at || mostRecent.created_at)
-              const now = new Date()
-              const diffMs = now.getTime() - date.getTime()
-              const diffMins = Math.floor(diffMs / 60000)
-              const diffHours = Math.floor(diffMs / 3600000)
-              const diffDays = Math.floor(diffMs / 86400000)
-              
-              if (diffMins < 1) {
-                lastIndexed = t('common.time.just_now')
-              } else if (diffMins < 60) {
-                lastIndexed = diffMins === 1 ? t('common.time.min_ago', { n: diffMins }) : t('common.time.mins_ago', { n: diffMins })
-              } else if (diffHours < 24) {
-                lastIndexed = diffHours === 1 ? t('common.time.hour_ago', { n: diffHours }) : t('common.time.hours_ago', { n: diffHours })
-              } else if (diffDays < 7) {
-                lastIndexed = diffDays === 1 ? t('common.time.day_ago', { n: diffDays }) : t('common.time.days_ago', { n: diffDays })
-              } else {
-                lastIndexed = date.toLocaleDateString()
-              }
-            }
-          }
-          
-          // Determine icon based on description or default
-          let icon = Folder
-          const desc = (kb.description || '').toLowerCase()
-          if (desc.includes('wiki') || desc.includes('notion')) {
-            icon = Globe
-          } else if (desc.includes('pdf') || desc.includes('document')) {
-            icon = File
-          } else if (desc.includes('team') || desc.includes('project')) {
-            icon = Users
-          }
-          
-          return {
-            ...kb,
-            sourceType: 'LOCAL STORAGE',
-            status,
-            docs: docsCount,
-            chunks: chunksCount,
-            embeddingModel,
-            lastIndexed,
-            icon,
-          }
-        } catch (err) {
-          console.error(`Failed to load data for KB ${kb.id}:`, err)
-          return {
-            ...kb,
-            sourceType: 'LOCAL STORAGE',
-            status: 'ERROR' as const,
-            docs: 0,
-            chunks: 0,
-            embeddingModel: kb.embedding_model_id || t('common.time.unknown'),
-            lastIndexed: t('common.time.unknown'),
-            icon: Folder,
-          }
-        }
-      })
-    )
-    
-    knowledgeBases.value = enrichedKBs
-    
-    // Update indexing queue status
-    const hasIndexing = enrichedKBs.some(kb => kb.status === 'INDEXING')
-    indexingQueueStatus.value = hasIndexing ? 'active' : 'idle'
-    
+
+    // 先渲染基础列表，避免等待所有统计请求完成后才出首屏
+    knowledgeBases.value = kbs.map((kb: any) => ({
+      ...kb,
+      sourceType: 'LOCAL STORAGE',
+      status: 'READY' as const,
+      docs: 0,
+      chunks: 0,
+      embeddingModel: kb.embedding_model_id || t('common.time.unknown'),
+      lastIndexed: t('common.time.never'),
+      icon: resolveKnowledgeIcon(kb.description),
+    }))
+    indexingQueueStatus.value = 'idle'
+
+    // 后台限流并发补全详情，避免大量 KB 时请求风暴
+    const tasks = kbs.map((kb: any) => async () => {
+      await enrichKnowledgeBase(kb.id)
+      const hasIndexing = knowledgeBases.value.some(item => item.status === 'INDEXING')
+      indexingQueueStatus.value = hasIndexing ? 'active' : 'idle'
+    })
+    await runWithConcurrency(tasks, ENRICH_CONCURRENCY)
   } catch (err) {
     console.error('Failed to load knowledge bases:', err)
     error.value = err instanceof Error ? err.message : 'Failed to load knowledge bases'

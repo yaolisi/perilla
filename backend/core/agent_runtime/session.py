@@ -7,6 +7,7 @@ AgentSession 存储（ORM 版本）
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from core.data.base import db_session
 from core.data.models.session import AgentSession as AgentSessionORM
 from log import logger
 from core.types import Message
+from core.events import get_event_bus
 
 
 class AgentSession(BaseModel):
@@ -93,10 +95,40 @@ class AgentSessionStore:
                     },
                 )
                 db.execute(stmt)
+            self._emit_status_changed_event(session)
             return True
         except Exception as e:
             logger.error(f"[AgentSessionStore] save_session failed: {e}")
             return False
+
+    def _emit_status_changed_event(self, session: AgentSession) -> None:
+        payload = {
+            "session_id": session.session_id,
+            "agent_id": session.agent_id,
+            "user_id": session.user_id,
+            "trace_id": session.trace_id,
+            "status": session.status,
+            "step": session.step,
+        }
+
+        async def _publish() -> None:
+            try:
+                await get_event_bus().publish(
+                    event_type="agent.status.changed",
+                    payload=payload,
+                    source="agent_session_store",
+                )
+            except Exception as exc:
+                logger.debug("[AgentSessionStore] emit agent.status.changed failed: %s", exc)
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_publish())
+        except RuntimeError:
+            try:
+                asyncio.run(_publish())
+            except Exception:
+                pass
 
     def get_session(self, session_id: str) -> Optional[AgentSession]:
         """获取会话（优化查询性能）"""

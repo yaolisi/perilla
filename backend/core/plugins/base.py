@@ -7,7 +7,7 @@ class Plugin(ABC):
     Plugin 抽象基类
     所有插件必须继承此类并实现 execute 方法
     
-    生命周期：load → initialize → ready → execute → teardown
+    生命周期：load → initialize → ready → execute → shutdown
     """
     name: str
     description: str
@@ -58,10 +58,16 @@ class Plugin(ABC):
         """
         ...
 
-    async def teardown(self):
+    async def shutdown(self):
         """
         清理资源
         在插件卸载时调用
         """
         self._ready = False
         self._initialized = False
+
+    async def teardown(self):
+        """
+        兼容旧生命周期命名
+        """
+        await self.shutdown()
