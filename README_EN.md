@@ -18,9 +18,10 @@ This repository root is a **self-contained deliverable**: `backend/`, `frontend/
 |---------|--------|
 | [Capabilities](#capabilities-and-use-cases) | Features and scenarios |
 | [Architecture](#architecture-and-tech-stack) | Components, diagrams, inference and agent flows |
+| [Governance and security](#governance-and-security-summary) | RBAC, tenant isolation, CSRF, audit |
 | [Quick start](#quick-start) | Conda vs Docker |
 | [Makefile](#makefile-optional) | Common `make` targets |
-| [Security and operations](#security-and-operations-summary) | XSS/CSRF/RBAC, regression scripts |
+| [Security and operations](#security-and-operations-summary) | Deployment hints, regression scripts, CI |
 | [Recent updates](#recent-updates-2026) | UI, workflow queue, idempotency, HITL |
 | [Backend layout](#backend-layout) | Top-level backend folders |
 | [Documentation index](#documentation-index) | Tutorials and `docs/` |
@@ -38,7 +39,7 @@ This repository root is a **self-contained deliverable**: `backend/`, `frontend/
 - Agents: intent rules, skill discovery, tool calling, direct tool results
 - Workflows: versioning, execution history, branch/loop governance; durable queue and approvals (see below)
 - Knowledge / RAG, memory, backups, logs, settings
-- Optional [OpenClaw](docs/OPENCLAW_BACKEND_CONFIG.md) backend integration
+- Optional [OpenClaw](docs/OPENCLAW_BACKEND_CONFIG.md) backend integration behind the unified gateway
 
 **Typical uses**: private deployment, multimodal chat, local text-to-image, agent + workflow orchestration, audited environments.
 
@@ -142,7 +143,7 @@ flowchart TD
   IMG --> API["Image Generation API"]
 ```
 
-Parallel orchestration uses `execution_strategy` (`serial` / `parallel_kernel`) and `max_parallel_nodes`. Event APIs support instance replay and session aggregation. See the full tutorial section on parallel agents and memory.
+Parallel orchestration uses `execution_strategy` (`serial` / `parallel_kernel`) and `max_parallel_nodes`. Event APIs support instance replay and session aggregation. Details are in `tutorials/tutorial.md` (Chinese): search for **Agent 并行编排与记忆** (`## 16.2`).
 
 ### Image generation control plane
 
@@ -170,7 +171,7 @@ flowchart TD
 - Web: XSS sanitization for markdown/Mermaid; CSRF double-submit cookies
 - Abuse control: in-memory rate limiting by key/IP
 - Observability: audit log, `X-Request-Id` / `X-Trace-Id`
-- Production: guardrails when `DEBUG=false`; strict mode blocks unsafe defaults
+- Production: guardrail convergence when `DEBUG=false`; unsafe defaults blocked when `SECURITY_GUARDRAILS_STRICT` is enabled (recommended)
 
 Example API domains: Chat/Session/Memory, System/Events/Logs, Knowledge/RAG, Agents/Tools/Skills, VLM/ASR/Images, Workflows, Audit, Backup.
 
@@ -199,7 +200,7 @@ From the repository root:
 
 ```bash
 ./run-all.sh
-# or ./run-backend.sh and ./run-frontend.sh
+# or ./run-backend.sh and ./run-frontend.sh in separate terminals
 ```
 
 Defaults: `http://localhost:5173` (frontend), `http://localhost:8000` (backend).
@@ -210,10 +211,10 @@ Defaults: `http://localhost:5173` (frontend), `http://localhost:8000` (backend).
 test -f backend/main.py && test -f frontend/package.json && echo OK
 bash scripts/install.sh
 # or: make bootstrap
-# production-like first run: make bootstrap-prod
+# production-like first install: make bootstrap-prod (stricter doctor; set DOCTOR_STRICT_WARNINGS=0 to allow warnings)
 ```
 
-Operations: `bash scripts/status.sh`, `scripts/logs.sh`, `scripts/healthcheck.sh`, `scripts/doctor.sh`. Compose files at repo root; Dockerfiles under `docker/`. Copy `.env.example` to `.env`. GPU: `docker-compose.gpu.yml`. Stricter prod: `docker-compose.prod.yml`.
+Operations: `bash scripts/status.sh`, `scripts/logs.sh`, `scripts/healthcheck.sh`, `scripts/doctor.sh`. Compose files at repo root (`docker-compose*.yml`); Dockerfiles under `docker/`. Copy `.env.example` to `.env` and tune ports, `CORS_*`, `CSRF_*`, RBAC, tenant policy. GPU: `docker-compose.gpu.yml`. Stricter prod defaults: `docker-compose.prod.yml`.
 
 ### First-time UI walkthrough
 
@@ -254,7 +255,7 @@ make help
 
 ## Security and operations summary
 
-Before internet or shared hosting, read [tutorials/security-review-hints.md](tutorials/security-review-hints.md) and [tutorials/security-review-hints-en.md](tutorials/security-review-hints-en.md). Key points: requests without `X-Api-Key` fall back to `rbac_default_role` (not implicitly read-only); keep `DEBUG=false` and `SECURITY_GUARDRAILS_STRICT=true`; set `CORS_ALLOWED_ORIGINS`, narrow `FILE_READ_ALLOWED_ROOTS`, configure HTTP tool allowlists.
+Before internet or shared hosting, read [tutorials/security-review-hints.md](tutorials/security-review-hints.md) (Chinese full notes) and [tutorials/security-review-hints-en.md](tutorials/security-review-hints-en.md) (English summary). Key points: requests without `X-Api-Key` fall back to `rbac_default_role` (not implicitly read-only); keep `DEBUG=false` and `SECURITY_GUARDRAILS_STRICT=true`; set `CORS_ALLOWED_ORIGINS`, narrow `FILE_READ_ALLOWED_ROOTS`, configure HTTP tool allowlists when HTTP tools are enabled.
 
 **Local security regression (recommended)**
 
@@ -282,13 +283,13 @@ Optional thresholds: `SECURITY_SLOW_THRESHOLD_SECONDS`, `TENANT_SECURITY_SLOW_TH
 
 ```text
 backend/
-├── api/
+├── api/                    # HTTP routes
 ├── middleware/
-├── core/
-├── execution_kernel/
+├── core/                   # Inference, agents, workflows, knowledge, plugins, …
+├── execution_kernel/       # DAG execution engine
 ├── alembic/
 ├── config/
-├── data/
+├── data/                   # Runtime data (platform.db, generated_images, …)
 ├── scripts/
 └── tests/
 ```
