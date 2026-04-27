@@ -128,6 +128,7 @@ class WorkflowVersionService:
         WorkflowVersionService._normalize_agent_config(cfg, workflow_node_type)
         WorkflowVersionService._normalize_tool_config(cfg, workflow_node_type)
         WorkflowVersionService._normalize_sub_workflow_config(cfg, workflow_node_type)
+        WorkflowVersionService._normalize_parallel_config(cfg, workflow_node_type)
 
         return WorkflowNode(
             id=node.id,
@@ -179,6 +180,21 @@ class WorkflowVersionService:
             selector = "fixed"
         cfg["target_version_selector"] = selector
         cfg.pop("version_selector", None)
+
+    @staticmethod
+    def _normalize_parallel_config(cfg: Dict[str, Any], workflow_node_type: str) -> None:
+        if workflow_node_type != "parallel":
+            return
+        max_parallel = cfg.get("max_parallel")
+        if max_parallel is None and cfg.get("max_concurrency") is not None:
+            max_parallel = cfg.get("max_concurrency")
+        if max_parallel is not None:
+            try:
+                cfg["max_parallel"] = int(max_parallel)
+            except (TypeError, ValueError):
+                # 保留原值给后续校验报错
+                cfg["max_parallel"] = max_parallel
+        cfg.pop("max_concurrency", None)
 
     @staticmethod
     def _normalize_edge(edge: WorkflowEdge) -> WorkflowEdge:

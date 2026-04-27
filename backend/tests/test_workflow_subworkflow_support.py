@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
+import types
 
 import pytest
 
@@ -17,6 +19,16 @@ import core.workflows.runtime.workflow_runtime as workflow_runtime_module
 from core.workflows.runtime.subworkflow import apply_output_mapping, build_child_input
 from core.workflows.services.workflow_version_service import WorkflowVersionService
 from execution_kernel.engine.context import GraphContext
+from execution_kernel.engine.scheduler import Scheduler
+from execution_kernel.engine.control_flow import execute_condition_node
+from execution_kernel.models.node_models import NodeState
+from execution_kernel.models.graph_definition import (
+    EdgeDefinition,
+    EdgeTrigger,
+    GraphDefinition,
+    NodeDefinition,
+    NodeType,
+)
 from api.workflows import _build_execution_call_chain
 from config.settings import settings
 from core.agent_runtime.session import AgentSession
@@ -58,6 +70,20 @@ def test_graph_runtime_adapter_accepts_multi_agent_role_nodes() -> None:
         WorkflowNode(id="reflector-1", type="tool", config={"workflow_node_type": "reflector", "agent_id": "agent.reflector"}),
     ]
     version = _build_version(workflow_id="wf-parent", version_id="v-parent-roles", nodes=nodes)
+    errors = GraphRuntimeAdapter.validate_compatibility(version)
+    assert errors == []
+
+
+def test_graph_runtime_adapter_accepts_parallel_node() -> None:
+    parallel_node = WorkflowNode(
+        id="parallel-1",
+        type="tool",
+        config={
+            "workflow_node_type": "parallel",
+            "max_parallel": 3,
+        },
+    )
+    version = _build_version(workflow_id="wf-parent", version_id="v-parent-parallel", nodes=[parallel_node])
     errors = GraphRuntimeAdapter.validate_compatibility(version)
     assert errors == []
 
@@ -110,6 +136,193 @@ def test_workflow_runtime_resolve_reflector_retry_config_supports_workflow_globa
     assert cfg["fallback_agent_id"] == "agent.global.backup"
 
 
+@pytest.mark.asyncio
+async def test_workflow_runtime_loop_control_node_supports_for_loop_and_retry(monkeypatch) -> None:
+    runtime = object.__new__(WorkflowRuntime)
+    context = GraphContext(global_data={"input_data": {}}, node_outputs={}, current_node_input={})
+    call_history: list[int] = []
+    failed_once = {"value": False}
+
+    async def _fake_body(self, *, node_def, body_cfg, input_data, context):  # type: ignore[no-untyped-def]
+        await asyncio.sleep(0)
+        idx = int(input_data.get("loop_index", -1))
+        call_history.append(idx)
+        if idx == 1 and not failed_once["value"]:
+            failed_once["value"] = True
+            raise RuntimeError("transient")
+        return {"last_index": idx}
+
+    monkeypatch.setattr(runtime, "_execute_loop_body", types.MethodType(_fake_body, runtime))
+    result = await runtime._execute_loop_control_node(  # noqa: SLF001
+        node_def=SimpleNamespace(id="loop-1"),
+        input_data={},
+        context=context,
+        cfg={
+            "loop_type": "for",
+            "loop_count": 3,
+            "max_retries": 1,
+            "retry_interval_seconds": 0,
+            "loop_body": {"type": "tool"},
+        },
+    )
+    assert result["type"] == "loop_result"
+    assert result["iterations"] == 3
+    assert result["last_index"] == 2
+    assert call_history == [0, 1, 1, 2]
+
+
+def test_workflow_runtime_parallel_control_node_emits_parallel_meta() -> None:
+    runtime = object.__new__(WorkflowRuntime)
+    result = runtime._execute_parallel_control_node(  # noqa: SLF001
+        node_def=SimpleNamespace(id="parallel-1"),
+        input_data={"seed": 1},
+        context=GraphContext(global_data={"input_data": {}}, node_outputs={}, current_node_input={}),
+        cfg={"max_parallel": 4},
+    )
+    assert result["type"] == "parallel_gate"
+    assert result["parallel_ready"] is True
+    assert result["__workflow_parallel_meta"]["max_parallel"] == 4
+
+
+def test_scheduler_select_nodes_with_parallel_limits_blocks_when_limit_reached() -> None:
+    scheduler = object.__new__(Scheduler)
+    graph_def = GraphDefinition(
+        id="g-parallel",
+        version="1.0.0",
+        nodes=[
+            NodeDefinition(id="parallel-1", type=NodeType.TOOL, config={"workflow_node_type": "parallel", "max_parallel": 2}),
+            NodeDefinition(id="a", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+            NodeDefinition(id="b", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+            NodeDefinition(id="c", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+            NodeDefinition(id="d", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+        ],
+        edges=[
+            EdgeDefinition(from_node="parallel-1", to_node="a", on=EdgeTrigger.SUCCESS),
+            EdgeDefinition(from_node="parallel-1", to_node="b", on=EdgeTrigger.SUCCESS),
+            EdgeDefinition(from_node="parallel-1", to_node="c", on=EdgeTrigger.SUCCESS),
+        ],
+    )
+    all_nodes = [
+        SimpleNamespace(node_id="a", state=SimpleNamespace(value="running")),
+        SimpleNamespace(node_id="b", state=SimpleNamespace(value="running")),
+        SimpleNamespace(node_id="c", state=SimpleNamespace(value="pending")),
+        SimpleNamespace(node_id="d", state=SimpleNamespace(value="pending")),
+    ]
+    executable_nodes = [
+        SimpleNamespace(node_id="c", state=SimpleNamespace(value="pending")),
+        SimpleNamespace(node_id="d", state=SimpleNamespace(value="pending")),
+    ]
+    selected = scheduler._select_nodes_with_parallel_limits(  # noqa: SLF001
+        executable_nodes=executable_nodes,
+        graph_def=graph_def,
+        all_nodes=all_nodes,
+        available_slots=2,
+    )
+    assert [n.node_id for n in selected] == ["d"]
+
+
+def test_scheduler_select_nodes_with_parallel_limits_allows_within_limit() -> None:
+    scheduler = object.__new__(Scheduler)
+    graph_def = GraphDefinition(
+        id="g-parallel-allow",
+        version="1.0.0",
+        nodes=[
+            NodeDefinition(id="parallel-1", type=NodeType.TOOL, config={"workflow_node_type": "parallel", "max_parallel": 2}),
+            NodeDefinition(id="a", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+            NodeDefinition(id="b", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+        ],
+        edges=[
+            EdgeDefinition(from_node="parallel-1", to_node="a", on=EdgeTrigger.SUCCESS),
+            EdgeDefinition(from_node="parallel-1", to_node="b", on=EdgeTrigger.SUCCESS),
+        ],
+    )
+    all_nodes = [
+        SimpleNamespace(node_id="a", state=SimpleNamespace(value="running")),
+        SimpleNamespace(node_id="b", state=SimpleNamespace(value="pending")),
+    ]
+    executable_nodes = [
+        SimpleNamespace(node_id="b", state=SimpleNamespace(value="pending")),
+    ]
+    selected = scheduler._select_nodes_with_parallel_limits(  # noqa: SLF001
+        executable_nodes=executable_nodes,
+        graph_def=graph_def,
+        all_nodes=all_nodes,
+        available_slots=1,
+    )
+    assert [n.node_id for n in selected] == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_condition_branch_routes_by_amount() -> None:
+    scheduler = object.__new__(Scheduler)
+    graph_def = GraphDefinition(
+        id="g-condition-routing",
+        version="1.0.0",
+        nodes=[
+            NodeDefinition(id="cond-1", type=NodeType.CONDITION, config={"workflow_node_type": "condition"}),
+            NodeDefinition(id="ceo-approval", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+            NodeDefinition(id="manager-approval", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+        ],
+        edges=[
+            EdgeDefinition(from_node="cond-1", to_node="ceo-approval", on=EdgeTrigger.CONDITION_TRUE),
+            EdgeDefinition(from_node="cond-1", to_node="manager-approval", on=EdgeTrigger.CONDITION_FALSE),
+        ],
+    )
+    all_nodes_true = [
+        SimpleNamespace(node_id="cond-1", output_data={"condition_result": True}),
+    ]
+    node_states_true = {"cond-1": NodeState.SUCCESS}
+    ceo_ready = await scheduler._check_dependencies_with_edges(  # noqa: SLF001
+        "ceo-approval", graph_def, node_states_true, all_nodes_true
+    )
+    manager_ready = await scheduler._check_dependencies_with_edges(  # noqa: SLF001
+        "manager-approval", graph_def, node_states_true, all_nodes_true
+    )
+    assert ceo_ready is True
+    assert manager_ready is False
+
+    all_nodes_false = [
+        SimpleNamespace(node_id="cond-1", output_data={"condition_result": False}),
+    ]
+    node_states_false = {"cond-1": NodeState.SUCCESS}
+    ceo_ready_false = await scheduler._check_dependencies_with_edges(  # noqa: SLF001
+        "ceo-approval", graph_def, node_states_false, all_nodes_false
+    )
+    manager_ready_false = await scheduler._check_dependencies_with_edges(  # noqa: SLF001
+        "manager-approval", graph_def, node_states_false, all_nodes_false
+    )
+    assert ceo_ready_false is False
+    assert manager_ready_false is True
+
+
+@pytest.mark.asyncio
+async def test_workflow_runtime_loop_control_node_supports_while_condition_progress(monkeypatch) -> None:
+    runtime = object.__new__(WorkflowRuntime)
+    context = GraphContext(global_data={"input_data": {}}, node_outputs={}, current_node_input={})
+
+    async def _fake_body(self, *, node_def, body_cfg, input_data, context):  # type: ignore[no-untyped-def]
+        await asyncio.sleep(0)
+        remaining = int(input_data.get("remaining", 0))
+        return {"remaining": max(0, remaining - 1)}
+
+    monkeypatch.setattr(runtime, "_execute_loop_body", types.MethodType(_fake_body, runtime))
+    result = await runtime._execute_loop_control_node(  # noqa: SLF001
+        node_def=SimpleNamespace(id="loop-while-1"),
+        input_data={"remaining": 3},
+        context=context,
+        cfg={
+            "loop_type": "while",
+            "condition_expression": "${input.remaining} > 0",
+            "max_iterations": 10,
+            "loop_body": {"type": "tool"},
+        },
+    )
+    assert result["type"] == "loop_result"
+    assert result["iterations"] == 3
+    assert result["exit_reason"] == "condition_false"
+    assert result["remaining"] == 0
+
+
 def test_workflow_runtime_agent_output_includes_recovery_metadata() -> None:
     runtime = object.__new__(WorkflowRuntime)
     session = AgentSession(
@@ -128,6 +341,105 @@ def test_workflow_runtime_agent_output_includes_recovery_metadata() -> None:
     )
     assert output["agent_role"] == "reflector"
     assert output["recovery"]["fallback_used"] is True
+
+
+@pytest.mark.asyncio
+async def test_enterprise_flow_loop_condition_parallel_end_to_end(monkeypatch) -> None:
+    runtime = object.__new__(WorkflowRuntime)
+    context = GraphContext(global_data={"input_data": {}}, node_outputs={}, current_node_input={})
+
+    # 场景1：数据同步流程，每轮将 remaining 减一，直到 0（模拟每日执行）
+    async def _sync_body(self, *, node_def, body_cfg, input_data, context):  # type: ignore[no-untyped-def]
+        await asyncio.sleep(0)
+        remaining = int(input_data.get("remaining", 0))
+        return {"remaining": max(0, remaining - 1), "synced": True}
+
+    monkeypatch.setattr(runtime, "_execute_loop_body", types.MethodType(_sync_body, runtime))
+    loop_result = await runtime._execute_loop_control_node(  # noqa: SLF001
+        node_def=SimpleNamespace(id="loop-sync-30days"),
+        input_data={"remaining": 30},
+        context=context,
+        cfg={
+            "loop_type": "while",
+            "condition_expression": "${input.remaining} > 0",
+            "max_iterations": 60,
+            "loop_body": {"type": "tool"},
+        },
+    )
+    assert loop_result["iterations"] == 30
+    assert loop_result["remaining"] == 0
+    assert loop_result["exit_reason"] == "condition_false"
+
+    # 场景2：订单审核流程，金额 > 10w 走 CEO，否则走经理
+    condition_node = NodeDefinition(
+        id="order-condition",
+        type=NodeType.CONDITION,
+        config={"condition_expression": "${input.order_amount} > 100000"},
+    )
+    cond_output = await execute_condition_node(
+        node_def=condition_node,
+        input_data={"order_amount": 120000},
+        context=context,
+    )
+    scheduler = object.__new__(Scheduler)
+    approval_graph = GraphDefinition(
+        id="approval-graph",
+        version="1.0.0",
+        nodes=[
+            condition_node,
+            NodeDefinition(id="ceo-approval", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+            NodeDefinition(id="manager-approval", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+        ],
+        edges=[
+            EdgeDefinition(from_node="order-condition", to_node="ceo-approval", on=EdgeTrigger.CONDITION_TRUE),
+            EdgeDefinition(from_node="order-condition", to_node="manager-approval", on=EdgeTrigger.CONDITION_FALSE),
+        ],
+    )
+    all_nodes = [SimpleNamespace(node_id="order-condition", output_data=cond_output)]
+    node_states = {"order-condition": NodeState.SUCCESS}
+    ceo_ready = await scheduler._check_dependencies_with_edges(  # noqa: SLF001
+        "ceo-approval", approval_graph, node_states, all_nodes
+    )
+    manager_ready = await scheduler._check_dependencies_with_edges(  # noqa: SLF001
+        "manager-approval", approval_graph, node_states, all_nodes
+    )
+    assert ceo_ready is True
+    assert manager_ready is False
+
+    # 场景3：并行采集流程，并发上限=2时，第三个并行任务被抑制，非并行域任务放行
+    parallel_graph = GraphDefinition(
+        id="parallel-collect",
+        version="1.0.0",
+        nodes=[
+            NodeDefinition(id="parallel-collector", type=NodeType.TOOL, config={"workflow_node_type": "parallel", "max_parallel": 2}),
+            NodeDefinition(id="crm", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+            NodeDefinition(id="erp", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+            NodeDefinition(id="bi", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+            NodeDefinition(id="summary", type=NodeType.TOOL, config={"workflow_node_type": "tool"}),
+        ],
+        edges=[
+            EdgeDefinition(from_node="parallel-collector", to_node="crm", on=EdgeTrigger.SUCCESS),
+            EdgeDefinition(from_node="parallel-collector", to_node="erp", on=EdgeTrigger.SUCCESS),
+            EdgeDefinition(from_node="parallel-collector", to_node="bi", on=EdgeTrigger.SUCCESS),
+        ],
+    )
+    all_parallel_nodes = [
+        SimpleNamespace(node_id="crm", state=SimpleNamespace(value="running")),
+        SimpleNamespace(node_id="erp", state=SimpleNamespace(value="running")),
+        SimpleNamespace(node_id="bi", state=SimpleNamespace(value="pending")),
+        SimpleNamespace(node_id="summary", state=SimpleNamespace(value="pending")),
+    ]
+    executable = [
+        SimpleNamespace(node_id="bi", state=SimpleNamespace(value="pending")),
+        SimpleNamespace(node_id="summary", state=SimpleNamespace(value="pending")),
+    ]
+    selected = scheduler._select_nodes_with_parallel_limits(  # noqa: SLF001
+        executable_nodes=executable,
+        graph_def=parallel_graph,
+        all_nodes=all_parallel_nodes,
+        available_slots=2,
+    )
+    assert [n.node_id for n in selected] == ["summary"]
 
 
 def test_workflow_runtime_agent_output_includes_collaboration_messages() -> None:

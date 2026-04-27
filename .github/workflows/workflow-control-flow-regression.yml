@@ -1,0 +1,83 @@
+name: workflow-control-flow-regression
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/core/workflows/**"
+      - "backend/execution_kernel/engine/**"
+      - "backend/api/workflows.py"
+      - "backend/tests/test_workflow_control_flow_regression.py"
+      - "backend/scripts/test_workflow_control_flow_regression.sh"
+      - ".github/workflows/workflow-control-flow-regression.yml"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "backend/core/workflows/**"
+      - "backend/execution_kernel/engine/**"
+      - "backend/api/workflows.py"
+      - "backend/tests/test_workflow_control_flow_regression.py"
+      - "backend/scripts/test_workflow_control_flow_regression.sh"
+      - ".github/workflows/workflow-control-flow-regression.yml"
+
+concurrency:
+  group: workflow-control-flow-regression-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-control-flow-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run workflow control-flow regression suite
+        env:
+          JUNIT_XML_PATH: test-reports/workflow-control-flow-regression.xml
+          WORKFLOW_CONTROL_FLOW_SUMMARY_PATH: test-reports/workflow-control-flow-summary.md
+        run: |
+          mkdir -p test-reports
+          chmod +x scripts/test_workflow_control_flow_regression.sh
+          ./scripts/test_workflow_control_flow_regression.sh
+
+      - name: Publish workflow control-flow summary
+        if: always()
+        run: |
+          if [[ -f test-reports/workflow-control-flow-summary.md ]]; then
+            cat test-reports/workflow-control-flow-summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Workflow Control-Flow Regression" >> "$GITHUB_STEP_SUMMARY"
+            echo "No summary file found at test-reports/workflow-control-flow-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload workflow control-flow junit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-control-flow-junit-${{ github.run_number }}
+          path: backend/test-reports/workflow-control-flow-regression.xml
+          if-no-files-found: warn
+
+      - name: Upload workflow control-flow summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-control-flow-summary-${{ github.run_number }}
+          path: backend/test-reports/workflow-control-flow-summary.md
+          if-no-files-found: warn

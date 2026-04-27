@@ -1,4 +1,4 @@
-.PHONY: help bootstrap bootstrap-prod env-init install install-gpu install-prod install-prod-soft up up-gpu up-prod down down-gpu down-prod status logs healthcheck doctor security-guardrails dependency-policy dependency-scan test-no-fallback reset
+.PHONY: help bootstrap bootstrap-prod env-init install install-gpu install-prod install-prod-soft up up-gpu up-prod down down-gpu down-prod status logs healthcheck doctor security-guardrails dependency-policy dependency-scan test-no-fallback test-workflow-control-flow reset
 
 help:
 	@echo "OpenVitamin Docker helper targets:"
@@ -33,6 +33,8 @@ help:
 	@echo "                   - Run API no-fallback regression tests"
 	@echo "  make test-no-fallback TEST_ARGS=\"-k memory -x\""
 	@echo "                   - Run subset/extra pytest args for no-fallback suite"
+	@echo "  make test-workflow-control-flow"
+	@echo "                   - Run workflow control-flow regression suite"
 	@echo "  make reset         - Remove containers and volumes"
 
 install:
@@ -101,6 +103,9 @@ dependency-scan:
 
 test-no-fallback:
 	@bash scripts/test-no-fallback.sh $(TEST_ARGS)
+
+test-workflow-control-flow:
+	@bash backend/scripts/test_workflow_control_flow_regression.sh
 
 reset:
 	@bash scripts/reset.sh

@@ -42,6 +42,7 @@ class GraphRuntimeAdapter:
         "reflector": NodeType.TOOL,
         "approval": NodeType.TOOL,
         "sub_workflow": NodeType.TOOL,
+        "parallel": NodeType.TOOL,
         "condition": NodeType.CONDITION,
         "script": NodeType.SCRIPT,
         "replan": NodeType.REPLAN,
@@ -90,6 +91,7 @@ class GraphRuntimeAdapter:
             "reflector",
             "approval",
             "sub_workflow",
+            "parallel",
             "condition",
             "loop",
             "replan",
@@ -483,6 +485,18 @@ class GraphRuntimeAdapter:
                 config = node.config or {}
                 if not str(config.get("agent_id") or "").strip():
                     errors.append(f"{normalized_type.capitalize()} node {node.id} missing 'agent_id' config")
+            elif normalized_type == "parallel":
+                config = node.config or {}
+                if "max_parallel" in config:
+                    try:
+                        max_parallel = int(config.get("max_parallel"))
+                    except (TypeError, ValueError):
+                        errors.append(f"Parallel node {node.id} config.max_parallel must be integer")
+                    else:
+                        if max_parallel <= 0 or max_parallel > 128:
+                            errors.append(
+                                f"Parallel node {node.id} config.max_parallel out of range [1,128]"
+                            )
             elif normalized_type == "input":
                 config = node.config or {}
                 if "input_key" in config:

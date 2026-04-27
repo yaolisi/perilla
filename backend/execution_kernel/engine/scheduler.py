@@ -440,19 +440,22 @@ class Scheduler:
                 await session.commit()
                 return
             
-            # 并行执行可执行节点
-            await session.commit()
-        
-        # 在 session 外并行执行节点（受并发上限约束）
-        available_slots = max(0, self._max_concurrency - len(self._running_tasks))
-        if available_slots <= 0:
-            logger.debug(
-                f"Scheduler at concurrency limit ({self._max_concurrency}), "
-                f"running={len(self._running_tasks)}"
+            # 并行执行可执行节点（受全局并发和 parallel 节点并发上限双重约束）
+            available_slots = max(0, self._max_concurrency - len(self._running_tasks))
+            if available_slots <= 0:
+                logger.debug(
+                    f"Scheduler at concurrency limit ({self._max_concurrency}), "
+                    f"running={len(self._running_tasks)}"
+                )
+                await session.commit()
+                return
+            nodes_to_schedule = self._select_nodes_with_parallel_limits(
+                executable_nodes=executable_nodes,
+                graph_def=graph_def,
+                all_nodes=all_nodes,
+                available_slots=available_slots,
             )
-            return
-
-        nodes_to_schedule = executable_nodes[:available_slots]
+            await session.commit()
         
         # V2.6: 发射 SchedulerDecision 事件
         if nodes_to_schedule:
@@ -513,6 +516,141 @@ class Scheduler:
         ]
         if tasks:
             await asyncio.gather(*tasks)
+
+    def _select_nodes_with_parallel_limits(
+        self,
+        *,
+        executable_nodes: List[NodeRuntimeDB],
+        graph_def: GraphDefinition,
+        all_nodes: List[NodeRuntimeDB],
+        available_slots: int,
+    ) -> List[NodeRuntimeDB]:
+        if available_slots <= 0 or not executable_nodes:
+            return []
+        parallel_limits = self._collect_parallel_limits(graph_def)
+        if not parallel_limits:
+            return executable_nodes[:available_slots]
+
+        dynamic_running_nodes = {
+            node.node_id
+            for node in all_nodes
+            if NodeState(node.state.value) == NodeState.RUNNING
+        }
+        selected: List[NodeRuntimeDB] = []
+        controller_cache: Dict[str, Set[str]] = {}
+        for candidate in executable_nodes:
+            if len(selected) >= available_slots:
+                break
+            if self._candidate_exceeds_parallel_limit(
+                node_id=candidate.node_id,
+                graph_def=graph_def,
+                parallel_limits=parallel_limits,
+                dynamic_running_nodes=dynamic_running_nodes,
+                controller_cache=controller_cache,
+            ):
+                continue
+            selected.append(candidate)
+            dynamic_running_nodes.add(candidate.node_id)
+        return selected
+
+    @staticmethod
+    def _collect_parallel_limits(graph_def: GraphDefinition) -> Dict[str, int]:
+        limits: Dict[str, int] = {}
+        for node in graph_def.nodes:
+            cfg = node.config if isinstance(node.config, dict) else {}
+            node_type = str(cfg.get("workflow_node_type") or node.type.value).strip().lower()
+            if node_type != "parallel":
+                continue
+            try:
+                max_parallel = int(cfg.get("max_parallel", 0))
+            except (TypeError, ValueError):
+                continue
+            if max_parallel > 0:
+                limits[node.id] = max_parallel
+        return limits
+
+    def _candidate_exceeds_parallel_limit(
+        self,
+        *,
+        node_id: str,
+        graph_def: GraphDefinition,
+        parallel_limits: Dict[str, int],
+        dynamic_running_nodes: Set[str],
+        controller_cache: Dict[str, Set[str]],
+    ) -> bool:
+        controllers = self._resolve_parallel_controllers(
+            node_id=node_id,
+            graph_def=graph_def,
+            parallel_limits=parallel_limits,
+            controller_cache=controller_cache,
+        )
+        if not controllers:
+            return False
+        for controller_id in controllers:
+            limit = parallel_limits.get(controller_id)
+            if not limit:
+                continue
+            running_count = self._count_running_nodes_for_controller(
+                controller_id=controller_id,
+                graph_def=graph_def,
+                parallel_limits=parallel_limits,
+                dynamic_running_nodes=dynamic_running_nodes,
+                controller_cache=controller_cache,
+            )
+            if running_count >= limit:
+                return True
+        return False
+
+    def _count_running_nodes_for_controller(
+        self,
+        *,
+        controller_id: str,
+        graph_def: GraphDefinition,
+        parallel_limits: Dict[str, int],
+        dynamic_running_nodes: Set[str],
+        controller_cache: Dict[str, Set[str]],
+    ) -> int:
+        count = 0
+        for running_node_id in dynamic_running_nodes:
+            if running_node_id == controller_id:
+                continue
+            controllers = self._resolve_parallel_controllers(
+                node_id=running_node_id,
+                graph_def=graph_def,
+                parallel_limits=parallel_limits,
+                controller_cache=controller_cache,
+            )
+            if controller_id in controllers:
+                count += 1
+        return count
+
+    def _resolve_parallel_controllers(
+        self,
+        *,
+        node_id: str,
+        graph_def: GraphDefinition,
+        parallel_limits: Dict[str, int],
+        controller_cache: Dict[str, Set[str]],
+    ) -> Set[str]:
+        cached = controller_cache.get(node_id)
+        if cached is not None:
+            return cached
+        controllers: Set[str] = set()
+        visited: Set[str] = set()
+        queue: List[str] = [node_id]
+        while queue:
+            current = queue.pop(0)
+            for edge in graph_def.get_incoming_edges(current):
+                source_id = edge.from_node
+                if source_id in visited:
+                    continue
+                visited.add(source_id)
+                if source_id in parallel_limits:
+                    controllers.add(source_id)
+                    continue
+                queue.append(source_id)
+        controller_cache[node_id] = controllers
+        return controllers
     
     async def _dispatch_node(
         self,

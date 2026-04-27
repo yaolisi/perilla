@@ -204,6 +204,97 @@ def test_create_and_get_execution_status_flow(tmp_path, monkeypatch, fallback_pr
 
 
 @pytest.mark.no_fallback
+def test_create_execution_wait_true_returns_completed_control_flow_output(
+    tmp_path,
+    monkeypatch,
+    fallback_probe,
+):
+    workflows_api = _load_workflows_api_module()
+    session_factory = _make_session_factory(tmp_path)
+    _seed_workflow(session_factory)
+    client = _build_client(session_factory, workflows_api)
+
+    def _fake_create_execution(self, request, triggered_by=None):
+        return WorkflowExecution(
+            execution_id="exec_wait_true_1",
+            workflow_id=request.workflow_id,
+            version_id=request.version_id or "v-test",
+            state=WorkflowExecutionState.PENDING,
+            input_data=request.input_data,
+            global_context=request.global_context,
+            node_states=[
+                WorkflowExecutionNode(
+                    node_id="parallel-gate",
+                    state=WorkflowExecutionNodeState.PENDING,
+                ),
+                WorkflowExecutionNode(
+                    node_id="loop-sync",
+                    state=WorkflowExecutionNodeState.PENDING,
+                ),
+            ],
+            trigger_type=request.trigger_type,
+            triggered_by=triggered_by,
+        )
+
+    async def _fake_runtime_execute(self, execution, wait_for_completion=False, **kwargs):
+        await asyncio.sleep(0)
+        assert wait_for_completion is True
+        assert kwargs.get("wait_timeout_seconds") == 45
+        now = datetime.now(timezone.utc)
+        return execution.model_copy(
+            update={
+                "state": WorkflowExecutionState.COMPLETED,
+                "started_at": now,
+                "finished_at": now + timedelta(seconds=1),
+                "duration_ms": 1000,
+                "node_states": [
+                    WorkflowExecutionNode(
+                        node_id="parallel-gate",
+                        state=WorkflowExecutionNodeState.SUCCESS,
+                        output_data={
+                            "type": "parallel_gate",
+                            "__workflow_parallel_meta": {"max_parallel": 3},
+                        },
+                    ),
+                    WorkflowExecutionNode(
+                        node_id="loop-sync",
+                        state=WorkflowExecutionNodeState.SUCCESS,
+                        output_data={
+                            "type": "loop_result",
+                            "iterations": 30,
+                            "exit_reason": "condition_false",
+                        },
+                    ),
+                ],
+                "output_data": {
+                    "approval_path": "ceo",
+                    "parallel_limit": 3,
+                    "iterations": 30,
+                },
+            }
+        )
+
+    monkeypatch.setattr(workflows_api.WorkflowExecutionService, "create_execution", _fake_create_execution)
+    monkeypatch.setattr(workflows_api.WorkflowRuntime, "execute", _fake_runtime_execute)
+
+    resp = client.post(
+        "/api/v1/workflows/wf_exec_1/executions",
+        params={"wait": "true", "wait_timeout_seconds": 45},
+        json=_execution_create_payload(question="enterprise control flow"),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["state"] == "completed"
+    assert body["output_data"]["approval_path"] == "ceo"
+    assert body["output_data"]["parallel_limit"] == 3
+    assert body["output_data"]["iterations"] == 30
+    node_states = {item["node_id"]: item for item in body["node_timeline"]}
+    assert node_states["parallel-gate"]["state"] == "success"
+    assert node_states["loop-sync"]["state"] == "success"
+    assert fallback_probe == []
+
+
+@pytest.mark.no_fallback
 def test_create_execution_idempotency_conflict_returns_structured_error(tmp_path, monkeypatch, fallback_probe):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
@@ -225,6 +316,59 @@ def test_create_execution_idempotency_conflict_returns_structured_error(tmp_path
     assert resp.status_code == 409
     body = resp.json()
     assert body.get("error", {}).get("code") == "idempotency_conflict"
+    assert fallback_probe == []
+
+
+@pytest.mark.no_fallback
+def test_create_execution_wait_true_returns_structured_loop_failure_error(
+    tmp_path,
+    monkeypatch,
+    fallback_probe,
+):
+    workflows_api = _load_workflows_api_module()
+    session_factory = _make_session_factory(tmp_path)
+    _seed_workflow(session_factory)
+    client = _build_client(session_factory, workflows_api)
+
+    def _fake_create_execution(self, request, triggered_by=None):
+        return WorkflowExecution(
+            execution_id="exec_wait_true_loop_fail",
+            workflow_id=request.workflow_id,
+            version_id=request.version_id or "v-test",
+            state=WorkflowExecutionState.PENDING,
+            input_data=request.input_data,
+            global_context=request.global_context,
+            node_states=[
+                WorkflowExecutionNode(
+                    node_id="loop-sync",
+                    state=WorkflowExecutionNodeState.PENDING,
+                ),
+            ],
+            trigger_type=request.trigger_type,
+            triggered_by=triggered_by,
+        )
+
+    async def _fake_runtime_execute_raise(self, execution, wait_for_completion=False, **kwargs):
+        await asyncio.sleep(0)
+        assert wait_for_completion is True
+        assert kwargs.get("wait_timeout_seconds") == 30
+        raise RuntimeError(
+            "LOOP_NODE_EXECUTION_FAILED: node=loop-sync, iteration=5, error=transient downstream error"
+        )
+
+    monkeypatch.setattr(workflows_api.WorkflowExecutionService, "create_execution", _fake_create_execution)
+    monkeypatch.setattr(workflows_api.WorkflowRuntime, "execute", _fake_runtime_execute_raise)
+
+    resp = client.post(
+        "/api/v1/workflows/wf_exec_1/executions",
+        params={"wait": "true", "wait_timeout_seconds": 30},
+        json=_execution_create_payload(question="loop should fail"),
+    )
+    assert resp.status_code == 500
+    body = resp.json()
+    detail = str(body.get("detail") or "")
+    assert "LOOP_NODE_EXECUTION_FAILED" in detail
+    assert "loop-sync" in detail
     assert fallback_probe == []
 
 

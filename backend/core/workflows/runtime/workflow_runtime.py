@@ -316,6 +316,7 @@ class WorkflowRuntime:
             "tool": self._tool_handler,
             "llm": self._llm_handler,
             "condition": self._condition_handler,
+            "loop": self._loop_handler,
             "script": self._script_handler,
         })
 
@@ -444,11 +445,36 @@ class WorkflowRuntime:
                 context=context,
                 cfg=cfg,
             )
+        if workflow_node_type == "loop":
+            return await self._execute_loop_control_node(
+                node_def=node_def,
+                input_data=input_data,
+                context=context,
+                cfg=cfg,
+            )
+        if workflow_node_type == "parallel":
+            return self._execute_parallel_control_node(
+                node_def=node_def,
+                input_data=input_data,
+                context=context,
+                cfg=cfg,
+            )
         if workflow_node_type == "approval":
             return self._handle_approval_node(node_def, context)
         result = await self._execute_tool_node(cfg, input_data, context)
         self._ensure_execution_not_cancelled(context)
         return result
+
+    async def _loop_handler(
+        self, node_def: NodeDefinition, input_data: Dict[str, Any], context: GraphContext
+    ) -> Dict[str, Any]:
+        cfg = node_def.config or {}
+        return await self._execute_loop_control_node(
+            node_def=node_def,
+            input_data=input_data,
+            context=context,
+            cfg=cfg,
+        )
 
     async def _script_handler(
         self, node_def: NodeDefinition, input_data: Dict[str, Any], context: GraphContext
@@ -640,6 +666,213 @@ class WorkflowRuntime:
         if not result.success:
             return {"error": result.error or f"Tool failed: {tool_name}"}
         return result.data if isinstance(result.data, dict) else {"output": result.data}
+
+    async def _execute_loop_control_node(
+        self,
+        *,
+        node_def: NodeDefinition,
+        input_data: Dict[str, Any],
+        context: GraphContext,
+        cfg: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        loop_type = str(cfg.get("loop_type") or "").strip().lower()
+        max_iterations = max(1, self._coerce_int(cfg.get("max_iterations"), 100))
+        loop_count = self._resolve_loop_count(cfg=cfg, input_data=input_data, context=context)
+        if loop_type not in {"for", "while"}:
+            loop_type = "for" if loop_count is not None else "while"
+        if loop_type == "for" and loop_count is None:
+            loop_count = max_iterations
+        if loop_type == "for":
+            max_iterations = max(1, min(max_iterations, int(loop_count or max_iterations)))
+
+        max_retries = max(0, self._coerce_int(cfg.get("max_retries"), 0))
+        retry_interval_seconds = self._coerce_float(cfg.get("retry_interval_seconds"), 1.0)
+        if retry_interval_seconds < 0:
+            retry_interval_seconds = 0.0
+        condition_expression = cfg.get("condition_expression")
+        iterator_variable = str(cfg.get("iterator_variable") or "loop_index").strip() or "loop_index"
+        body_cfg = cfg.get("loop_body")
+        if not isinstance(body_cfg, dict):
+            return {"error": "Loop node missing loop_body config"}
+
+        iteration = 0
+        last_output: Dict[str, Any] = {}
+        exit_reason = "max_iterations"
+        loop_input = dict(input_data or {})
+
+        while iteration < max_iterations:
+            if loop_type == "while" and condition_expression:
+                condition_ok = bool(self._evaluate_boolean_expression(context, loop_input, condition_expression))
+                if not condition_ok:
+                    exit_reason = "condition_false"
+                    break
+            if loop_type == "for" and loop_count is not None and iteration >= int(loop_count):
+                exit_reason = "loop_count_reached"
+                break
+
+            self._inject_loop_iteration_context(
+                context=context,
+                node_id=str(node_def.id),
+                iteration=iteration,
+                iterator_variable=iterator_variable,
+            )
+            merged_body_input = dict(loop_input or {})
+            merged_body_input[iterator_variable] = iteration
+
+            last_exc: Optional[Exception] = None
+            attempt = 0
+            while attempt <= max_retries:
+                try:
+                    last_output = await self._execute_loop_body(
+                        node_def=node_def,
+                        body_cfg=body_cfg,
+                        input_data=merged_body_input,
+                        context=context,
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt >= max_retries:
+                        break
+                    await asyncio.sleep(retry_interval_seconds)
+                    attempt += 1
+
+            if last_exc is not None:
+                raise RuntimeError(
+                    f"LOOP_NODE_EXECUTION_FAILED: node={node_def.id}, iteration={iteration}, error={last_exc}"
+                ) from last_exc
+
+            iteration += 1
+            loop_input = {**loop_input, **(last_output or {})}
+            if condition_expression:
+                should_continue = bool(
+                    self._evaluate_boolean_expression(context, loop_input, condition_expression)
+                )
+                if loop_type == "for" and not should_continue:
+                    exit_reason = "condition_false"
+                    break
+
+        return {
+            **(last_output if isinstance(last_output, dict) else {}),
+            "type": "loop_result",
+            "loop_completed": True,
+            "iterations": iteration,
+            "exit_reason": exit_reason,
+            "__workflow_loop_meta": {
+                "node_id": str(node_def.id),
+                "loop_type": loop_type,
+                "max_iterations": max_iterations,
+                "loop_count": loop_count,
+                "iterator_variable": iterator_variable,
+            },
+        }
+
+    def _execute_parallel_control_node(
+        self,
+        *,
+        node_def: NodeDefinition,
+        input_data: Dict[str, Any],
+        context: GraphContext,
+        cfg: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        requested = cfg.get("max_parallel")
+        max_parallel = max(1, self._coerce_int(requested, 5))
+        return {
+            **(input_data or {}),
+            "type": "parallel_gate",
+            "parallel_ready": True,
+            "__workflow_parallel_meta": {
+                "node_id": str(node_def.id),
+                "max_parallel": max_parallel,
+            },
+        }
+
+    async def _execute_loop_body(
+        self,
+        *,
+        node_def: NodeDefinition,
+        body_cfg: Dict[str, Any],
+        input_data: Dict[str, Any],
+        context: GraphContext,
+    ) -> Dict[str, Any]:
+        body_type = str(body_cfg.get("type") or "tool").strip().lower()
+        if body_type == "tool":
+            result = await self._execute_tool_node(body_cfg, input_data, context)
+            if isinstance(result, dict) and result.get("error"):
+                raise RuntimeError(str(result.get("error")))
+            return result if isinstance(result, dict) else {"output": result}
+        if body_type in {"agent", "manager", "worker", "reflector"}:
+            proxy_def = type(node_def)(**{**node_def.model_dump(), "config": {**body_cfg, "workflow_node_type": body_type}})
+            return await self._execute_agent_node(
+                node_def=proxy_def,
+                input_data=input_data,
+                context=context,
+                cfg={**body_cfg, "workflow_node_type": body_type},
+            )
+        raise ValueError(f"LOOP_NODE_CONFIG_ERROR: unsupported loop_body.type '{body_type}'")
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _resolve_loop_count(
+        self,
+        *,
+        cfg: Dict[str, Any],
+        input_data: Dict[str, Any],
+        context: GraphContext,
+    ) -> Optional[int]:
+        raw_count = cfg.get("loop_count")
+        loop_count_expr = cfg.get("loop_count_expression")
+        if isinstance(loop_count_expr, str) and loop_count_expr.strip():
+            resolved = context.resolve(loop_count_expr)
+            raw_count = resolved
+        elif raw_count is None and isinstance(input_data, dict):
+            raw_count = input_data.get("loop_count")
+        if raw_count is None:
+            return None
+        count = self._coerce_int(raw_count, 0)
+        return max(0, count)
+
+    @staticmethod
+    def _inject_loop_iteration_context(
+        *,
+        context: GraphContext,
+        node_id: str,
+        iteration: int,
+        iterator_variable: str,
+    ) -> None:
+        data = getattr(context, "_global_data", None)
+        if not isinstance(data, dict):
+            return
+        workflow_vars = data.get("workflow_variables")
+        if not isinstance(workflow_vars, dict):
+            workflow_vars = {}
+            data["workflow_variables"] = workflow_vars
+        loop_vars = workflow_vars.get("loop")
+        if not isinstance(loop_vars, dict):
+            loop_vars = {}
+            workflow_vars["loop"] = loop_vars
+        loop_vars[node_id] = {
+            "iteration": iteration,
+            iterator_variable: iteration,
+        }
+
+    @staticmethod
+    def _evaluate_boolean_expression(
+        context: GraphContext,
+        input_data: Dict[str, Any],
+        expression: Any,
+    ) -> bool:
+        if not isinstance(expression, str) or not expression.strip():
+            return True
+        from execution_kernel.engine.control_flow import _evaluate_condition  # local import to avoid cycle risk
+
+        return bool(_evaluate_condition(expression, input_data or {}, context))
 
     async def _execute_agent_node(
         self,
