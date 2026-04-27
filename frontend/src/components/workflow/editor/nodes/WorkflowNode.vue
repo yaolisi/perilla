@@ -12,6 +12,7 @@ import {
   Repeat,
   Code,
   Globe,
+  Boxes,
 } from 'lucide-vue-next'
 import type { WorkflowNodeData } from '../types'
 import { requestWorkflowGroupResizeStart, requestWorkflowNodeSelect } from '../canvasSelection'
@@ -26,6 +27,7 @@ const iconMap: Record<string, typeof Play> = {
   embedding: Layers,
   condition: GitBranch,
   loop: Repeat,
+  sub_workflow: Boxes,
   script: Code,
   tool: Globe,
 }
@@ -38,6 +40,7 @@ const colorMap: Record<string, string> = {
   embedding: 'from-cyan-500 to-cyan-600 border-cyan-500/30 bg-cyan-500/10',
   condition: 'from-emerald-500 to-emerald-600 border-emerald-500/30 bg-emerald-500/10',
   loop: 'from-teal-500 to-teal-600 border-teal-500/30 bg-teal-500/10',
+  sub_workflow: 'from-sky-500 to-sky-600 border-sky-500/30 bg-sky-500/10',
   script: 'from-slate-500 to-slate-600 border-slate-500/30 bg-slate-500/10',
   tool: 'from-orange-500 to-orange-600 border-orange-500/30 bg-orange-500/10',
 }
@@ -55,6 +58,10 @@ const nodeSubtitle = computed(() => {
   if (d?.type === 'agent') {
     const name = (cfg.agent_display_name as string) || (cfg.agent_id as string)
     return name || ''
+  }
+  if (d?.type === 'sub_workflow') {
+    const wid = String((cfg.target_workflow_id as string) ?? '').trim()
+    return wid || ''
   }
   return (d?.subtitle as string) || ''
 })

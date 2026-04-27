@@ -6,7 +6,19 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import { Textarea } from '@/components/ui/textarea'
-import { listModels, listAgents, listTools, type ModelInfo, type AgentDefinition, type ToolInfo } from '@/services/api'
+import {
+  listModels,
+  listAgents,
+  listTools,
+  listWorkflows,
+  listWorkflowVersions,
+  getWorkflowVersion,
+  type ModelInfo,
+  type AgentDefinition,
+  type ToolInfo,
+  type WorkflowRecord,
+  type WorkflowVersionRecord,
+} from '@/services/api'
 import type { Node, Edge } from '@vue-flow/core'
 import type { WorkflowNodeData } from './types'
 
@@ -22,6 +34,8 @@ const props = withDefaults(
     selectedModelDisplayName?: string
     selectedAgentId?: string
     selectedAgentDisplayName?: string
+    /** 当前编辑中的工作流 ID，用于列表中隐藏自身，避免误引用 */
+    editorWorkflowId?: string | null
   }>(),
   {
     selectedNodeId: undefined,
@@ -30,6 +44,7 @@ const props = withDefaults(
     selectedModelDisplayName: () => '',
     selectedAgentId: () => '',
     selectedAgentDisplayName: () => '',
+    editorWorkflowId: undefined,
   }
 )
 /** 优先用 selectedNodeId 在 nodes 中查找；找不到时用父组件传入的 node（与 edge 一致，避免 drop 后短暂未同步时配置不显示） */
@@ -241,7 +256,7 @@ function onInputFixedInputInput(raw: string | number) {
     inputFixedInputParseError.value = ''
     updateConfig('fixed_input', parsed as Record<string, unknown>)
   } catch {
-    inputFixedInputParseError.value = 'JSON 格式错误，请检查逗号、引号和大括号'
+    inputFixedInputParseError.value = t('workflow_editor.json_syntax_error')
   }
 }
 
@@ -304,6 +319,210 @@ function updateConfig(key: string, value: unknown) {
   const next = { ...config(), [key]: value }
   emit('update:config', resolvedNode.value.id, next)
 }
+
+function mergeConfig(patch: Record<string, unknown>) {
+  if (!resolvedNode.value) return
+  emit('update:config', resolvedNode.value.id, { ...config(), ...patch })
+}
+
+const subWorkflowBrowseSearch = ref('')
+const workflowsCatalog = ref<WorkflowRecord[]>([])
+const workflowsCatalogLoading = ref(false)
+const subWorkflowVersions = ref<WorkflowVersionRecord[]>([])
+const subWorkflowVersionsLoading = ref(false)
+const subWorkflowVersionNodeCount = ref<number | null>(null)
+const subWorkflowVersionMetaLoading = ref(false)
+
+function formatWorkflowTs(iso: string | undefined | null): string {
+  if (!iso) return '—'
+  try {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return iso
+    return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+  } catch {
+    return iso
+  }
+}
+
+async function loadWorkflowsCatalog() {
+  if (workflowsCatalogLoading.value) return
+  workflowsCatalogLoading.value = true
+  try {
+    const res = await listWorkflows({ limit: 500, offset: 0 })
+    workflowsCatalog.value = res.items ?? []
+  } catch {
+    workflowsCatalog.value = []
+  } finally {
+    workflowsCatalogLoading.value = false
+  }
+}
+
+async function fetchSubWorkflowVersions(workflowId: string) {
+  if (!workflowId.trim()) {
+    subWorkflowVersions.value = []
+    return
+  }
+  subWorkflowVersionsLoading.value = true
+  try {
+    const res = await listWorkflowVersions(workflowId, { limit: 200 })
+    subWorkflowVersions.value = res.items ?? []
+  } catch {
+    subWorkflowVersions.value = []
+  } finally {
+    subWorkflowVersionsLoading.value = false
+  }
+}
+
+async function refreshSubWorkflowVersionNodeCount(workflowId: string, versionId: string) {
+  if (!workflowId.trim() || !versionId.trim()) {
+    subWorkflowVersionNodeCount.value = null
+    return
+  }
+  subWorkflowVersionMetaLoading.value = true
+  try {
+    const ver = await getWorkflowVersion(workflowId, versionId)
+    const n = ver.dag?.nodes?.length
+    subWorkflowVersionNodeCount.value = typeof n === 'number' ? n : null
+  } catch {
+    subWorkflowVersionNodeCount.value = null
+  } finally {
+    subWorkflowVersionMetaLoading.value = false
+  }
+}
+
+const filteredSubWorkflowCatalog = computed(() => {
+  const q = subWorkflowBrowseSearch.value.trim().toLowerCase()
+  const selfId = String(props.editorWorkflowId ?? '').trim()
+  let list = workflowsCatalog.value.filter((w) => w.id !== selfId)
+  if (!q) return list
+  return list.filter((w) => {
+    const hay = `${w.id} ${w.name} ${(w.tags || []).join(' ')}`.toLowerCase()
+    return hay.includes(q)
+  })
+})
+
+const selectedSubWorkflowRecord = computed(() => {
+  const wid = String((config() as Record<string, unknown>).target_workflow_id ?? '').trim()
+  if (!wid) return null
+  return workflowsCatalog.value.find((w) => w.id === wid) ?? null
+})
+
+const subWorkflowSelfReference = computed(() => {
+  const wid = String((config() as Record<string, unknown>).target_workflow_id ?? '').trim()
+  const selfId = String(props.editorWorkflowId ?? '').trim()
+  return Boolean(wid && selfId && wid === selfId)
+})
+
+const sortedSubWorkflowVersions = computed(() => {
+  const items = [...subWorkflowVersions.value]
+  return items.sort((a, b) => {
+    const ta = new Date(a.published_at || a.created_at || '').getTime()
+    const tb = new Date(b.published_at || b.created_at || '').getTime()
+    return tb - ta
+  })
+})
+
+function pickSubWorkflowFromCatalog(w: WorkflowRecord) {
+  mergeConfig({
+    workflow_node_type: 'sub_workflow',
+    target_workflow_id: w.id,
+    target_version_id: undefined,
+    target_version: undefined,
+  })
+  void fetchSubWorkflowVersions(w.id)
+}
+
+function onSubWorkflowVersionPolicyChange(e: Event) {
+  const val = String((e.target as HTMLSelectElement).value || '').toLowerCase()
+  if (val === 'latest') {
+    mergeConfig({
+      target_version_selector: 'latest',
+      target_version_id: undefined,
+      target_version: undefined,
+    })
+    subWorkflowVersionNodeCount.value = null
+  } else {
+    mergeConfig({ target_version_selector: 'fixed' })
+  }
+}
+
+function onPickSubWorkflowVersionSelect(e: Event) {
+  const vid = String((e.target as HTMLSelectElement).value || '').trim()
+  const wid = String((config() as Record<string, unknown>).target_workflow_id ?? '').trim()
+  if (!vid) {
+    mergeConfig({ target_version_id: undefined, target_version: undefined })
+    subWorkflowVersionNodeCount.value = null
+    return
+  }
+  const v = subWorkflowVersions.value.find((x) => x.version_id === vid)
+  mergeConfig({
+    target_version_id: vid,
+    target_version: v?.version_number ?? undefined,
+  })
+  void refreshSubWorkflowVersionNodeCount(wid, vid)
+}
+
+function onSubWorkflowTargetWorkflowIdInput(v: string | number) {
+  const id = String(v ?? '').trim()
+  mergeConfig({ target_workflow_id: id, workflow_node_type: 'sub_workflow' })
+  if (id) void fetchSubWorkflowVersions(id)
+  else subWorkflowVersions.value = []
+}
+
+function onSubWorkflowManualVersionIdInput(v: string | number) {
+  const s = String(v ?? '').trim()
+  mergeConfig({ target_version_id: s || undefined })
+  const wid = String((config() as Record<string, unknown>).target_workflow_id ?? '').trim()
+  if (wid && s) void refreshSubWorkflowVersionNodeCount(wid, s)
+  else subWorkflowVersionNodeCount.value = null
+}
+
+watch(
+  () =>
+    resolvedNode.value?.data?.type === 'sub_workflow'
+      ? String((resolvedNode.value?.data?.config as Record<string, unknown>)?.target_workflow_id ?? '').trim()
+      : '',
+  (wid) => {
+    if (resolvedNode.value?.data?.type !== 'sub_workflow') return
+    if (!wid) {
+      subWorkflowVersions.value = []
+      return
+    }
+    void fetchSubWorkflowVersions(wid)
+  },
+  { immediate: true }
+)
+
+watch(
+  () => resolvedNode.value?.data?.type,
+  (type) => {
+    if (type === 'sub_workflow') void loadWorkflowsCatalog()
+  },
+  { immediate: true }
+)
+
+watch(
+  () => ({
+    type: resolvedNode.value?.data?.type,
+    wid: String((resolvedNode.value?.data?.config as Record<string, unknown>)?.target_workflow_id ?? '').trim(),
+    vid: String((resolvedNode.value?.data?.config as Record<string, unknown>)?.target_version_id ?? '').trim(),
+    selector: String(
+      (resolvedNode.value?.data?.config as Record<string, unknown>)?.target_version_selector ?? 'fixed'
+    ).toLowerCase(),
+  }),
+  ({ type, wid, vid, selector }) => {
+    if (type !== 'sub_workflow') {
+      subWorkflowVersionNodeCount.value = null
+      return
+    }
+    if (selector === 'latest' || !wid || !vid) {
+      if (selector === 'latest') subWorkflowVersionNodeCount.value = null
+      return
+    }
+    void refreshSubWorkflowVersionNodeCount(wid, vid)
+  },
+  { immediate: true }
+)
 
 const conditionExprVars = [
   { label: 'Input Query', expr: '${input.query}' },
@@ -422,16 +641,48 @@ const edgeValidationError = computed(() => {
     return t('workflow_editor.condition_edge_trigger_error')
   }
   if (edgeSourceNodeType.value === 'loop' && !['continue', 'exit'].includes(trigger)) {
-    return 'Loop node edges must use loop_continue or loop_exit trigger.'
+    return t('workflow_editor.loop_edge_trigger_error')
   }
   if (
     edgeSourceNodeType.value !== 'condition' &&
     edgeSourceNodeType.value !== 'loop' &&
     ['true', 'false', 'continue', 'exit'].includes(trigger)
   ) {
-    return 'This trigger is only valid for condition/loop source nodes.'
+    return t('workflow_editor.edge_trigger_scope_error')
   }
   return ''
+})
+
+/** Sub-workflow 节点配置校验（编辑器内表单校验） */
+const subWorkflowConfigErrors = computed(() => {
+  if (resolvedNode.value?.data?.type !== 'sub_workflow') return []
+  const c = config() as Record<string, unknown>
+  const errs: string[] = []
+  const workflowId = String(c.target_workflow_id ?? '').trim()
+  if (!workflowId) errs.push(t('workflow_editor.subworkflow_target_required'))
+  if (subWorkflowSelfReference.value) {
+    errs.push(t('workflow_editor.subworkflow_self_reference_risk'))
+  }
+  const selector = String(c.target_version_selector ?? c.version_selector ?? 'fixed')
+    .trim()
+    .toLowerCase()
+  if (selector === 'fixed') {
+    const targetVersionId = String(c.target_version_id ?? '').trim()
+    const targetVersion = String(c.target_version ?? '').trim()
+    if (!targetVersionId && !targetVersion) {
+      errs.push(t('workflow_editor.subworkflow_fixed_version_required'))
+    }
+  } else if (selector !== 'latest') {
+    errs.push(t('workflow_editor.subworkflow_selector_unsupported', { selector }))
+  }
+  for (const key of ['input_mapping', 'output_mapping'] as const) {
+    const v = c[key]
+    if (v === undefined || v === null) continue
+    if (typeof v !== 'object' || Array.isArray(v)) {
+      errs.push(t('workflow_editor.subworkflow_mapping_object_required', { key }))
+    }
+  }
+  return errs
 })
 
 function updateEdgeTrigger(value: string) {
@@ -448,11 +699,11 @@ const agentConfigErrors = computed(() => {
   const c = config() as Record<string, unknown>
   const errs: string[] = []
   const aid = (c.agent_id as string)?.trim()
-  if (!aid) errs.push('请选择要调用的 Agent（必填）')
+  if (!aid) errs.push(t('workflow_editor.agent_required'))
   const timeout = c.timeout
   if (timeout !== undefined && timeout !== null && timeout !== '') {
     const n = Number(timeout)
-    if (Number.isNaN(n) || n < 0) errs.push('Timeout 须为非负整数（秒）')
+    if (Number.isNaN(n) || n < 0) errs.push(t('workflow_editor.agent_timeout_non_negative'))
   }
   const maxSteps = c.max_steps
   if (maxSteps !== undefined && maxSteps !== null && maxSteps !== '') {
@@ -1178,6 +1429,235 @@ const toolInputFieldErrors = computed<Record<string, string>>(() => {
             <p class="text-xs text-muted-foreground">
               {{ t('workflow_editor.input_schema_hint') }}
             </p>
+          </div>
+        </details>
+      </template>
+
+      <!-- Sub-workflow：模块化引用 -->
+      <template v-else-if="resolvedNode && resolvedNode.data?.type === 'sub_workflow'">
+        <div
+          v-if="subWorkflowConfigErrors.length"
+          class="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400 space-y-1"
+        >
+          <p class="font-medium">{{ t('workflow_editor.config_validation') }}</p>
+          <ul class="list-disc list-inside">
+            <li v-for="(msg, i) in subWorkflowConfigErrors" :key="i">{{ msg }}</li>
+          </ul>
+        </div>
+        <details class="config-section border rounded-lg border-border/60 bg-muted/20" open>
+          <summary class="config-section-summary px-3 py-2 text-sm font-medium cursor-pointer list-none flex items-center justify-between hover:bg-muted/40 rounded-t-lg [&::-webkit-details-marker]:hidden">
+            <span>{{ t('workflow_editor.section_basic') }}</span>
+            <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
+          </summary>
+          <div class="px-3 pb-3 pt-0 space-y-3">
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.subworkflow_browse_title') }}</p>
+            <Input
+              v-model="subWorkflowBrowseSearch"
+              class="h-9 text-xs"
+              :placeholder="t('workflow_editor.subworkflow_search_placeholder')"
+            />
+            <p v-if="workflowsCatalogLoading" class="text-xs text-muted-foreground flex items-center gap-1">
+              <Loader2 class="w-3 h-3 animate-spin shrink-0" />
+              {{ t('workflow_editor.subworkflow_loading_workflows') }}
+            </p>
+            <div
+              v-else
+              class="max-h-36 overflow-y-auto rounded-md border border-border/60 divide-y divide-border/50 bg-background/50"
+            >
+              <button
+                v-for="w in filteredSubWorkflowCatalog"
+                :key="w.id"
+                type="button"
+                class="w-full text-left px-2.5 py-2 text-xs transition-colors hover:bg-muted/50"
+                :class="
+                  String((config().target_workflow_id as string) ?? '').trim() === w.id
+                    ? 'bg-primary/10 border-l-2 border-l-primary'
+                    : ''
+                "
+                @click="pickSubWorkflowFromCatalog(w)"
+              >
+                <div class="font-mono text-foreground truncate">{{ w.id }}</div>
+                <div class="text-muted-foreground truncate">{{ w.name }}</div>
+                <div class="text-[10px] text-muted-foreground mt-0.5">
+                  {{ t('workflow_editor.subworkflow_updated') }} {{ formatWorkflowTs(w.updated_at) }}
+                </div>
+              </button>
+              <div
+                v-if="!filteredSubWorkflowCatalog.length"
+                class="px-2.5 py-3 text-xs text-muted-foreground"
+              >
+                {{ t('workflow_editor.subworkflow_catalog_empty') }}
+              </div>
+            </div>
+            <p v-if="subWorkflowSelfReference" class="text-xs text-amber-600 dark:text-amber-500">
+              {{ t('workflow_editor.subworkflow_self_reference') }}
+            </p>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.subworkflow_target_id') }}</p>
+            <Input
+              :model-value="String((config().target_workflow_id as string) ?? '').trim()"
+              :placeholder="t('workflow_editor.subworkflow_target_placeholder')"
+              class="h-9 font-mono text-xs"
+              @update:model-value="onSubWorkflowTargetWorkflowIdInput"
+            />
+            <div
+              v-if="selectedSubWorkflowRecord"
+              class="rounded-md border border-border/50 bg-muted/20 px-2.5 py-2 text-[11px] text-muted-foreground space-y-0.5"
+            >
+              <div class="font-medium text-foreground">{{ selectedSubWorkflowRecord.name }}</div>
+              <div>{{ t('workflow_editor.subworkflow_updated') }} {{ formatWorkflowTs(selectedSubWorkflowRecord.updated_at) }}</div>
+            </div>
+            <p class="text-sm font-medium leading-none">{{ t('workflow_editor.subworkflow_version_policy') }}</p>
+            <select
+              class="flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+              :value="String((config().target_version_selector as string) ?? 'fixed').toLowerCase()"
+              @change="onSubWorkflowVersionPolicyChange"
+            >
+              <option value="fixed">{{ t('workflow_editor.subworkflow_version_fixed') }}</option>
+              <option value="latest">{{ t('workflow_editor.subworkflow_version_latest') }}</option>
+            </select>
+            <p class="text-xs text-muted-foreground">{{ t('workflow_editor.subworkflow_version_hint') }}</p>
+            <template v-if="String((config().target_version_selector as string) ?? 'fixed').toLowerCase() === 'fixed'">
+              <p class="text-sm font-medium leading-none">{{ t('workflow_editor.subworkflow_pick_version') }}</p>
+              <p v-if="subWorkflowVersionsLoading" class="text-xs text-muted-foreground flex items-center gap-1">
+                <Loader2 class="w-3 h-3 animate-spin shrink-0" />
+                {{ t('workflow_editor.subworkflow_loading_versions') }}
+              </p>
+              <select
+                v-else
+                class="flex h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm font-mono text-xs"
+                :value="String((config().target_version_id as string) ?? '')"
+                @change="onPickSubWorkflowVersionSelect"
+              >
+                <option value="">{{ t('workflow_editor.subworkflow_version_placeholder') }}</option>
+                <option
+                  v-for="v in sortedSubWorkflowVersions"
+                  :key="v.version_id"
+                  :value="v.version_id"
+                >
+                  {{ v.version_number }} · {{ v.state }} · {{ formatWorkflowTs(v.published_at || v.created_at) }}
+                </option>
+              </select>
+              <p v-if="subWorkflowVersionMetaLoading" class="text-xs text-muted-foreground flex items-center gap-1">
+                <Loader2 class="w-3 h-3 animate-spin shrink-0" />
+                {{ t('workflow_editor.subworkflow_loading_node_count') }}
+              </p>
+              <p
+                v-else-if="subWorkflowVersionNodeCount !== null"
+                class="text-xs text-muted-foreground"
+              >
+                {{ t('workflow_editor.subworkflow_nodes_count', { count: subWorkflowVersionNodeCount ?? 0 }) }}
+              </p>
+              <details class="rounded-md border border-border/50 bg-muted/10 mt-1">
+                <summary class="cursor-pointer px-2 py-1.5 text-[11px] text-muted-foreground">
+                  {{ t('workflow_editor.subworkflow_manual_version_fields') }}
+                </summary>
+                <div class="px-2 pb-2 pt-0 space-y-2">
+                  <p class="text-xs font-medium text-foreground">{{ t('workflow_editor.subworkflow_target_version_id') }}</p>
+                  <Input
+                    :model-value="String((config().target_version_id as string) ?? '')"
+                    :placeholder="t('workflow_editor.subworkflow_target_version_id_placeholder')"
+                    class="h-9 font-mono text-xs"
+                    @update:model-value="onSubWorkflowManualVersionIdInput"
+                  />
+                  <p class="text-[11px] text-muted-foreground">{{ t('workflow_editor.subworkflow_or') }}</p>
+                  <p class="text-xs font-medium text-foreground">{{ t('workflow_editor.subworkflow_target_version_semver') }}</p>
+                  <Input
+                    :model-value="String((config().target_version as string) ?? '')"
+                    :placeholder="t('workflow_editor.subworkflow_target_version_semver_placeholder')"
+                    class="h-9 font-mono text-xs"
+                    @update:model-value="(v) => updateConfig('target_version', String(v ?? '').trim() || undefined)"
+                  />
+                </div>
+              </details>
+            </template>
+            <div class="space-y-2">
+              <p class="text-sm font-medium leading-none">{{ t('workflow_editor.subworkflow_wait_timeout') }}</p>
+              <Input
+                type="number"
+                min="0"
+                step="1"
+                class="h-9"
+                :model-value="
+                  config().wait_timeout_seconds === undefined || config().wait_timeout_seconds === null
+                    ? ''
+                    : String(config().wait_timeout_seconds)
+                "
+                :placeholder="t('workflow_editor.default_placeholder')"
+                @update:model-value="(v) => {
+                  const s = String(v ?? '').trim()
+                  if (!s) { updateConfig('wait_timeout_seconds', undefined); return }
+                  const n = Number(s)
+                  if (!Number.isNaN(n) && n >= 0) updateConfig('wait_timeout_seconds', n)
+                }"
+              />
+            </div>
+          </div>
+        </details>
+        <details class="config-section border rounded-lg border-border/60 bg-muted/20 mt-2">
+          <summary class="config-section-summary px-3 py-2 text-sm font-medium cursor-pointer list-none flex items-center justify-between hover:bg-muted/40 rounded-t-lg [&::-webkit-details-marker]:hidden">
+            <span>{{ t('workflow_editor.subworkflow_mapping_section') }}</span>
+            <span class="config-section-chevron text-muted-foreground transition-transform duration-200 select-none">▼</span>
+          </summary>
+          <div class="px-3 pb-3 pt-0 space-y-3">
+            <div class="space-y-2">
+              <p class="text-xs font-medium">{{ t('workflow_editor.subworkflow_input_mapping') }}</p>
+              <Textarea
+                :model-value="
+                  typeof config().input_mapping === 'object' &&
+                  config().input_mapping !== null &&
+                  !Array.isArray(config().input_mapping)
+                    ? JSON.stringify(config().input_mapping as Record<string, unknown>, null, 2)
+                    : '{}'
+                "
+                rows="6"
+                class="text-xs font-mono"
+                :placeholder="t('workflow_editor.subworkflow_input_mapping_placeholder')"
+                @update:model-value="(value) => {
+                  const s = String(value ?? '').trim()
+                  if (!s || s === '{}') {
+                    updateConfig('input_mapping', undefined)
+                    return
+                  }
+                  try {
+                    const parsed = JSON.parse(s)
+                    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return
+                    updateConfig('input_mapping', parsed as Record<string, unknown>)
+                  } catch {
+                    /* 非法 JSON 不写入 */
+                  }
+                }"
+              />
+            </div>
+            <div class="space-y-2">
+              <p class="text-xs font-medium">{{ t('workflow_editor.subworkflow_output_mapping') }}</p>
+              <Textarea
+                :model-value="
+                  typeof config().output_mapping === 'object' &&
+                  config().output_mapping !== null &&
+                  !Array.isArray(config().output_mapping)
+                    ? JSON.stringify(config().output_mapping as Record<string, unknown>, null, 2)
+                    : '{}'
+                "
+                rows="6"
+                class="text-xs font-mono"
+                :placeholder="t('workflow_editor.subworkflow_output_mapping_placeholder')"
+                @update:model-value="(value) => {
+                  const s = String(value ?? '').trim()
+                  if (!s || s === '{}') {
+                    updateConfig('output_mapping', undefined)
+                    return
+                  }
+                  try {
+                    const parsed = JSON.parse(s)
+                    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return
+                    updateConfig('output_mapping', parsed as Record<string, unknown>)
+                  } catch {
+                    /* 非法 JSON 不写入 */
+                  }
+                }"
+              />
+              <p class="text-xs text-muted-foreground">{{ t('workflow_editor.subworkflow_mapping_hint') }}</p>
+            </div>
           </div>
         </details>
       </template>

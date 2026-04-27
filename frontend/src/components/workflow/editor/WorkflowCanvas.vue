@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { markRaw, nextTick, onMounted, onUnmounted, ref, provide, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { VueFlow } from '@vue-flow/core'
 import { Search, ZoomIn, ZoomOut, ScanSearch, FolderTree } from 'lucide-vue-next'
 import { registerWorkflowCanvasSelect, registerWorkflowGroupResizeStart } from './canvasSelection'
@@ -19,6 +20,7 @@ const props = withDefaults(
 const FLOW_ID = 'workflow-editor-canvas'
 const SNAP_GRID: [number, number] = [16, 16]
 const LARGE_GRAPH_NODE_THRESHOLD = 50
+const { t } = useI18n()
 
 const emit = defineEmits<{
   'update:nodes': [Node<WorkflowNodeData>[]]
@@ -86,15 +88,26 @@ const nodeTypes = { workflow: markRaw(WorkflowNode) }
 function defaultDataForType(type: WorkflowNodeData['type']): WorkflowNodeData {
   return {
     type,
-    label: type === 'llm' ? 'LLM' : type === 'agent' ? 'Agent' : type === 'skill' ? 'Tool' : 'Node',
+    label:
+      type === 'llm'
+        ? t('workflow_editor.node_llm')
+        : type === 'agent'
+          ? t('workflow_editor.node_agent')
+          : type === 'skill'
+            ? t('workflow_editor.node_skill')
+            : type === 'sub_workflow'
+              ? t('workflow_editor.node_sub_workflow')
+              : t('workflow_editor.node_default'),
     subtitle:
       type === 'llm'
-        ? 'Select model'
+        ? t('workflow_editor.default_select_model')
         : type === 'skill'
-          ? 'Select tool'
+          ? t('workflow_editor.default_select_tool')
           : type === 'agent'
-            ? 'Select agent'
-            : undefined,
+            ? t('workflow_editor.default_select_agent')
+            : type === 'sub_workflow'
+              ? t('workflow_editor.default_subworkflow_id')
+              : undefined,
     config:
       type === 'llm'
         ? { model_id: '' }
@@ -102,7 +115,13 @@ function defaultDataForType(type: WorkflowNodeData['type']): WorkflowNodeData {
           ? { tool_name: '' }
           : type === 'agent'
             ? { agent_id: '', agent_display_name: '' }
-            : {},
+            : type === 'sub_workflow'
+              ? {
+                  workflow_node_type: 'sub_workflow',
+                  target_workflow_id: '',
+                  target_version_selector: 'fixed',
+                }
+              : {},
   }
 }
 

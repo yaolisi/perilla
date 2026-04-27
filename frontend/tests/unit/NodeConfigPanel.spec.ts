@@ -4,6 +4,26 @@ import { describe, expect, it, vi } from 'vitest'
 import NodeConfigPanel from '@/components/workflow/editor/NodeConfigPanel.vue'
 
 vi.mock('@/services/api', () => ({
+  listWorkflows: vi.fn(async () => ({
+    items: [],
+    total: 0,
+    limit: 500,
+    offset: 0,
+  })),
+  listWorkflowVersions: vi.fn(async () => ({
+    items: [],
+    total: 0,
+    limit: 200,
+    offset: 0,
+  })),
+  getWorkflowVersion: vi.fn(async () => ({
+    version_id: 'v1',
+    workflow_id: 'wf1',
+    version_number: '1.0.0',
+    state: 'published',
+    created_at: '',
+    dag: { nodes: [], edges: [] },
+  })),
   listModels: vi.fn(async () => ({
     data: [
       { id: 'qwen-7b', name: 'qwen-7b', display_name: 'Qwen 7B', backend: 'ollama', model_type: 'llm' },
@@ -29,7 +49,15 @@ function makeI18n() {
   return createI18n({
     legacy: false,
     locale: 'zh',
-    messages: { zh: {} },
+    messages: {
+      zh: {
+        workflow_editor: {
+          subworkflow_target_required: '请选择或填写目标工作流 ID（target_workflow_id）',
+          subworkflow_fixed_version_required: '固定版本策略下，请选择版本或填写 target_version_id / target_version',
+          config_validation: '配置校验',
+        },
+      },
+    },
     missingWarn: false,
     fallbackWarn: false,
   })
@@ -198,5 +226,37 @@ describe('NodeConfigPanel searchable selectors', () => {
       tool_id: 'web.search',
       tool_display_name: 'Web Search',
     })
+  })
+
+  it('shows sub_workflow config validation warnings', async () => {
+    const wrapper = mount(NodeConfigPanel, {
+      props: {
+        node: {
+          id: 'n-7',
+          data: {
+            type: 'sub_workflow',
+            label: 'Sub-workflow',
+            config: { target_version_selector: 'fixed' },
+          },
+        } as any,
+        selectedNodeId: 'n-7',
+        nodes: [
+          {
+            id: 'n-7',
+            data: {
+              type: 'sub_workflow',
+              label: 'Sub-workflow',
+              config: { target_version_selector: 'fixed' },
+            },
+          },
+        ] as any,
+      },
+      global: { plugins: [makeI18n()] },
+    })
+
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('请选择或填写目标工作流 ID')
+    expect(text).toContain('固定版本策略下')
   })
 })

@@ -10,6 +10,8 @@ export interface ValidationError {
   nodeId: string
   nodeLabel?: string
   message: string
+  messageKey?: string
+  messageParams?: Record<string, unknown>
 }
 
 const DEFAULT_INPUT_KEYS = new Set(['query', 'text', 'prompt', 'message'])
@@ -43,6 +45,7 @@ export function validateWorkflowNodes(
             nodeId: node.id,
             nodeLabel: label,
             message: 'Input 节点：input_key 仅允许字符串',
+            messageKey: 'workflow_editor.input_key_string_only',
           })
         }
       }
@@ -53,6 +56,7 @@ export function validateWorkflowNodes(
             nodeId: node.id,
             nodeLabel: label,
             message: 'Input 节点：fixed_input 须为合法 JSON 对象',
+            messageKey: 'workflow_editor.fixed_input_object_only',
           })
         }
       }
@@ -63,6 +67,7 @@ export function validateWorkflowNodes(
             nodeId: node.id,
             nodeLabel: label,
             message: 'Input 节点：input_schema 须为合法 JSON 对象',
+            messageKey: 'workflow_editor.input_schema_object_only',
           })
         }
       }
@@ -79,7 +84,58 @@ export function validateWorkflowNodes(
           nodeId: node.id,
           nodeLabel: label,
           message: 'Output 节点：使用 expression 时 output_key 必填',
+          messageKey: 'workflow_editor.output_key_required_with_expression',
         })
+      }
+    }
+
+    if (type === 'sub_workflow') {
+      const wid = String(config.target_workflow_id ?? '').trim()
+      if (!wid) {
+        errors.push({
+          nodeId: node.id,
+          nodeLabel: label,
+          message: 'Sub-workflow 节点：请填写目标工作流 ID（target_workflow_id）',
+          messageKey: 'workflow_editor.subworkflow_target_required',
+        })
+      }
+      const selector = String(config.target_version_selector ?? config.version_selector ?? 'fixed')
+        .trim()
+        .toLowerCase()
+      if (selector === 'fixed') {
+        const hasVer =
+          String(config.target_version_id ?? '').trim() ||
+          String(config.target_version ?? '').trim()
+        if (!hasVer) {
+          errors.push({
+            nodeId: node.id,
+            nodeLabel: label,
+            message:
+              'Sub-workflow（固定版本）：请填写 target_version_id 或语义化版本 target_version（如 1.0.0）',
+            messageKey: 'workflow_editor.subworkflow_fixed_version_required',
+          })
+        }
+      } else if (selector !== 'latest') {
+        errors.push({
+          nodeId: node.id,
+          nodeLabel: label,
+          message: `Sub-workflow：不支持的版本策略 "${selector}"，仅支持 fixed / latest`,
+          messageKey: 'workflow_editor.subworkflow_selector_unsupported',
+          messageParams: { selector },
+        })
+      }
+      for (const key of ['input_mapping', 'output_mapping'] as const) {
+        const raw = config[key]
+        if (raw === undefined || raw === null || raw === '') continue
+        if (typeof raw !== 'object' || Array.isArray(raw)) {
+          errors.push({
+            nodeId: node.id,
+            nodeLabel: label,
+            message: `Sub-workflow：${key} 须为 JSON 对象`,
+            messageKey: 'workflow_editor.subworkflow_mapping_object_required',
+            messageParams: { key },
+          })
+        }
       }
     }
   }
@@ -121,6 +177,7 @@ export function validateWorkflowPreflight(
         nodeId: node.id,
         nodeLabel: label,
         message: 'Condition 节点：condition_expression 为空，请填写条件表达式',
+        messageKey: 'workflow_editor.condition_expression_required',
       })
       continue
     }
@@ -134,6 +191,8 @@ export function validateWorkflowPreflight(
             nodeId: node.id,
             nodeLabel: label,
             message: `Condition 变量不存在：\${${v}}。当前 Input 未提供该字段（可用: ${Array.from(inputFixedInputKeySet).join(', ')})`,
+            messageKey: 'workflow_editor.condition_variable_missing',
+            messageParams: { variable: v, available: Array.from(inputFixedInputKeySet).join(', ') },
           })
         }
       } else if (v.startsWith('nodes.')) {
@@ -144,6 +203,8 @@ export function validateWorkflowPreflight(
             nodeId: node.id,
             nodeLabel: label,
             message: `Condition 引用了不存在的节点变量：\${${v}}`,
+            messageKey: 'workflow_editor.condition_node_reference_missing',
+            messageParams: { variable: v },
           })
         }
       }
@@ -157,6 +218,7 @@ export function validateWorkflowPreflight(
         nodeId: node.id,
         nodeLabel: label,
         message: 'Condition 可能恒为 false：query 默认值为空，请检查 Input.fixed_input.query 或执行入参 input_data.query',
+        messageKey: 'workflow_editor.condition_query_maybe_always_false',
       })
     }
   }
@@ -174,6 +236,7 @@ export function validateWorkflowPreflight(
         nodeId: node.id,
         nodeLabel: label,
         message: 'Condition 分支不完整：需要同时配置 true 与 false 两条出边',
+        messageKey: 'workflow_editor.condition_branch_incomplete',
       })
     }
   }

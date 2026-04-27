@@ -11,7 +11,7 @@ import NodeConfigPanel from './editor/NodeConfigPanel.vue'
 import type { Node } from '@vue-flow/core'
 import type { Edge } from '@vue-flow/core'
 import type { WorkflowNodeData } from './editor/types'
-import { validateWorkflowNodes, validateWorkflowPreflight } from './editor/validation'
+import { validateWorkflowNodes, validateWorkflowPreflight, type ValidationError } from './editor/validation'
 import {
   createWorkflow,
   createWorkflowVersion,
@@ -66,7 +66,7 @@ const lastSnapshotSignature = ref('')
 const lastSavedSignature = ref('')
 let autosaveTimer: number | null = null
 const CREATE_DRAFT_KEY = 'workflow:create:draft'
-const validationErrors = ref<Array<{ nodeId: string; nodeLabel?: string; message: string }>>([])
+const validationErrors = ref<ValidationError[]>([])
 const draftRestorePending = ref<EditorSnapshot | null>(null)
 const selectedTemplateId = ref<ToolCompositionTemplateId>('travel_planning')
 const templates = listToolCompositionTemplates()
@@ -144,6 +144,11 @@ const selectedNodeAgentDisplayName = computed(() => {
   const id = (c as Record<string, unknown>).agent_id
   return (typeof name === 'string' && name) || (typeof id === 'string' ? id : '')
 })
+
+function renderValidationError(e: ValidationError): string {
+  if (e.messageKey) return t(e.messageKey, (e.messageParams || {}) as Record<string, unknown>)
+  return e.message
+}
 
 watch(editorNodes, () => {
   const id = selectedNode.value?.id
@@ -749,7 +754,7 @@ onUnmounted(() => {
           class="cursor-pointer hover:underline text-amber-700 dark:text-amber-300"
           @click="onSelectNodeById(e.nodeId)"
         >
-          [{{ e.nodeLabel || e.nodeId }}] {{ e.message }}
+          [{{ e.nodeLabel || e.nodeId }}] {{ renderValidationError(e) }}
         </li>
       </ul>
     </div>
@@ -785,6 +790,7 @@ onUnmounted(() => {
           :node="selectedNode"
           :edge="selectedEdge"
           :nodes="editorNodes"
+          :editor-workflow-id="savedWorkflowId || undefined"
           :selected-model-id="selectedNodeModelId"
           :selected-model-display-name="selectedNodeModelDisplayName"
           :selected-agent-id="selectedNodeAgentId"

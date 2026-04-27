@@ -1,5 +1,6 @@
 import type { Edge, Node } from '@vue-flow/core'
 import type { WorkflowDagPayload, WorkflowEdgePayload, WorkflowNodePayload } from '@/services/api'
+import { i18n } from '@/i18n'
 import type { EditorNodeType, WorkflowNodeData } from './types'
 
 const EDITOR_TO_RUNTIME_TYPE: Record<EditorNodeType, string> = {
@@ -16,6 +17,7 @@ const EDITOR_TO_RUNTIME_TYPE: Record<EditorNodeType, string> = {
   condition: 'condition',
   loop: 'loop',
   parallel: 'parallel',
+  sub_workflow: 'tool',
   skill: 'tool',
   http_request: 'tool',
   python: 'script',
@@ -33,6 +35,37 @@ const RUNTIME_TO_EDITOR_TYPE: Record<string, EditorNodeType> = {
   tool: 'skill',
   script: 'shell',
   agent: 'agent',
+}
+
+const EDITOR_NODE_LABEL_KEY_MAP: Partial<Record<EditorNodeType, string>> = {
+  start: 'workflow_editor.node_start',
+  llm: 'workflow_editor.node_llm',
+  prompt_template: 'workflow_editor.node_prompt_template',
+  input: 'workflow_editor.node_input',
+  output: 'workflow_editor.node_output',
+  condition: 'workflow_editor.node_condition',
+  loop: 'workflow_editor.node_loop',
+  sub_workflow: 'workflow_editor.node_sub_workflow',
+  shell: 'workflow_editor.node_shell',
+  skill: 'workflow_editor.node_skill',
+}
+
+const EDITOR_NODE_SUBTITLE_FALLBACK_KEY_MAP: Partial<Record<EditorNodeType, string>> = {
+  llm: 'workflow_editor.default_select_model',
+  agent: 'workflow_editor.default_select_agent',
+  skill: 'workflow_editor.default_select_tool',
+}
+
+/** 从持久化 DAG 推断编辑器节点类型（tool + workflow_node_type 等） */
+export function inferEditorNodeType(node: WorkflowNodePayload): EditorNodeType {
+  if (node.id === 'start') return 'start'
+  const cfg = (node.config || {}) as Record<string, unknown>
+  const wnt = String(cfg.workflow_node_type || '').trim().toLowerCase()
+  if (wnt === 'sub_workflow') return 'sub_workflow'
+  if (wnt === 'parallel') return 'parallel'
+  if (wnt === 'loop') return 'loop'
+  const rt = node.type || ''
+  return RUNTIME_TO_EDITOR_TYPE[rt] ?? 'skill'
 }
 
 export function toWorkflowDag(
@@ -76,6 +109,9 @@ export function toWorkflowDag(
     if (editorType === 'shell' || editorType === 'python') {
       config.workflow_node_type = editorType
     }
+    if (editorType === 'sub_workflow') {
+      config.workflow_node_type = 'sub_workflow'
+    }
 
     return {
       id: node.id,
@@ -108,9 +144,7 @@ export function fromWorkflowDag(dag: WorkflowDagPayload): {
   edges: Edge[]
 } {
   const nodes: Node<WorkflowNodeData>[] = (dag.nodes || []).map((node) => {
-    const runtimeType = node.type
-    // 始终将 id 为 start 的节点识别为 Start，避免被误映射为 skill 而显示 Tool 配置
-    const editorType = node.id === 'start' ? 'start' : (RUNTIME_TO_EDITOR_TYPE[runtimeType] ?? 'skill')
+    const editorType = inferEditorNodeType(node)
     const config = { ...(node.config || {}) }
 
     return {
@@ -140,37 +174,25 @@ export function fromWorkflowDag(dag: WorkflowDagPayload): {
 }
 
 function labelForEditorType(type: EditorNodeType): string {
-  switch (type) {
-    case 'start':
-      return 'Start'
-    case 'llm':
-      return 'LLM'
-    case 'prompt_template':
-      return 'Prompt Template'
-    case 'input':
-      return 'Input'
-    case 'output':
-      return 'Output'
-    case 'condition':
-      return 'Condition'
-    case 'loop':
-      return 'Loop'
-    case 'shell':
-      return 'Shell'
-    default:
-      return 'Tool'
-  }
+  const t = i18n.global.t
+  const key = EDITOR_NODE_LABEL_KEY_MAP[type] || 'workflow_editor.node_skill'
+  return String(t(key))
 }
 
 function subtitleFromConfig(type: EditorNodeType, config: Record<string, unknown>): string | undefined {
+  const t = i18n.global.t
   if (type === 'llm') {
-    return (config.model_display_name as string) || (config.model_id as string) || (config.model as string) || 'Select model'
+    return (config.model_display_name as string) || (config.model_id as string) || (config.model as string) || String(t(EDITOR_NODE_SUBTITLE_FALLBACK_KEY_MAP.llm!))
   }
   if (type === 'agent') {
-    return (config.agent_display_name as string) || (config.agent_id as string) || 'Select agent'
+    return (config.agent_display_name as string) || (config.agent_id as string) || String(t(EDITOR_NODE_SUBTITLE_FALLBACK_KEY_MAP.agent!))
   }
   if (type === 'skill') {
-    return (config.tool_display_name as string) || (config.tool_name as string) || (config.tool_id as string) || 'Select tool'
+    return (config.tool_display_name as string) || (config.tool_name as string) || (config.tool_id as string) || String(t(EDITOR_NODE_SUBTITLE_FALLBACK_KEY_MAP.skill!))
+  }
+  if (type === 'sub_workflow') {
+    const id = String((config.target_workflow_id as string) ?? '').trim()
+    return id || undefined
   }
   return undefined
 }

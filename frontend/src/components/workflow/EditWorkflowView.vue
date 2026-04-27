@@ -17,7 +17,7 @@ import type { Node } from '@vue-flow/core'
 import type { Edge } from '@vue-flow/core'
 import type { WorkflowNodeData } from './editor/types'
 import { toWorkflowDag, fromWorkflowDag } from './editor/serialization'
-import { validateWorkflowNodes, validateWorkflowPreflight } from './editor/validation'
+import { validateWorkflowNodes, validateWorkflowPreflight, type ValidationError } from './editor/validation'
 import {
   getWorkflow,
   getWorkflowVersion,
@@ -90,7 +90,7 @@ const lastBackendDraftSignature = ref('')
 let autosaveTimer: number | null = null
 const saveInProgress = ref(false)
 const EDIT_DRAFT_KEY = `workflow:edit:${workflowId}:draft`
-const validationErrors = ref<Array<{ nodeId: string; nodeLabel?: string; message: string }>>([])
+const validationErrors = ref<ValidationError[]>([])
 const draftRestorePending = ref<EditorSnapshot | null>(null)
 const reflectorMaxRetries = ref<number>(0)
 const reflectorRetryIntervalSeconds = ref<number>(1)
@@ -122,6 +122,11 @@ const selectedNodeAgentDisplayName = computed(() => {
   const id = (c as Record<string, unknown>).agent_id
   return (typeof name === 'string' && name) || (typeof id === 'string' ? id : '')
 })
+
+function renderValidationError(e: ValidationError): string {
+  if (e.messageKey) return t(e.messageKey, (e.messageParams || {}) as Record<string, unknown>)
+  return e.message
+}
 
 const effectiveReflectorPolicy = computed(() => {
   const selectedConfig = (selectedNode.value?.data?.config || {}) as Record<string, unknown>
@@ -1265,7 +1270,7 @@ onUnmounted(() => {
           class="cursor-pointer hover:underline text-amber-700 dark:text-amber-300"
           @click="onSelectNodeById(e.nodeId)"
         >
-          [{{ e.nodeLabel || e.nodeId }}] {{ e.message }}
+          [{{ e.nodeLabel || e.nodeId }}] {{ renderValidationError(e) }}
         </li>
       </ul>
     </div>
@@ -1307,6 +1312,7 @@ onUnmounted(() => {
           :selected-node-id="selectedNodeId"
           :edge="selectedEdge"
           :nodes="editorNodes"
+          :editor-workflow-id="workflowId"
           :selected-model-id="selectedNodeModelId"
           :selected-model-display-name="selectedNodeModelDisplayName"
           :selected-agent-id="selectedNodeAgentId"

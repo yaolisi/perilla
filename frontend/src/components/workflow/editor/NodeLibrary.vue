@@ -12,6 +12,7 @@ import {
   GitBranch,
   Repeat,
   Copy,
+  Boxes,
   Sparkles,
   Globe,
   Code,
@@ -36,6 +37,7 @@ const iconMap: Record<EditorNodeType, typeof Brain> = {
   condition: GitBranch,
   loop: Repeat,
   parallel: Copy,
+  sub_workflow: Boxes,
   skill: Sparkles,
   http_request: Globe,
   python: Code,
@@ -48,9 +50,23 @@ function getIcon(item: NodeLibraryItem): LucideIcon {
   return iconMap[item.type] ?? Brain
 }
 
+function nodeLabel(item: NodeLibraryItem): string {
+  const key = item.labelKey || `workflow_editor.node_${item.type}`
+  const translated = t(key)
+  return translated === key ? item.label : translated
+}
+
+function nodeDisabledReason(item: NodeLibraryItem): string {
+  if (item.disabledReasonKey) {
+    const translated = t(item.disabledReasonKey)
+    if (translated !== item.disabledReasonKey) return translated
+  }
+  return item.disabledReason || ''
+}
+
 function onDragStart(e: DragEvent, item: NodeLibraryItem) {
   if (item.disabled || !e.dataTransfer) return
-  e.dataTransfer.setData('application/vnd.workflow-node', JSON.stringify({ type: item.type, label: item.label }))
+  e.dataTransfer.setData('application/vnd.workflow-node', JSON.stringify({ type: item.type, label: nodeLabel(item) }))
   e.dataTransfer.effectAllowed = 'move'
 }
 </script>
@@ -81,8 +97,8 @@ function onDragStart(e: DragEvent, item: NodeLibraryItem) {
                 class="w-5 h-5 shrink-0 text-muted-foreground"
               />
               <div class="min-w-0">
-                <div class="text-sm font-medium text-foreground">{{ item.label }}</div>
-                <div v-if="item.disabledReason" class="text-[11px] text-muted-foreground truncate">{{ item.disabledReason }}</div>
+                <div class="text-sm font-medium text-foreground">{{ nodeLabel(item) }}</div>
+                <div v-if="nodeDisabledReason(item)" class="text-[11px] text-muted-foreground truncate">{{ nodeDisabledReason(item) }}</div>
               </div>
             </div>
           </div>
