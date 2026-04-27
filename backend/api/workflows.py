@@ -71,6 +71,9 @@ MSG_VERSION_NOT_FOUND = "Version not found"
 MSG_EXECUTION_NOT_FOUND = "Execution not found"
 MSG_ADMIN_ACCESS_REQUIRED = "Admin access required"
 FAILURE_REPORT_SCHEMA_VERSION = "1.1"
+SSE_STATUS_DELTA_SCHEMA_VERSION = 1
+SSE_STREAM_RESOURCE_NOT_FOUND_ERROR_CODE = "sse_stream_resource_not_found"
+SSE_STREAM_RUNTIME_ERROR_CODE = "sse_stream_runtime_error"
 SENSITIVE_FIELD_KEYS = {
     "authorization",
     "api_key",
@@ -1885,6 +1888,23 @@ def _sse_data(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _build_workflow_status_delta(status_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """压缩执行状态事件，降低 SSE 负载。"""
+    return {
+        "schema_version": SSE_STATUS_DELTA_SCHEMA_VERSION,
+        "execution_id": status_payload.get("execution_id"),
+        "workflow_id": status_payload.get("workflow_id"),
+        "version_id": status_payload.get("version_id"),
+        "state": status_payload.get("state"),
+        "started_at": status_payload.get("started_at"),
+        "finished_at": status_payload.get("finished_at"),
+        "duration_ms": status_payload.get("duration_ms"),
+        "queue_position": status_payload.get("queue_position"),
+        "wait_duration_ms": status_payload.get("wait_duration_ms"),
+        "node_timeline_count": len(status_payload.get("node_timeline") or []),
+    }
+
+
 async def _load_execution_status_payload(
     *,
     execution_id: str,
@@ -1915,9 +1935,13 @@ def _build_status_or_heartbeat_event(
     now: datetime,
     heartbeat_every: int,
     status_payload: Dict[str, Any],
+    compact: bool = False,
 ) -> tuple[Optional[str], Optional[str], datetime]:
     if current_hash != last_hash:
-        event = _sse_data({"type": "status", "payload": status_payload})
+        if compact:
+            event = _sse_data({"type": "status_delta", "payload": _build_workflow_status_delta(status_payload)})
+        else:
+            event = _sse_data({"type": "status", "payload": status_payload})
         return event, current_hash, now
 
     if (now - heartbeat_at).total_seconds() >= heartbeat_every:
@@ -1972,6 +1996,7 @@ async def _stream_status_tick(
     last_hash: Optional[str],
     heartbeat_at: datetime,
     heartbeat_every: int,
+    compact: bool = False,
 ) -> tuple[Optional[str], Optional[str], datetime, bool]:
     loop_db = SessionLocal()
     try:
@@ -1982,9 +2007,31 @@ async def _stream_status_tick(
             loop_exec_svc=loop_exec_svc,
         )
         if error_message:
-            return _sse_data({"type": "error", "message": error_message}), last_hash, heartbeat_at, True
+            return (
+                _sse_data(
+                    {
+                        "type": "error",
+                        "error_code": SSE_STREAM_RESOURCE_NOT_FOUND_ERROR_CODE,
+                        "message": error_message,
+                    }
+                ),
+                last_hash,
+                heartbeat_at,
+                True,
+            )
         if status_payload is None or is_terminal is None:
-            return _sse_data({"type": "error", "message": MSG_EXECUTION_NOT_FOUND}), last_hash, heartbeat_at, True
+            return (
+                _sse_data(
+                    {
+                        "type": "error",
+                        "error_code": SSE_STREAM_RESOURCE_NOT_FOUND_ERROR_CODE,
+                        "message": MSG_EXECUTION_NOT_FOUND,
+                    }
+                ),
+                last_hash,
+                heartbeat_at,
+                True,
+            )
 
         current_hash = json.dumps(status_payload, ensure_ascii=False, sort_keys=True)
         now = datetime.now(UTC)
@@ -1995,6 +2042,7 @@ async def _stream_status_tick(
             now=now,
             heartbeat_every=heartbeat_every,
             status_payload=status_payload,
+            compact=compact,
         )
         if is_terminal:
             terminal_event = _sse_data({"type": "terminal", "state": status_payload.get("state")})
@@ -2012,6 +2060,7 @@ async def stream_execution_status(
     workflow_id: str,
     execution_id: str,
     interval_ms: Annotated[int, Query(ge=300, le=5000, description="SSE 推送间隔（毫秒）")] = 900,
+    compact: Annotated[bool, Query(description="true 时推送 status_delta（轻量增量）")] = False,
     *,
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> StreamingResponse:
@@ -2042,6 +2091,7 @@ async def stream_execution_status(
                     last_hash=last_hash,
                     heartbeat_at=heartbeat_at,
                     heartbeat_every=heartbeat_every,
+                    compact=compact,
                 )
                 if event is not None:
                     yield event
@@ -2055,7 +2105,13 @@ async def stream_execution_status(
                 logger.debug(
                     f"[WorkflowAPI] status stream loop error: execution_id={execution_id} err={e}"
                 )
-                yield _sse_data({"type": "error", "message": str(e)})
+                yield _sse_data(
+                    {
+                        "type": "error",
+                        "error_code": SSE_STREAM_RUNTIME_ERROR_CODE,
+                        "message": str(e),
+                    }
+                )
                 await asyncio.sleep(min(2.0, sleep_s))
 
     return StreamingResponse(

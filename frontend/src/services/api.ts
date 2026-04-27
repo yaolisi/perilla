@@ -3,6 +3,11 @@
  * 封装所有后端 API 调用
  */
 import { getCookie } from '@/utils/security'
+import {
+  ensureSupportedStatusDeltaSchemaVersion,
+  type AgentSessionStatusDelta,
+  type WorkflowExecutionStatusDelta
+} from '@/utils/streamDeltas'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const CSRF_COOKIE_NAME = 'csrf_token'
@@ -1539,22 +1544,40 @@ export async function downloadWorkflowExecutionFailureReportArchive(
 
 export type WorkflowExecutionStatusStreamMessage =
   | { type: 'status'; payload: WorkflowExecutionStatusRecord }
+  | { type: 'status_delta'; payload: WorkflowExecutionStatusDelta }
   | { type: 'heartbeat'; at?: string }
   | { type: 'terminal'; state?: string }
-  | { type: 'error'; message?: string }
+  | { type: 'error'; message?: string; error_code?: string }
+
+export class StreamEventError extends Error {
+  stream: 'workflow' | 'agent'
+  error_code?: string
+
+  constructor(params: { stream: 'workflow' | 'agent'; message: string; error_code?: string }) {
+    const suffix = params.error_code ? ` [${params.error_code}]` : ''
+    super(`${params.message}${suffix}`)
+    this.name = 'StreamEventError'
+    this.stream = params.stream
+    this.error_code = params.error_code
+  }
+}
 
 export function streamWorkflowExecutionStatus(
   workflowId: string,
   executionId: string,
   handlers: {
     onStatus: (payload: WorkflowExecutionStatusRecord) => void
+    onStatusDelta?: (payload: WorkflowExecutionStatusDelta) => void
     onTerminal?: (state?: string) => void
     onError?: (error: Error) => void
   },
-  options?: { intervalMs?: number }
+  options?: { intervalMs?: number; compact?: boolean }
 ): () => void {
   const intervalMs = Math.max(300, Math.min(5000, Math.floor(options?.intervalMs || 900)))
-  const url = `${API_BASE_URL}/api/v1/workflows/${workflowId}/executions/${executionId}/stream?interval_ms=${intervalMs}`
+  const compact = options?.compact === true
+  const url =
+    `${API_BASE_URL}/api/v1/workflows/${workflowId}/executions/${executionId}/stream?interval_ms=${intervalMs}` +
+    (compact ? '&compact=true' : '')
   const eventSource = new EventSource(url)
 
   eventSource.onmessage = (event) => {
@@ -1565,15 +1588,30 @@ export function streamWorkflowExecutionStatus(
         handlers.onStatus(msg.payload)
         return
       }
+      if (msg.type === 'status_delta' && msg.payload) {
+        ensureSupportedStatusDeltaSchemaVersion(msg.payload, 'workflow')
+        handlers.onStatusDelta?.(msg.payload)
+        return
+      }
       if (msg.type === 'terminal') {
         handlers.onTerminal?.(msg.state)
         return
       }
       if (msg.type === 'error') {
-        handlers.onError?.(new Error(msg.message || 'workflow status stream error'))
+        handlers.onError?.(
+          new StreamEventError({
+            stream: 'workflow',
+            message: msg.message || 'workflow status stream error',
+            error_code: msg.error_code,
+          })
+        )
       }
     } catch (e) {
-      handlers.onError?.(new Error(`workflow status stream parse error: ${String(e)}`))
+      if (e instanceof Error) {
+        handlers.onError?.(e)
+      } else {
+        handlers.onError?.(new Error(`workflow status stream parse error: ${String(e)}`))
+      }
     }
   }
 
@@ -1906,6 +1944,13 @@ export type RunAgentWithFilesCollaboration = {
   invoked_from?: Record<string, unknown>
 }
 
+export type AgentSessionStatusStreamMessage =
+  | { type: 'status'; payload: AgentSession }
+  | { type: 'status_delta'; payload: AgentSessionStatusDelta }
+  | { type: 'heartbeat' }
+  | { type: 'terminal'; state?: AgentSession['status'] | string }
+  | { type: 'error'; message?: string; error_code?: string }
+
 /**
  * 运行智能体（带上传文件）。文件会保存到会话工作目录，file.read 可读取。
  */
@@ -1939,6 +1984,68 @@ export async function runAgentWithFiles(
     throw new Error(err.detail || `API error: ${response.statusText}`)
   }
   return response.json()
+}
+
+export function streamAgentSessionStatus(
+  sessionId: string,
+  handlers: {
+    onStatus: (payload: AgentSession) => void
+    onStatusDelta?: (payload: AgentSessionStatusDelta) => void
+    onTerminal?: (state?: AgentSession['status'] | string) => void
+    onError?: (error: Error) => void
+  },
+  options?: { intervalMs?: number; compact?: boolean }
+): () => void {
+  const intervalMs = Math.max(300, Math.min(5000, Math.floor(options?.intervalMs || 900)))
+  const compact = options?.compact === true
+  const url =
+    `${API_BASE_URL}/api/agent-sessions/${encodeURIComponent(sessionId)}/stream?interval_ms=${intervalMs}` +
+    (compact ? '&compact=true' : '')
+  const eventSource = new EventSource(url, { withCredentials: true })
+
+  eventSource.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data) as AgentSessionStatusStreamMessage
+      if (!msg || typeof msg !== 'object') return
+      if (msg.type === 'status' && msg.payload) {
+        handlers.onStatus(msg.payload)
+        return
+      }
+      if (msg.type === 'status_delta' && msg.payload) {
+        ensureSupportedStatusDeltaSchemaVersion(msg.payload, 'agent')
+        handlers.onStatusDelta?.(msg.payload)
+        return
+      }
+      if (msg.type === 'terminal') {
+        handlers.onTerminal?.(msg.state)
+        return
+      }
+      if (msg.type === 'error') {
+        handlers.onError?.(
+          new StreamEventError({
+            stream: 'agent',
+            message: msg.message || 'agent session stream error',
+            error_code: msg.error_code,
+          })
+        )
+      }
+    } catch (e) {
+      if (e instanceof Error) {
+        handlers.onError?.(e)
+      } else {
+        handlers.onError?.(new Error(`agent session stream parse error: ${String(e)}`))
+      }
+    }
+  }
+
+  eventSource.onerror = () => {
+    handlers.onError?.(new Error('agent session stream connection error'))
+    eventSource.close()
+  }
+
+  return () => {
+    eventSource.close()
+  }
 }
 
 /**

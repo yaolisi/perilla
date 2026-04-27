@@ -44,12 +44,19 @@ import {
   SelectValue 
 } from '@/components/ui/select'
 import { renderMarkdown } from '@/utils/markdown'
+import {
+  mergeAgentSessionDelta,
+  StatusDeltaSchemaVersionError,
+  type AgentSessionStatusDelta
+} from '@/utils/streamDeltas'
 import EventStreamViewer from './EventStreamViewer.vue'
 import { 
   getAgent, 
   runAgent, 
   runAgentWithFiles,
   getAgentSession, 
+  streamAgentSessionStatus,
+  StreamEventError,
   getAgentTrace, 
   listAgentSessions,
   deleteAgentSessionMessage,
@@ -500,50 +507,132 @@ const fetchTraces = async () => {
   }
 }
 
-// Polling for updates if running
+// Streaming + polling fallback for updates while running
 let pollInterval: any = null
+let stopSessionStream: (() => void) | null = null
+let pollInFlight = false
+let pollFallbackEnabled = false
+
+const applySessionDelta = (delta: AgentSessionStatusDelta) => {
+  if (!session.value || session.value.session_id !== delta.session_id) return
+  session.value = mergeAgentSessionDelta(session.value, delta)
+}
+
+const applyUpdatedSession = (updatedSession: AgentSession) => {
+  if (!updatedSession) return
+  if (updatedSession && updatedSession.messages) {
+    if (
+      session.value &&
+      session.value.messages &&
+      updatedSession.messages.length < session.value.messages.length
+    ) {
+      session.value = {
+        ...updatedSession,
+        messages: session.value.messages
+      }
+    } else {
+      session.value = updatedSession
+    }
+  } else {
+    session.value = updatedSession
+  }
+}
+
+const stopPolling = () => {
+  if (pollInterval) {
+    clearInterval(pollInterval)
+    pollInterval = null
+  }
+}
+
+const startPolling = () => {
+  if (!pollFallbackEnabled) return
+  if (pollInterval) return
+  pollInterval = setInterval(async () => {
+    if (pollInFlight || !session.value?.session_id) return
+    pollInFlight = true
+    try {
+      const updatedSession = await getAgentSession(session.value.session_id)
+      applyUpdatedSession(updatedSession)
+      await fetchTraces()
+    } catch (error) {
+      console.error('Failed to poll session:', error)
+    } finally {
+      pollInFlight = false
+    }
+  }, 2000)
+}
+
+const stopStatusStream = () => {
+  if (stopSessionStream) {
+    stopSessionStream()
+    stopSessionStream = null
+  }
+}
+
+const startStatusStream = (sessionId: string) => {
+  stopStatusStream()
+  pollFallbackEnabled = false
+  stopSessionStream = streamAgentSessionStatus(
+    sessionId,
+    {
+      onStatus: (payload) => {
+        applyUpdatedSession(payload)
+        void fetchTraces()
+      },
+      onStatusDelta: (payload) => {
+        applySessionDelta(payload)
+      },
+      onTerminal: () => {
+        stopStatusStream()
+        stopPolling()
+      },
+      onError: (error) => {
+        if (error instanceof StreamEventError) {
+          console.warn('[AgentExecutionView] stream error event', {
+            stream: error.stream,
+            error_code: error.error_code,
+            message: error.message,
+            session_id: sessionId,
+          })
+        }
+        if (error instanceof StatusDeltaSchemaVersionError) {
+          console.warn('[AgentExecutionView] status_delta schema mismatch, fallback to polling', {
+            error_code: error.error_code,
+            stream: error.stream_name,
+            reason: error.reason,
+            schema_version: error.schema_version,
+            supported_schema_version: error.supported_schema_version,
+            session_id: sessionId,
+          })
+        }
+        stopStatusStream()
+        pollFallbackEnabled = true
+        startPolling()
+      }
+    },
+    { intervalMs: 900, compact: true }
+  )
+}
+
 watch(
   () => session.value?.session_id,
-  () => {
+  (sid) => {
     relatedByCorrelation.value = null
+    if (sid && session.value?.status === 'running') {
+      startStatusStream(sid)
+    }
   }
 )
 watch(() => session.value?.status, (newStatus) => {
   if (newStatus === 'running') {
-    if (!pollInterval) {
-      pollInterval = setInterval(async () => {
-        if (session.value?.session_id) {
-          try {
-            const updatedSession = await getAgentSession(session.value.session_id)
-            // 确保保留所有消息历史
-            if (updatedSession && updatedSession.messages) {
-              // 如果更新的 session 消息数量少于当前，保留当前的消息（防止丢失）
-              if (session.value && session.value.messages && 
-                  updatedSession.messages.length < session.value.messages.length) {
-                // 合并消息：保留当前消息，但更新其他字段
-                session.value = {
-                  ...updatedSession,
-                  messages: session.value.messages
-                }
-              } else {
-                // 更新的消息数量更多或相等，使用更新的
-                session.value = updatedSession
-              }
-            } else {
-              session.value = updatedSession
-            }
-            await fetchTraces()
-          } catch (error) {
-            console.error('Failed to poll session:', error)
-          }
-        }
-      }, 2000)
+    if (session.value?.session_id) {
+      startStatusStream(session.value.session_id)
     }
   } else {
-    if (pollInterval) {
-      clearInterval(pollInterval)
-      pollInterval = null
-    }
+    pollFallbackEnabled = false
+    stopStatusStream()
+    stopPolling()
   }
 })
 
@@ -583,7 +672,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval)
+  stopStatusStream()
+  stopPolling()
   Object.values(messageAttachments.value).forEach((items) => {
     items.forEach((it) => {
       if (it.url && it.url.startsWith('blob:')) {

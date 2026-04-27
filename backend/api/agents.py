@@ -5,10 +5,10 @@ import hashlib
 from string import Formatter
 import uuid
 from pathlib import Path
-from typing import Annotated, List, Optional, Dict, Any, cast
+from typing import Annotated, List, Optional, Dict, Any, AsyncIterator, cast
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.agent_runtime.definition import AgentDefinition, get_agent_registry
@@ -75,6 +75,9 @@ VISION_DETECT_OBJECTS_SKILL_ID = "builtin_vision.detect_objects"
 AGENT_NOT_FOUND_MESSAGE = "Agent not found"
 SESSION_NOT_FOUND_MESSAGE = "Session not found"
 REQUEST_CANCELLED_OR_TIMED_OUT_MESSAGE = "Request cancelled or timed out"
+SSE_STATUS_DELTA_SCHEMA_VERSION = 1
+SSE_STREAM_RESOURCE_NOT_FOUND_ERROR_CODE = "sse_stream_resource_not_found"
+SSE_STREAM_RUNTIME_ERROR_CODE = "sse_stream_runtime_error"
 
 def _get_user_id(request: Request) -> str:
     uid = (request.headers.get("X-User-Id") or "").strip()
@@ -1170,6 +1173,109 @@ async def get_agent_session(session_id: str) -> Any:
             details={"session_id": session_id},
         )
     return session
+
+
+def _agent_sse_data(payload: Dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _build_agent_session_delta(session: AgentSession) -> Dict[str, Any]:
+    """构造轻量增量状态，避免频繁下发完整 session。"""
+    return {
+        "schema_version": SSE_STATUS_DELTA_SCHEMA_VERSION,
+        "session_id": session.session_id,
+        "status": session.status,
+        "step": session.step,
+        "updated_at": session.updated_at,
+        "error_message": session.error_message,
+        "messages_count": len(session.messages or []),
+    }
+
+
+@session_router.get("/agent-sessions/{session_id}/stream")
+async def stream_agent_session_status(
+    session_id: str,
+    interval_ms: Annotated[int, Query(ge=300, le=5000, description="SSE 推送间隔（毫秒）")] = 900,
+    compact: Annotated[bool, Query(description="true 时推送 status_delta（轻量增量）")] = False,
+) -> StreamingResponse:
+    """SSE 推送 Agent Session 状态，前端可用来替代高频轮询。"""
+    session_store = get_agent_session_store()
+    if not session_store.get_session(session_id):
+        raise_api_error(
+            status_code=404,
+            code="agent_session_not_found",
+            message=SESSION_NOT_FOUND_MESSAGE,
+            details={"session_id": session_id},
+        )
+
+    async def _event_stream() -> AsyncIterator[str]:
+        last_hash: Optional[str] = None
+        heartbeat_every_s = 15
+        loop = asyncio.get_running_loop()
+        heartbeat_at = loop.time()
+        sleep_s = max(0.3, interval_ms / 1000.0)
+        terminal_status = {"finished", "error", "idle"}
+
+        while True:
+            try:
+                session = session_store.get_session(session_id)
+                if not session:
+                    yield _agent_sse_data(
+                        {
+                            "type": "error",
+                            "error_code": SSE_STREAM_RESOURCE_NOT_FOUND_ERROR_CODE,
+                            "message": SESSION_NOT_FOUND_MESSAGE,
+                        }
+                    )
+                    break
+
+                payload = session.model_dump(mode="json")
+                current_hash = hashlib.sha256(
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                now = loop.time()
+                event: Optional[str] = None
+                if current_hash != last_hash:
+                    if compact:
+                        event = _agent_sse_data({"type": "status_delta", "payload": _build_agent_session_delta(session)})
+                    else:
+                        event = _agent_sse_data({"type": "status", "payload": payload})
+                    last_hash = current_hash
+                    heartbeat_at = now
+                elif (now - heartbeat_at) >= heartbeat_every_s:
+                    event = _agent_sse_data({"type": "heartbeat"})
+                    heartbeat_at = now
+
+                if event is not None:
+                    yield event
+
+                if session.status in terminal_status:
+                    yield _agent_sse_data({"type": "terminal", "state": session.status})
+                    break
+
+                await asyncio.sleep(sleep_s)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"[Agent API] session stream loop error: session_id={session_id} err={e}")
+                yield _agent_sse_data(
+                    {
+                        "type": "error",
+                        "error_code": SSE_STREAM_RUNTIME_ERROR_CODE,
+                        "message": str(e),
+                    }
+                )
+                await asyncio.sleep(min(2.0, sleep_s))
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @session_router.get("/agent-sessions/{session_id}/files/{filename}")
 async def get_agent_session_file(session_id: str, filename: str) -> FileResponse:

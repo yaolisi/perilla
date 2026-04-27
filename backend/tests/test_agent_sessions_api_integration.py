@@ -6,6 +6,7 @@ GET/PATCH/DELETE /api/agent-sessions/... 结构化错误响应集成测试。
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Optional
 
 import pytest
@@ -227,3 +228,109 @@ def test_delete_agent_session_wrong_user_returns_not_found(sessions_client: Test
     resp = sessions_client.delete("/api/agent-sessions/s_other", headers=HEADERS_ADMIN)
     assert resp.status_code == 404
     _assert_structured(resp.json(), code="agent_session_not_found")
+
+
+def test_stream_agent_session_not_found_returns_structured_error(sessions_client: TestClient):
+    resp = sessions_client.get("/api/agent-sessions/nonexistent-session/stream", headers=HEADERS_ADMIN)
+    assert resp.status_code == 404
+    body = resp.json()
+    _assert_structured(body, code="agent_session_not_found")
+    assert body["error"]["details"]["session_id"] == "nonexistent-session"
+
+
+def test_stream_agent_session_idle_emits_status_and_terminal(sessions_client: TestClient):
+    store: _MemSessionStore = sessions_client._test_session_store  # type: ignore[assignment]
+    store._sessions["s_stream_idle"] = AgentSession(
+        session_id="s_stream_idle",
+        agent_id="a1",
+        user_id="default",
+        status="idle",
+    )
+
+    with sessions_client.stream("GET", "/api/agent-sessions/s_stream_idle/stream", headers=HEADERS_ADMIN) as resp:
+        assert resp.status_code == 200
+        assert resp.headers.get("content-type", "").startswith("text/event-stream")
+        lines = list(resp.iter_lines())
+
+    data_lines = [ln for ln in lines if ln.startswith("data: ")]
+    assert len(data_lines) >= 2
+    first_payload = data_lines[0].replace("data: ", "", 1)
+    terminal_payload = data_lines[-1].replace("data: ", "", 1)
+    first_obj = json.loads(first_payload)
+    terminal_obj = json.loads(terminal_payload)
+
+    assert first_obj["type"] == "status"
+    assert first_obj["payload"]["session_id"] == "s_stream_idle"
+    assert first_obj["payload"]["status"] == "idle"
+    assert terminal_obj["type"] == "terminal"
+    assert terminal_obj["state"] == "idle"
+
+
+def test_stream_agent_session_compact_emits_status_delta_and_terminal(sessions_client: TestClient):
+    store: _MemSessionStore = sessions_client._test_session_store  # type: ignore[assignment]
+    store._sessions["s_stream_compact"] = AgentSession(
+        session_id="s_stream_compact",
+        agent_id="a1",
+        user_id="default",
+        status="idle",
+        step=3,
+    )
+
+    with sessions_client.stream(
+        "GET",
+        "/api/agent-sessions/s_stream_compact/stream?compact=true",
+        headers=HEADERS_ADMIN,
+    ) as resp:
+        assert resp.status_code == 200
+        assert resp.headers.get("content-type", "").startswith("text/event-stream")
+        lines = list(resp.iter_lines())
+
+    data_lines = [ln for ln in lines if ln.startswith("data: ")]
+    assert len(data_lines) >= 2
+    first_obj = json.loads(data_lines[0].replace("data: ", "", 1))
+    terminal_obj = json.loads(data_lines[-1].replace("data: ", "", 1))
+
+    assert first_obj["type"] == "status_delta"
+    assert first_obj["payload"]["session_id"] == "s_stream_compact"
+    assert first_obj["payload"]["schema_version"] == 1
+    assert first_obj["payload"]["status"] == "idle"
+    assert first_obj["payload"]["step"] == 3
+    assert "messages_count" in first_obj["payload"]
+    assert terminal_obj["type"] == "terminal"
+    assert terminal_obj["state"] == "idle"
+
+
+def test_stream_agent_session_runtime_missing_emits_error_code(sessions_client: TestClient):
+    store: _MemSessionStore = sessions_client._test_session_store  # type: ignore[assignment]
+    session = AgentSession(
+        session_id="s_stream_missing_runtime",
+        agent_id="a1",
+        user_id="default",
+        status="running",
+    )
+    store._sessions[session.session_id] = session
+
+    call_count = 0
+
+    def _flaky_get_session(session_id: str):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return session
+        return None
+
+    store.get_session = _flaky_get_session  # type: ignore[method-assign]
+
+    with sessions_client.stream(
+        "GET",
+        f"/api/agent-sessions/{session.session_id}/stream",
+        headers=HEADERS_ADMIN,
+    ) as resp:
+        assert resp.status_code == 200
+        lines = list(resp.iter_lines())
+
+    data_lines = [ln for ln in lines if ln.startswith("data: ")]
+    assert data_lines
+    first_obj = json.loads(data_lines[0].replace("data: ", "", 1))
+    assert first_obj["type"] == "error"
+    assert first_obj["error_code"] == "sse_stream_resource_not_found"

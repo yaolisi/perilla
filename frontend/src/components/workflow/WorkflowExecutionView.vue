@@ -33,6 +33,7 @@ import {
   reconcileWorkflowExecution,
   runWorkflow,
   streamWorkflowExecutionStatus,
+  StreamEventError,
   type WorkflowExecutionFailureReport,
   type WorkflowExecutionStatusRecord,
   type WorkflowExecutionRecord,
@@ -43,6 +44,11 @@ import {
   type CorrelationSummaryResponse,
 } from '@/services/api'
 import { normalizeExecutionStatus, normalizeNodeStatus, statusBadgeClass } from './status'
+import {
+  mergeWorkflowExecutionDelta,
+  StatusDeltaSchemaVersionError,
+  type WorkflowExecutionStatusDelta
+} from '@/utils/streamDeltas'
 import {
   buildFailureAuditSummary,
   verifyFailureBundleZipAgainstExpected,
@@ -1534,6 +1540,18 @@ async function applyExecutionStatusPayload(status: WorkflowExecutionStatusRecord
   ensureSelectedNode()
 }
 
+function applyExecutionStatusDelta(
+  delta: WorkflowExecutionStatusDelta,
+  source: string
+) {
+  const prev = currentExecution.value
+  if (!prev || prev.execution_id !== delta.execution_id) return
+  const merged = mergeWorkflowExecutionDelta(prev, delta)
+  appendExecutionLogDiff(prev, merged, source)
+  currentExecution.value = merged
+  ensureSelectedNode()
+}
+
 function startStatusStream(executionId: string) {
   stopStatusStream()
   streamTick = 0
@@ -1558,6 +1576,9 @@ function startStatusStream(executionId: string) {
           })()
         }
       },
+      onStatusDelta: (payload) => {
+        applyExecutionStatusDelta(payload, 'sse_status_delta')
+      },
       onTerminal: () => {
         stopStatusStream()
         stopPolling()
@@ -1573,12 +1594,32 @@ function startStatusStream(executionId: string) {
           }
         })()
       },
-      onError: () => {
+      onError: (error) => {
+        if (error instanceof StreamEventError) {
+          console.warn('[WorkflowExecutionView] stream error event', {
+            stream: error.stream,
+            error_code: error.error_code,
+            message: error.message,
+            workflow_id: workflowId,
+            execution_id: executionId,
+          })
+        }
+        if (error instanceof StatusDeltaSchemaVersionError) {
+          console.warn('[WorkflowExecutionView] status_delta schema mismatch, fallback to polling', {
+            error_code: error.error_code,
+            stream: error.stream_name,
+            reason: error.reason,
+            schema_version: error.schema_version,
+            supported_schema_version: error.supported_schema_version,
+            workflow_id: workflowId,
+            execution_id: executionId,
+          })
+        }
         stopStatusStream()
         ensurePolling()
       },
     },
-    { intervalMs: 900 }
+    { intervalMs: 900, compact: true }
   )
 }
 

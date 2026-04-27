@@ -298,6 +298,93 @@ def test_create_execution_wait_true_returns_completed_control_flow_output(
 
 
 @pytest.mark.no_fallback
+def test_stream_execution_status_compact_emits_status_delta(tmp_path, monkeypatch, fallback_probe):
+    workflows_api = _load_workflows_api_module()
+    session_factory = _make_session_factory(tmp_path)
+    _seed_workflow(session_factory)
+    client = _build_client(session_factory, workflows_api)
+
+    monkeypatch.setattr(workflows_api, "_validate_stream_access", lambda **kwargs: None)
+
+    async def _fake_tick(**kwargs):
+        if kwargs.get("compact") is True:
+            payload = {
+                "type": "status_delta",
+                "payload": {
+                    "schema_version": 1,
+                    "execution_id": "exec_stream_1",
+                    "workflow_id": "wf_exec_1",
+                    "version_id": "v-test",
+                    "state": "running",
+                    "started_at": None,
+                    "finished_at": None,
+                    "duration_ms": None,
+                    "queue_position": 0,
+                    "wait_duration_ms": 0,
+                    "node_timeline_count": 0,
+                },
+            }
+        else:
+            payload = {
+                "type": "status",
+                "payload": {"execution_id": "exec_stream_1", "state": "running"},
+            }
+        event = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        return event, "h1", kwargs["heartbeat_at"], True
+
+    monkeypatch.setattr(workflows_api, "_stream_status_tick", _fake_tick)
+
+    with client.stream(
+        "GET",
+        "/api/v1/workflows/wf_exec_1/executions/exec_stream_1/stream?compact=true",
+    ) as resp:
+        assert resp.status_code == 200
+        assert resp.headers.get("content-type", "").startswith("text/event-stream")
+        lines = list(resp.iter_lines())
+
+    data_lines = [line for line in lines if line.startswith("data: ")]
+    assert data_lines
+    first = json.loads(data_lines[0].replace("data: ", "", 1))
+    assert first["type"] == "status_delta"
+    assert first["payload"]["schema_version"] == 1
+    assert first["payload"]["execution_id"] == "exec_stream_1"
+    assert first["payload"]["node_timeline_count"] == 0
+    assert fallback_probe == []
+
+
+@pytest.mark.no_fallback
+def test_stream_execution_status_not_found_emits_error_code(tmp_path, monkeypatch, fallback_probe):
+    workflows_api = _load_workflows_api_module()
+    session_factory = _make_session_factory(tmp_path)
+    _seed_workflow(session_factory)
+    client = _build_client(session_factory, workflows_api)
+
+    monkeypatch.setattr(workflows_api, "_validate_stream_access", lambda **kwargs: None)
+
+    async def _fake_tick(**kwargs):
+        event = (
+            'data: {"type":"error","error_code":"sse_stream_resource_not_found","message":"Execution not found"}\n\n'
+        )
+        return event, kwargs["last_hash"], kwargs["heartbeat_at"], True
+
+    monkeypatch.setattr(workflows_api, "_stream_status_tick", _fake_tick)
+
+    with client.stream(
+        "GET",
+        "/api/v1/workflows/wf_exec_1/executions/exec_stream_missing/stream?compact=true",
+    ) as resp:
+        assert resp.status_code == 200
+        lines = list(resp.iter_lines())
+
+    data_lines = [line for line in lines if line.startswith("data: ")]
+    assert data_lines
+    first = json.loads(data_lines[0].replace("data: ", "", 1))
+    assert first["type"] == "error"
+    assert first["error_code"] == "sse_stream_resource_not_found"
+    assert fallback_probe == []
+
+
+@pytest.mark.no_fallback
 def test_create_execution_idempotency_conflict_returns_structured_error(tmp_path, monkeypatch, fallback_probe):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
