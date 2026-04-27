@@ -1,51 +1,62 @@
-# Tutorials 目录说明（新手优先）
+# OpenVitamin 教程目录
 
-本 Standalone 包把教程与专题集中在 **`tutorials/`**。  
-若你只想找「从哪一页开始」，直接看 **[tutorial-index.md](tutorial-index.md)**。
-
----
-
-## 新手建议阅读顺序（约 30～60 分钟）
-
-1. **[tutorial-quickstart.md](tutorial-quickstart.md)** — 约 10 分钟：启动、拿到 CSRF、跑一次健康检查。
-2. **[tutorial.md](tutorial.md)** — 主教程：环境、`.env`、租户/RBAC、`security_regression.py`、排障。
-3. **[tutorial-security-baseline.md](tutorial-security-baseline.md)** — 团队对齐：生产 MUST 项、门禁与变更审批。
-4. `tutorial.md` 的 **§9.5 / §17.10 / §17.11 / §20.16~§20.17** — 自治编排新增能力（幂等、持久化队列、HITL 审批）验证。
-5. `tutorial.md` 的 **§9.6 / §17.12 / §17.13** — 前端交互与性能增强（大列表分页、画布大图优化、可诊断错误提示）。
-
-有经验的同学可跳过 1，从 `tutorial.md` 第 5 节「配置 `.env`」切入。
+面向 **Standalone** 仓库（本目录随代码分发）。不知从何读起时，先看 **[tutorial-index.md](tutorial-index.md)**。
 
 ---
 
-## 按场景跳转（常见问题）
+## 建议阅读顺序（约 30～60 分钟）
 
-- **刚开始，不知道从哪下手**：`tutorial-quickstart.md` → `tutorial.md`
-- **403**（写接口被拒、管理员接口失败）：`tutorial.md` → **§17 常见错误** → §17.2 / §17.6（权限、CSRF）；确认 `API_KEY_SCOPES_JSON` 与 RBAC
-- **404**（创建过资源但查不到）：`tutorial.md` → **§10 多租户**、§17.3；多半是 `X-Tenant-Id` 与创建时不一致
-- **429**（请求太频繁或上传并发过高）：`tutorial.md` → §17.4、§17.9（限流与 Agent 上传并发）
-- **409**（幂等冲突 / 重复执行冲突）：`tutorial.md` → §17.10（Idempotency-Key 场景）
-- **400**（`tenant id required for protected path`）：`tutorial.md` → §17.8
-- **Workflow 执行暂停在 `PAUSED`**：`tutorial.md` → §17.11（HITL 审批节点）
-- **知识库文档很多，页面变慢**：`tutorial.md` → §17.12（>50 自动分页）
-- **Workflow 节点很多，拖动画布卡顿**：`tutorial.md` → §17.13（>50 节点渲染优化）
-- **模型调用失败但原因不清晰**：`tutorial.md` → §17.14（可诊断错误提示）
-- **本地跑安全回归（JSON/JUnit）**：`tutorial.md` → **§15**；命令示例见 `tutorial-index.md` → **§6**
-- **Execution Kernel 集成测试卡住或超时**：`tutorial.md` → **§15.5**（`EXEC_KERNEL_INTEGRATION_DIAG`、`EXEC_KERNEL_START_INSTANCE_TIMEOUT_SEC`）
-- **发版前 5 分钟**：`tutorial-ops-checklist.md`
-- **线上告警、大量错误**：`tutorial-incident-runbook.md`
+| 顺序 | 文档 | 说明 |
+|------|------|------|
+| 1 | [tutorial-quickstart.md](tutorial-quickstart.md) | 约 10 分钟：启动、健康检查、CSRF、安全回归脚本 |
+| 2 | [tutorial.md](tutorial.md) | 主教程：环境、`.env`、租户/RBAC、测试与排障 |
+| 3 | [tutorial-security-baseline.md](tutorial-security-baseline.md) | 生产 MUST、阻断规则、变更审批 |
+| 4 | 主教程内「自治编排新增能力」 | 插件权限、Agent 幂等、持久化队列、HITL 审批 |
+| 5 | 主教程内「前端交互与性能增强」 | 大列表分页、画布大图优化、可诊断错误提示 |
 
-以上在 **`tutorial.md`** 中可用全文搜索小节标题（如 `### 17.2`）快速定位。
+有经验者可跳过步骤 1，从主教程「配置 `.env`」切入。
 
 ---
 
-## 专题与安全提示
+## 按问题跳转
 
-- **[tutorial-index.md](tutorial-index.md)** — 教程总索引、按角色命令、Windows 对照
-- **[security-review-hints.md](security-review-hints.md)** — 全面安全与逻辑相关性检查结论（中文，部署/评审对照）
-- **[security-review-hints-en.md](security-review-hints-en.md)** — Same review, English summary
+| 现象或任务 | 打开 |
+|------------|------|
+| 刚上手 | [tutorial-quickstart.md](tutorial-quickstart.md) → [tutorial.md](tutorial.md) |
+| 写接口 **403**（含 CSRF） | [tutorial.md](tutorial.md) → **常见错误** → 403 / CSRF 小节 |
+| **404**（资源刚创建却查不到） | [tutorial.md](tutorial.md) → **多租户**；核对 `X-Tenant-Id` |
+| **429** | 限流与 Agent 上传并发；见主教程对应小节 |
+| **409**（幂等冲突） | 主教程「Idempotency-Key」 |
+| **400** `tenant id required` | 主教程 **system 写接口与租户头** |
+| Workflow 停在 **PAUSED** | `approval` 节点与审批 API；见主教程 |
+| 知识库文档多、列表卡 | 文档数大于阈值时分页；见主教程 |
+| Workflow 节点多、画布卡 | 大图渲染优化说明；见主教程 |
+| 模型报错文案不清晰 | 前端错误映射 + 后端日志关键字；见主教程 |
+| 本地跑安全回归 | [tutorial.md](tutorial.md) **测试与回归**；命令汇总见 [tutorial-index.md](tutorial-index.md) |
+| Execution Kernel 集成测试卡住 | 主教程 **Execution Kernel 集成测试**；环境变量诊断 |
+| 发版前快速核对 | [tutorial-ops-checklist.md](tutorial-ops-checklist.md) |
+| 线上告警 / 大量错误 | [tutorial-incident-runbook.md](tutorial-incident-runbook.md) |
+
+在 [tutorial.md](tutorial.md) 内可用编辑器搜索小节标题（例如「403」「CSRF」「Execution Kernel」）定位。
 
 ---
 
-## 文档维护约定（简述）
+## 专题与评审材料
 
-安全、租户、鉴权等行为变更后，优先同步：**`tutorial.md`**、**`tutorial-security-baseline.md`**、**`tutorial-ops-checklist.md`**。详见 `tutorial-index.md` §7。
+| 文档 | 用途 |
+|------|------|
+| [tutorial-index.md](tutorial-index.md) | 总索引、按角色命令、Windows/PowerShell 对照 |
+| [security-review-hints.md](security-review-hints.md) | 部署与架构评审提示（中文） |
+| [security-review-hints-en.md](security-review-hints-en.md) | 同上（英文摘要） |
+
+---
+
+## 文档维护约定
+
+当 **安全、租户、鉴权** 等行为变更时，优先同步：
+
+- [tutorial.md](tutorial.md)
+- [tutorial-security-baseline.md](tutorial-security-baseline.md)
+- [tutorial-ops-checklist.md](tutorial-ops-checklist.md)
+
+重大故障复盘后更新 [tutorial-incident-runbook.md](tutorial-incident-runbook.md)。细则见 [tutorial-index.md](tutorial-index.md) 文末维护约定。

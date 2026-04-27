@@ -1,6 +1,6 @@
-# OpenVitamin Enhanced 安全基线与审计规范
+# OpenVitamin 安全基线与审计规范
 
-本文档用于统一团队在 **OpenVitamin Enhanced**（本仓库 / Standalone 分发目录可为 `openvitamin_enhanced_docker`）上的安全最小基线、配置要求、审计要求与变更流程。
+适用于 **Standalone** 仓库（目录名常为 `openvitamin_enhanced_docker`）：约定最小安全基线、配置与审计要求、变更审批与回归门禁。
 
 ---
 
@@ -150,10 +150,10 @@
 
 ### 7.1 本地门禁
 
-在 `backend` 目录执行：
+在项目根目录执行：
 
 ```bash
-python scripts/security_regression.py \
+python backend/scripts/security_regression.py \
   --base http://127.0.0.1:8000 \
   --api-key "admin-key" \
   --tenant-id default \

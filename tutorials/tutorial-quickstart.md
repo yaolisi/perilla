@@ -1,28 +1,24 @@
-# OpenVitamin Enhanced 10 分钟极简上手
+# OpenVitamin 10 分钟极简上手
 
-> 目标：第一次接触项目的人，在 10 分钟内完成“启动 + 安全验证 + 回归脚本”。
+目标：第一次接触仓库的人，在约 10 分钟内完成 **启动 → 健康检查 → CSRF 验证 → 安全回归脚本**。
 
-完整教程与错误码跳转见 **[README.md](README.md)**、**[tutorial.md](tutorial.md)**。
-
----
-
-## 0. 你将完成什么
-
-1. 安装依赖并启动前后端  
-2. 验证健康探针  
-3. 验证 CSRF 写请求链路  
-4. 跑通 tenant/security 两条安全回归脚本
+完整内容与排障见 **[README.md](README.md)**、**[tutorial.md](tutorial.md)**。
 
 ---
 
-## 1. 前置条件
+## 你将完成的事
 
-- Python 3.11+
-- Node.js 18+
-- Conda（推荐）
-- 已获取仓库并进入项目根目录（Standalone 通常为 `openvitamin_enhanced_docker`）
+1. 安装依赖并启动前后端（推荐与仓库脚本一致的 Conda 环境）  
+2. 调用健康探针  
+3. 验证写请求的 CSRF 链路  
+4. （推荐）跑通租户与安全两条回归脚本  
 
-快速检查：
+---
+
+## 前置条件
+
+- Python 3.11+、Node.js 18+、Conda（推荐）  
+- 已进入**项目根目录**（Standalone 常为 `openvitamin_enhanced_docker`）
 
 ```bash
 python --version
@@ -31,45 +27,41 @@ node --version
 
 ---
 
-## 2. 安装依赖（首次一次）
+## 依赖安装（首次）
 
-后端：
+与根目录 `run-backend.sh` 对齐：环境名 **`ai-inference-platform`**。
 
 ```bash
+conda create -n ai-inference-platform python=3.11 -y
 cd backend
-pip install -r requirements.txt
-cd ..
+conda run -n ai-inference-platform pip install -r requirements.txt
+cd ../frontend && npm install && cd ..
 ```
 
-前端：
-
-```bash
-cd frontend
-npm install
-cd ..
-```
+若已在激活的环境中，可直接 `pip install` / `npm install`。
 
 ---
 
-## 3. 启动服务
+## 启动服务
 
-终端 A（后端）：
-
-```bash
-cd backend
-python main.py
-```
-
-终端 B（前端）：
+**推荐（项目根目录）**
 
 ```bash
-cd frontend
-npm run dev
+./run-all.sh
 ```
+
+**或分开展示**
+
+```bash
+./run-backend.sh    # 终端 A
+./run-frontend.sh   # 终端 B
+```
+
+默认：后端 `http://127.0.0.1:8000`，前端 `http://localhost:5173`。
 
 ---
 
-## 4. 第一步健康检查（必须）
+## 健康检查（必做）
 
 ```bash
 curl -s http://127.0.0.1:8000/api/health | jq .
@@ -77,13 +69,13 @@ curl -s http://127.0.0.1:8000/api/health/live | jq .
 curl -s http://127.0.0.1:8000/api/health/ready | jq .
 ```
 
-预期：三个接口都返回 200 且状态正常。
+预期：HTTP 200，状态字段正常。
 
 ---
 
-## 5. 第二步安全检查：CSRF（必须）
+## CSRF 写请求（必做）
 
-先拿 token（会写 cookie）：
+先访问安全方法，写入 cookie 并读取响应头中的 token（需安装 [ripgrep](https://github.com/BurntSushi/ripgrep) `rg`）：
 
 ```bash
 curl -i -s -c /tmp/ov_cookie.txt http://127.0.0.1:8000/api/health | tee /tmp/ov_headers.txt
@@ -91,7 +83,7 @@ export CSRF_TOKEN="$(rg "X-CSRF-Token:" /tmp/ov_headers.txt -i | awk '{print $2}
 echo "$CSRF_TOKEN"
 ```
 
-再发一个写请求（示例：system config）：
+示例写请求（按你环境替换 Key 与租户）：
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8000/api/system/config" \
@@ -103,67 +95,49 @@ curl -s -X POST "http://127.0.0.1:8000/api/system/config" \
   -d '{"runtimeAutoReleaseEnabled": true}' | jq .
 ```
 
-如果不带 `X-CSRF-Token` 或 token 不匹配，预期 `403`。
+缺少或错误的 `X-CSRF-Token` 应返回 **403**。
 
 ---
 
-## 6. 第三步安全回归（推荐必跑）
+## 安全回归（强烈推荐）
 
-在项目根目录执行：
+在项目根目录：
 
 ```bash
 backend/scripts/test_tenant_security_regression.sh
 scripts/acceptance/run_security_regression.sh
 ```
 
-通过标准：
+通过：退出码 0，输出含 `passed` / 成功摘要。
 
-- 输出 `passed`
-- 退出码为 0
+报告位置：
 
-会生成摘要：
-
-- `backend/test-reports/tenant-security-summary.md`
-- `test-reports/security-regression-summary.md`
+- `backend/test-reports/tenant-security-summary.md`  
+- `test-reports/security-regression-summary.md`  
 
 ---
 
-## 7. CI 手动触发（可选）
+## CI 手动触发（可选）
 
-在 GitHub Actions 触发：
-
-- `tenant-security-regression`
-- `security-regression`
-
-可选输入：
-
-- `slow_threshold_seconds`（必须正整数，如 `20`）
-
-说明：
-
-- PR 默认阈值 20s
-- main/master 默认阈值 30s
-- 结果可在 Step Summary 直接查看
+GitHub Actions：`tenant-security-regression`、`security-regression`。  
+可选输入：`slow_threshold_seconds`（正整数）。PR 默认约 20s，main/master 约 30s；结果见 Step Summary 与 Artifacts。
 
 ---
 
-## 8. 常见失败快速处理
+## 常见失败速查
 
-- `403 CSRF token validation failed`  
-  - 先 `GET /api/health` 取 token，再带 cookie + header 发写请求
-- `404/403 workflow`  
-  - 检查 `X-Tenant-Id` 与 namespace、API Key tenant 绑定
-- `429`  
-  - 降低压测频率或调整限流配置
-- `409`（Idempotency-Key 冲突）  
-  - 同 key 必须匹配同请求体；请求体变化请更换 key
-- workflow 执行停在 `PAUSED`  
-  - 检查是否命中 `approval` 节点并完成审批
+| 现象 | 处理 |
+|------|------|
+| `403 CSRF token validation failed` | 先 `GET /api/health` 拿 cookie 与 header，再发写请求 |
+| Workflow **403/404** | 核对 `X-Tenant-Id`、namespace、Key 与租户绑定 |
+| **429** | 降低频率或调整限流配置 |
+| **409**（Idempotency） | 同 Key 须配同请求体；体变则换 Key |
+| 执行 **PAUSED** | 是否存在 `approval` 节点；完成或拒绝审批 |
 
 ---
 
-## 9. 接下来读什么
+## 接下来读什么
 
-- 全量教程：`tutorial.md`
-- 教程导航：`tutorial-index.md`
-- 运维清单：`tutorial-ops-checklist.md`
+- [tutorial.md](tutorial.md) — 全量教程  
+- [tutorial-index.md](tutorial-index.md) — 索引与命令汇总  
+- [tutorial-ops-checklist.md](tutorial-ops-checklist.md) — 发版清单  

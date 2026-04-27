@@ -1,7 +1,6 @@
-# Security & Logic Review: Hints (Archived Notes)
+# OpenVitamin: Security and Logic Review Hints (Archived)
 
-> Scope: outcomes of a **static architecture / focused code review**.  
-> Complements `tutorial-security-baseline.md` (MUST rules); **not** a penetration test.
+Outcomes of a **static architecture / focused code review**. Complements [tutorial-security-baseline.md](tutorial-security-baseline.md) (MUST rules); **not** a penetration test or full production sign-off.
 
 ---
 

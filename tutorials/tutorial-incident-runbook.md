@@ -1,7 +1,6 @@
-# OpenVitamin Enhanced 值班故障处理流程卡片（3 分钟版）
+# OpenVitamin 值班故障处理卡片（约 3 分钟）
 
-目标：线上告警后，快速判断影响范围、止血、定位与回滚。  
-适用：后端网关、Workflow、租户隔离、安全护栏相关故障。
+告警后快速：**分级 → 止血 → 定位 → 回滚**。适用于网关、Workflow、租户隔离与安全护栏相关问题。
 
 ---
 
@@ -31,8 +30,8 @@
 ### 1.3 快速健康探针
 
 - `GET /api/health`
-- `GET /api/alive`
-- `GET /api/ready`
+- `GET /api/health/live`
+- `GET /api/health/ready`
 
 若探针失败：先按启动/依赖故障处理（见第 4 节）。
 
@@ -60,7 +59,7 @@
 优先检查：
 
 - workflow 所属 `namespace` 是否与 `X-Tenant-Id` 一致
-- 是否出现跨租户访问（增强版会故意返回 404）
+- 是否出现跨租户访问（策略下可能故意返回 404）
 - 是否刚迁移/变更了 tenant 默认值
 
 ### 2.3 如果大量 429（限流）
@@ -112,10 +111,10 @@
 
 ### 5.2 恢复后验证
 
-在 `backend` 目录执行：
+在项目根目录执行：
 
 ```bash
-./scripts/test_tenant_security_regression.sh
+backend/scripts/test_tenant_security_regression.sh
 ```
 
 验证通过后再宣布恢复完成。
@@ -138,7 +137,7 @@
 
 ## 7. 常用检查清单（值班口袋版）
 
-- [ ] 探针健康（health/alive/ready）
+- [ ] 探针健康（`/api/health`、`/api/health/live`、`/api/health/ready`）
 - [ ] 收集 request_id/trace_id
 - [ ] 判定 403/404/429/5xx 主类型
 - [ ] 核对 RBAC + tenant + key-binding 配置

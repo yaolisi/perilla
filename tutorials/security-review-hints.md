@@ -1,7 +1,6 @@
-# 全面安全与逻辑相关性审查：提示（归档）
+# OpenVitamin：安全与逻辑审查提示（归档）
 
-> 性质：**静态架构与关键点代码审查**结论摘要，用于与 `tutorial-security-baseline.md` 中的 MUST 基线**互补**。  
-> 不代表渗透测试结论；上线前仍需结合环境与业务做针对性测试。
+**静态架构与关键点代码审查**结论摘要，与 [tutorial-security-baseline.md](tutorial-security-baseline.md) 中的 MUST 基线互补；**不能替代**渗透测试或线上专项测试。
 
 ---
 

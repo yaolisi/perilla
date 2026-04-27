@@ -1,35 +1,27 @@
-# OpenVitamin Enhanced 新手友好详细教程（从 0 到可上线）
+# OpenVitamin 上手教程（从环境到上线）
 
-> 本文已基于最新安全增强改造更新：包含 **前端 XSS 防护**、**后端 CSRF 防护**、**敏感路由统一认证 + RBAC**、**危险技能默认禁用**、**HTTP 出口收敛（allowlist + 私网拦截）**、**上传限额/并发治理**、**可产出 JSON/JUnit 的安全回归脚本**。
+面向 **Standalone** 仓库新手：覆盖安装、启动、租户与 RBAC、CSRF/XSS、Workflow 与 Agent、回归测试与常见错误。**所有模型与控制面调用经 FastAPI 网关**；请勿绕过网关直连推理引擎。
 
-本教程专门为新手编写，目标是让你即使第一次接触项目，也能按步骤完成：
+本教程帮助你完成：**环境安装 → 前后端启动 → 功能验证 → 安全配置 → 回归与上线前自检**。  
+迷路时先看 **[README.md](README.md)**（阅读顺序与按 HTTP 状态码跳转）。
 
-1. 环境安装  
-2. 前后端启动  
-3. 核心功能验证  
-4. 安全配置落地  
-5. 回归测试与上线前检查
+**相关文档**
 
-如果你是第一次看文档，建议从头到尾照着做一遍。  
-若你希望先看「从哪里读起、403/404/429 去哪查」，可先打开同目录 **[README.md](README.md)**。
-
-快速入口：
-
-- `README.md`：新手导航（阅读顺序、按错误码跳转）  
-- `tutorial-quickstart.md`：10 分钟极简上手  
-- `tutorial-index.md`：教程导航总入口  
-- `tutorial-ops-checklist.md`：发版前 3~5 分钟清单  
-- `tutorial-incident-runbook.md`：线上故障 3 分钟处置  
-- `tutorial-security-baseline.md`：安全基线与审计规范
-- `tutorial-glossary-zh-en.md`：中英术语对照表
-- `tutorial-glossary-product.md`：产品术语版
-- `tutorial-glossary-engineering.md`：工程术语版
+| 文档 | 用途 |
+|------|------|
+| [README.md](README.md) | 教程目录导航、403/404/429 等问题索引 |
+| [tutorial-quickstart.md](tutorial-quickstart.md) | 约 10 分钟极简上手 |
+| [tutorial-index.md](tutorial-index.md) | 索引、命令、PowerShell 对照 |
+| [tutorial-ops-checklist.md](tutorial-ops-checklist.md) | 发版前短清单 |
+| [tutorial-incident-runbook.md](tutorial-incident-runbook.md) | 线上故障卡片 |
+| [tutorial-security-baseline.md](tutorial-security-baseline.md) | 安全 MUST 与门禁 |
+| [tutorial-glossary-zh-en.md](tutorial-glossary-zh-en.md) / [product](tutorial-glossary-product.md) / [engineering](tutorial-glossary-engineering.md) | 术语表 |
 
 ---
 
 ## 1. 先理解：这个项目是做什么的
 
-**OpenVitamin Enhanced** 是一个本地优先的 AI 平台，你可以把它理解为：
+**OpenVitamin** 是本地优先的 AI 平台，可概括为：
 
 - **前端控制台**：可视化操作界面（Vue）
 - **后端网关**：统一接入模型、工作流、审计、安全治理（FastAPI）
@@ -37,7 +29,7 @@
 
 它不是“单一聊天应用”，而是“可治理的 AI 能力平台”。
 
-你现在这个增强版已经包含了很多生产化能力：
+当前仓库默认已包含以下生产化能力：
 
 - 多租户隔离（入口 + 存储层双保险）
 - RBAC 鉴权
@@ -272,7 +264,7 @@ npm run dev
 
 要点：
 
-- `namespace` 应与 `X-Tenant-Id` 一致（增强版会强制对齐）
+- `namespace` 应与 `X-Tenant-Id` 一致（服务端会强制对齐）
 - 名称在同 namespace 内需唯一
 
 ### 9.3 创建版本并执行
@@ -344,7 +336,7 @@ npm run dev
 
 注意：
 
-- 这些写接口在增强版已经要求管理员权限
+- 这些写接口已要求管理员权限
 - 如果你是 operator/viewer，请求会被拒绝（403）
 - 受保护路径必须显式带 `X-Tenant-Id`，不带会返回 400
 
@@ -360,7 +352,7 @@ npm run dev
 - `X-Trace-Id`
 - `X-Response-Time-Ms`
 
-增强版已对 `request_id` 做净化，避免 header 污染。
+网关已对 `request_id` 做净化，避免 header 污染。
 
 ### 12.2 审计日志
 

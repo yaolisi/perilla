@@ -1,26 +1,24 @@
-# OpenVitamin Enhanced 10-Minute Quickstart
+# OpenVitamin 10-Minute Quickstart
 
-> Goal: help first-time users get from zero to "running + basic security validation" in about 10 minutes.
+**Goal**: from zero to *running services + health checks + CSRF write path + optional security regressions* in about ten minutes.
 
----
-
-## 0. What you will complete
-
-1. Install dependencies and start backend/frontend  
-2. Verify health probes  
-3. Validate CSRF write path  
-4. Run tenant/security regression scripts
+For the full narrative and troubleshooting, see **[tutorial.md](tutorial.md)** and **[tutorial-index.md](tutorial-index.md)**.
 
 ---
 
-## 1. Prerequisites
+## What you will do
 
-- Python 3.11+
-- Node.js 18+
-- Conda (recommended)
-- Repository cloned and current directory is project root (standalone distribution is usually `openvitamin_enhanced_docker`)
+1. Install dependencies and start backend/frontend (Conda env aligned with repo scripts).  
+2. Hit the health endpoints.  
+3. Prove the CSRF double-submit path for a mutating request.  
+4. (Recommended) Run the tenant + security regression shell scripts.  
 
-Quick check:
+---
+
+## Prerequisites
+
+- Python 3.11+, Node.js 18+, Conda (recommended)  
+- Current working directory is the **repository root** (standalone folder is often `openvitamin_enhanced_docker`)
 
 ```bash
 python --version
@@ -29,45 +27,39 @@ node --version
 
 ---
 
-## 2. Install dependencies (first time only)
+## Install (first time only)
 
-Backend:
+The backend launcher expects conda env **`ai-inference-platform`** (see `run-backend.sh`).
 
 ```bash
+conda create -n ai-inference-platform python=3.11 -y
 cd backend
-pip install -r requirements.txt
-cd ..
-```
-
-Frontend:
-
-```bash
-cd frontend
-npm install
-cd ..
+conda run -n ai-inference-platform pip install -r requirements.txt
+cd ../frontend && npm install && cd ..
 ```
 
 ---
 
-## 3. Start services
+## Start services
 
-Terminal A (backend):
-
-```bash
-cd backend
-python main.py
-```
-
-Terminal B (frontend):
+**Recommended (repo root)**
 
 ```bash
-cd frontend
-npm run dev
+./run-all.sh
 ```
+
+**Or split terminals**
+
+```bash
+./run-backend.sh
+./run-frontend.sh
+```
+
+Defaults: backend `http://127.0.0.1:8000`, frontend `http://localhost:5173`.
 
 ---
 
-## 4. Health checks (must pass)
+## Health checks (required)
 
 ```bash
 curl -s http://127.0.0.1:8000/api/health | jq .
@@ -75,13 +67,13 @@ curl -s http://127.0.0.1:8000/api/health/live | jq .
 curl -s http://127.0.0.1:8000/api/health/ready | jq .
 ```
 
-Expected: all endpoints return HTTP 200 and healthy status fields.
+All should return HTTP 200 with healthy status payloads.
 
 ---
 
-## 5. Security check: CSRF (must verify)
+## CSRF mutating request (required)
 
-Get token (also saves cookie):
+Fetch token and cookie (requires [ripgrep](https://github.com/BurntSushi/ripgrep) `rg`):
 
 ```bash
 curl -i -s -c /tmp/ov_cookie.txt http://127.0.0.1:8000/api/health | tee /tmp/ov_headers.txt
@@ -89,7 +81,7 @@ export CSRF_TOKEN="$(rg "X-CSRF-Token:" /tmp/ov_headers.txt -i | awk '{print $2}
 echo "$CSRF_TOKEN"
 ```
 
-Send one write request (example: system config):
+Example write (adjust key/tenant for your `.env`):
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8000/api/system/config" \
@@ -101,67 +93,49 @@ curl -s -X POST "http://127.0.0.1:8000/api/system/config" \
   -d '{"runtimeAutoReleaseEnabled": true}' | jq .
 ```
 
-Expected behavior:
-
-- with valid cookie + header token: request is processed (subject to RBAC)
-- missing/mismatched token: `403`
+Missing or mismatched token → **403**.
 
 ---
 
-## 6. Run security regressions
+## Security regressions (highly recommended)
 
-From project root:
+From the repository root:
 
 ```bash
 backend/scripts/test_tenant_security_regression.sh
 scripts/acceptance/run_security_regression.sh
 ```
 
-Pass criteria:
-
-- exit code is `0`
-- output contains `passed`
+Pass criteria: exit code `0` and summary output indicating success.
 
 Reports:
 
-- `backend/test-reports/tenant-security-summary.md`
-- `test-reports/security-regression-summary.md`
+- `backend/test-reports/tenant-security-summary.md`  
+- `test-reports/security-regression-summary.md`  
 
 ---
 
-## 7. Optional: trigger CI manually
+## Optional: trigger CI workflows
 
-In GitHub Actions, run:
-
-- `tenant-security-regression`
-- `security-regression`
-
-Optional input:
-
-- `slow_threshold_seconds` (must be a positive integer, e.g. `20`)
-
-Defaults:
-
-- pull_request: 20s
-- main/master push: 30s
-
-Results are available in Step Summary and artifacts.
+GitHub Actions: `tenant-security-regression`, `security-regression`.  
+Input: `slow_threshold_seconds` (positive integer).
 
 ---
 
-## 8. Fast troubleshooting
+## Fast troubleshooting
 
-- `403 CSRF token validation failed`  
-  - call `GET /api/health` first, then send write request with cookie + `X-CSRF-Token`
-- `404/403 workflow`  
-  - check `X-Tenant-Id`, namespace, and key-tenant bindings
-- `429`  
-  - reduce request rate or tune rate-limit settings
+| Symptom | Action |
+|---------|--------|
+| `403 CSRF token validation failed` | `GET /api/health` first; resend with cookie + `X-CSRF-Token` |
+| Workflow **403/404** | Check `X-Tenant-Id`, namespace, key–tenant binding |
+| **429** | Lower request rate or tune rate limits |
+| **409** idempotency | Same key requires same body; change key if body changes |
+| Execution **PAUSED** | `approval` node pending; approve or reject |
 
 ---
 
-## 9. Next docs
+## Next docs
 
-- Full tutorial: `tutorial.md`
-- Index: `tutorial-index.md`
-- Security baseline: `tutorial-security-baseline.md`
+- [tutorial.md](tutorial.md) — full tutorial  
+- [tutorial-index.md](tutorial-index.md) — index and command cheatsheet  
+- [tutorial-security-baseline.md](tutorial-security-baseline.md) — security baseline  

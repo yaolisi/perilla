@@ -1,7 +1,6 @@
-# OpenVitamin Enhanced 运维值班版超短执行清单
+# OpenVitamin 运维值班短清单
 
-适用对象：研发、测试、运维  
-目标：在 3~5 分钟内完成“是否可发布 / 是否可恢复”关键判断。
+适用：研发 / 测试 / 运维在 **约 3～5 分钟** 内判断是否可以发布或需要回滚。
 
 ---
 
@@ -54,8 +53,8 @@ JUNIT_XML_PATH=test-reports/tenant-security-regression.xml backend/scripts/test_
 ## D. 2 分钟冒烟（建议）
 
 - [ ] `GET /api/health` 正常
-- [ ] `GET /api/alive` 正常
-- [ ] `GET /api/ready` 正常
+- [ ] `GET /api/health/live` 正常
+- [ ] `GET /api/health/ready` 正常
 - [ ] 用合法 API Key + tenant 访问 workflow 成功
 - [ ] 用合法 API Key + 错误 tenant 访问 workflow 返回 `404/403`（符合策略）
 - [ ] `POST /api/system/config` 非 admin 被拒绝（`403`）
