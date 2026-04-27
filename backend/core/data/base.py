@@ -1,13 +1,12 @@
 """
 数据库连接与 Session 管理
 优化并发控制：
-1. WAL 模式支持更好的并发读写
-2. 忙时重试机制
-3. 超时控制
-4. 线程安全配置
+1. WAL 模式支持更好的并发读写（SQLite）
+2. busy_timeout / 连接池与超时
+3. 线程安全配置
 """
 from pathlib import Path
-from typing import Generator, Iterator
+from typing import Any, Generator, Iterator, Optional
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, MetaData, text
@@ -41,6 +40,11 @@ def get_database_url() -> str:
 
 def _is_sqlite_url(db_url: str) -> bool:
     return db_url.startswith("sqlite:")
+
+
+def is_sqlite_url(db_url: str) -> bool:
+    """公开判断：当前解析后的 JDBC 风格 URL 是否为 SQLite。"""
+    return _is_sqlite_url(db_url)
 
 
 def _ensure_common_indexes(engine: Engine) -> None:
@@ -98,14 +102,34 @@ def create_engine_instance() -> Engine:
     return engine
 
 
-_engine = create_engine_instance()
+_engine: Optional[Engine] = None
 
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=_engine,
-    expire_on_commit=False,
-)
+
+def get_engine() -> Engine:
+    """懒加载引擎：避免 import core.data.base 时立即建连（数据库暂不可用时仍可导入其它模块）。"""
+    global _engine
+    if _engine is None:
+        _engine = create_engine_instance()
+    return _engine
+
+
+class _SessionLocalFactory:
+    """与历史 sessionmaker 用法兼容：SessionLocal() 返回 Session。"""
+
+    _maker: Optional[sessionmaker] = None
+
+    def __call__(self, **kwargs: Any) -> Session:
+        if self._maker is None:
+            self._maker = sessionmaker(
+                autocommit=False,
+                autoflush=False,
+                bind=get_engine(),
+                expire_on_commit=False,
+            )
+        return self._maker(**kwargs)
+
+
+SessionLocal = _SessionLocalFactory()
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -120,19 +144,17 @@ def get_db() -> Generator[Session, None, None]:
 @contextmanager
 def db_session(retry_count: int = 3, retry_delay: float = 0.1) -> Iterator[Session]:
     """
-    获取数据库会话（非 FastAPI，带重试机制）
-    
+    获取数据库会话（非 FastAPI）。
+
     Args:
-        retry_count: 重试次数（遇到 OperationalError 时）
-        retry_delay: 重试延迟（秒）
-    
+        retry_count / retry_delay: 保留兼容；contextmanager 只能 yield 一次，无法在失败时自动重跑整段业务。
+        锁竞争依赖 SQLite busy_timeout/WAL；失败时抛出 OperationalError。
+
     Usage:
         with db_session() as db:
-            # 执行数据库操作
-            pass
+            ...
     """
-    # 注意：@contextmanager 只能 yield 一次。旧实现的 while-retry 会在 commit 失败后再次 yield，
-    # 导致 "generator didn't stop"。这里改为单次事务，依赖 SQLite busy_timeout/WAL 处理锁等待。
+    _ = (retry_count, retry_delay)  # API 兼容占位
     db = SessionLocal()
     try:
         yield db
@@ -151,10 +173,5 @@ def db_session(retry_count: int = 3, retry_delay: float = 0.1) -> Iterator[Sessi
 
 def init_db() -> None:
     """初始化数据库（创建所有已注册的 ORM 表）"""
-    Base.metadata.create_all(bind=_engine)
+    Base.metadata.create_all(bind=get_engine())
     logger.info("[Data] Database tables created")
-
-
-def get_engine() -> Engine:
-    """获取引擎（用于 Alembic、迁移脚本等）"""
-    return _engine

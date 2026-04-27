@@ -127,8 +127,8 @@ class AgentSessionStore:
         except RuntimeError:
             try:
                 asyncio.run(_publish())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[AgentSessionStore] asyncio.run publish agent.status.changed failed: %s", exc)
 
     def get_session(self, session_id: str) -> Optional[AgentSession]:
         """获取会话（优化查询性能）"""

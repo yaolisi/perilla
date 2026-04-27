@@ -1,0 +1,44 @@
+# 轻量静态检查：全量 ruff/mypy 尚未清零，CI 先保证语法级错误与核心模块类型门禁。
+name: backend-static-analysis
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-static-analysis.yml"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-static-analysis.yml"
+
+concurrency:
+  group: backend-static-analysis-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements/base.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements/base.txt ruff mypy
+
+      - name: Ruff (syntax / parse errors)
+        run: ruff check --select=E9 .
+
+      - name: Mypy (core data + execution kernel DB, skip deep import graph)
+        run: mypy --config-file mypy.ini --follow-imports=skip core/data/base.py execution_kernel/persistence/db.py

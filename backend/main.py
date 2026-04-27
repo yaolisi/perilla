@@ -159,17 +159,24 @@ def _initialize_database_tables() -> None:
 
         engine = get_engine()
         Base.metadata.create_all(engine)
+        from sqlalchemy import inspect as sa_inspect
+
         with engine.connect() as conn:
-            cols = {str(row[1]) for row in conn.execute(text("PRAGMA table_info(workflow_executions)")).fetchall()}
-            if "queue_position" not in cols:
-                conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN queue_position INTEGER"))
-            if "queued_at" not in cols:
-                conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN queued_at DATETIME"))
-            if "wait_duration_ms" not in cols:
-                conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN wait_duration_ms INTEGER"))
-            audit_cols = {str(row[1]) for row in conn.execute(text("PRAGMA table_info(audit_logs)")).fetchall()}
-            if audit_cols and "tenant_id" not in audit_cols:
-                conn.execute(text("ALTER TABLE audit_logs ADD COLUMN tenant_id VARCHAR(128) DEFAULT 'default'"))
+            insp = sa_inspect(conn)
+            if "workflow_executions" in insp.get_table_names():
+                cols = {c["name"] for c in insp.get_columns("workflow_executions")}
+                if "queue_position" not in cols:
+                    conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN queue_position INTEGER"))
+                if "queued_at" not in cols:
+                    conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN queued_at TIMESTAMP"))
+                if "wait_duration_ms" not in cols:
+                    conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN wait_duration_ms INTEGER"))
+            if "audit_logs" in insp.get_table_names():
+                audit_cols = {c["name"] for c in insp.get_columns("audit_logs")}
+                if audit_cols and "tenant_id" not in audit_cols:
+                    conn.execute(
+                        text("ALTER TABLE audit_logs ADD COLUMN tenant_id VARCHAR(128) DEFAULT 'default'")
+                    )
             conn.commit()
         logger.info("Database tables initialized")
     except Exception as e:
@@ -334,6 +341,15 @@ async def _shutdown_cleanup_cached_runtimes(factory: Any) -> None:
 
 def _register_shutdown_handlers() -> None:
     def cleanup_handler_sync() -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            logger.warning(
+                "[Shutdown] atexit: event loop still running; skip asyncio.run cleanup (avoid nested loop crash)"
+            )
+            return
         try:
             asyncio.run(_shutdown_cleanup_async())
         except Exception as e:

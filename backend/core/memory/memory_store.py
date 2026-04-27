@@ -133,62 +133,49 @@ class MemoryStore:
 
     def _migrate_if_needed(self, conn: sqlite3.Connection) -> None:
         """
-        向后兼容迁移：为已存在的旧表补列（使用 SQLAlchemy inspect）
-        注意：虽然接收 sqlite3.Connection，但使用 SQLAlchemy inspect 检查列
+        向后兼容迁移：为已存在的旧表补列。
+        列信息来自：主引擎为 SQLite 时用 SQLAlchemy inspect（与 platform DB 一致）；
+        主引擎为 PostgreSQL 等时仅用本 sqlite3 连接上的 PRAGMA（MemoryStore 仍绑定本地 sqlite 文件）。
         """
+        columns_to_add = [
+            ("user_id", "ALTER TABLE memory_items ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default';"),
+            ("last_used_at", "ALTER TABLE memory_items ADD COLUMN last_used_at TEXT;"),
+            ("confidence", "ALTER TABLE memory_items ADD COLUMN confidence REAL;"),
+            ("embedding_json", "ALTER TABLE memory_items ADD COLUMN embedding_json TEXT;"),
+            ("status", "ALTER TABLE memory_items ADD COLUMN status TEXT NOT NULL DEFAULT 'active';"),
+            ("key", "ALTER TABLE memory_items ADD COLUMN key TEXT;"),
+            ("value", "ALTER TABLE memory_items ADD COLUMN value TEXT;"),
+        ]
+
+        def _cols_from_sqlite_file() -> set[str]:
+            cur = conn.execute("PRAGMA table_info(memory_items);")
+            return {str(row[1]) for row in cur.fetchall()}
+
+        engine = get_engine()
+        cols: set[str]
         try:
-            # 使用 SQLAlchemy inspect 检查表结构
-            engine = get_engine()
-            insp = sqlalchemy_inspect(engine)
-            
-            # 检查表是否存在
-            if "memory_items" not in insp.get_table_names():
+            if engine.dialect.name == "sqlite":
+                insp = sqlalchemy_inspect(engine)
+                if "memory_items" not in insp.get_table_names():
+                    return
+                cols = {col["name"] for col in insp.get_columns("memory_items")}
+            else:
+                cols = _cols_from_sqlite_file()
+        except Exception as e:
+            logger.warning(f"[MemoryStore] Column introspection failed, fallback to PRAGMA on sqlite file: {e}")
+            try:
+                cols = _cols_from_sqlite_file()
+            except Exception as e2:
+                logger.error(f"[MemoryStore] PRAGMA fallback failed: {e2}")
                 return
-            
-            # 获取现有列名
-            cols = {col["name"] for col in insp.get_columns("memory_items")}
-            
-            # 定义需要添加的列（如果不存在）
-            columns_to_add = [
-                ("user_id", "ALTER TABLE memory_items ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default';"),
-                ("last_used_at", "ALTER TABLE memory_items ADD COLUMN last_used_at TEXT;"),
-                ("confidence", "ALTER TABLE memory_items ADD COLUMN confidence REAL;"),
-                ("embedding_json", "ALTER TABLE memory_items ADD COLUMN embedding_json TEXT;"),
-                ("status", "ALTER TABLE memory_items ADD COLUMN status TEXT NOT NULL DEFAULT 'active';"),
-                ("key", "ALTER TABLE memory_items ADD COLUMN key TEXT;"),
-                ("value", "ALTER TABLE memory_items ADD COLUMN value TEXT;"),
-            ]
-            
-            # 添加缺失的列
+
+        try:
             for col_name, sql in columns_to_add:
                 if col_name not in cols:
                     conn.execute(sql)
                     logger.info(f"[MemoryStore] Added missing column: {col_name}")
         except Exception as e:
-            # 如果 SQLAlchemy inspect 失败，降级到 PRAGMA table_info（向后兼容）
-            logger.warning(f"[MemoryStore] SQLAlchemy inspect failed, fallback to PRAGMA: {e}")
-            try:
-                cols = {row["name"] for row in conn.execute("PRAGMA table_info(memory_items);").fetchall()}
-                
-                def add_col(sql: str) -> None:
-                    conn.execute(sql)
-                
-                if "user_id" not in cols:
-                    add_col("ALTER TABLE memory_items ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default';")
-                if "last_used_at" not in cols:
-                    add_col("ALTER TABLE memory_items ADD COLUMN last_used_at TEXT;")
-                if "confidence" not in cols:
-                    add_col("ALTER TABLE memory_items ADD COLUMN confidence REAL;")
-                if "embedding_json" not in cols:
-                    add_col("ALTER TABLE memory_items ADD COLUMN embedding_json TEXT;")
-                if "status" not in cols:
-                    add_col("ALTER TABLE memory_items ADD COLUMN status TEXT NOT NULL DEFAULT 'active';")
-                if "key" not in cols:
-                    add_col("ALTER TABLE memory_items ADD COLUMN key TEXT;")
-                if "value" not in cols:
-                    add_col("ALTER TABLE memory_items ADD COLUMN value TEXT;")
-            except Exception as e2:
-                logger.error(f"[MemoryStore] Migration fallback also failed: {e2}")
+            logger.error(f"[MemoryStore] ALTER migration failed: {e}")
 
     def add_candidates(
         self,

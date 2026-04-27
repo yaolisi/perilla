@@ -739,7 +739,7 @@ class PlanBasedExecutor:
                         try:
                             data = json.loads(filtered_output)
                             skill_text = json.dumps(data, ensure_ascii=False, indent=2)
-                        except:
+                        except (json.JSONDecodeError, TypeError):
                             skill_text = filtered_output
                     elif isinstance(filtered_output, dict):
                         skill_text = json.dumps(filtered_output, ensure_ascii=False, indent=2)

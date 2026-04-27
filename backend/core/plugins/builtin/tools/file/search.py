@@ -204,5 +204,5 @@ class FileSearchTool(Tool):
             with open(file_path, 'rb') as f:
                 chunk = f.read(1024)
                 return b'\x00' in chunk
-        except:
+        except Exception:
             return False

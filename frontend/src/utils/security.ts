@@ -33,17 +33,19 @@ export function sanitizeMermaidSvg(input: string): string {
 }
 
 export function getCookie(name: string): string | null {
-  const encodedName = `${encodeURIComponent(name)}=`
   const parts = document.cookie.split(';')
   for (const rawPart of parts) {
     const part = rawPart.trim()
-    if (part.startsWith(encodedName)) {
-      const value = part.slice(encodedName.length)
-      try {
-        return decodeURIComponent(value)
-      } catch {
-        return value
-      }
+    if (!part) continue
+    const eq = part.indexOf('=')
+    const key = eq === -1 ? part : part.slice(0, eq).trim()
+    // 按首个 = 拆分键值，精确匹配 cookie 名（避免 csrf_token 撞上 csrf_token_v2）
+    if (key !== name) continue
+    const rawValue = eq === -1 ? '' : part.slice(eq + 1)
+    try {
+      return decodeURIComponent(rawValue)
+    } catch {
+      return rawValue
     }
   }
   return null

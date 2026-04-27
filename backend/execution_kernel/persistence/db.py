@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.engine import Connection
 from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 from contextlib import asynccontextmanager, contextmanager
@@ -210,15 +211,29 @@ class Database:
         """
         兼容旧版 schema：
         - graph_definitions 缺少 graph_id 列时自动补齐并回填
+        使用 SQLAlchemy inspect，避免在非 SQLite（如 PostgreSQL）上执行 PRAGMA。
         """
-        try:
-            result = await conn.execute(text("PRAGMA table_info(graph_definitions)"))
-            cols = {str(row[1]) for row in result.fetchall()}
+        from sqlalchemy import inspect as sqla_inspect
+
+        def _migrate_graph_definitions(sync_conn: Connection) -> None:
+            insp = sqla_inspect(sync_conn)
+            if "graph_definitions" not in insp.get_table_names():
+                return
+            cols = {c["name"] for c in insp.get_columns("graph_definitions")}
             if "graph_id" not in cols:
-                await conn.execute(text("ALTER TABLE graph_definitions ADD COLUMN graph_id VARCHAR(64)"))
-                await conn.execute(text("UPDATE graph_definitions SET graph_id = id WHERE graph_id IS NULL OR graph_id = ''"))
-                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_graph_definitions_graph_id ON graph_definitions (graph_id)"))
+                sync_conn.execute(text("ALTER TABLE graph_definitions ADD COLUMN graph_id VARCHAR(64)"))
+                sync_conn.execute(
+                    text("UPDATE graph_definitions SET graph_id = id WHERE graph_id IS NULL OR graph_id = ''")
+                )
+                sync_conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_graph_definitions_graph_id ON graph_definitions (graph_id)"
+                    )
+                )
                 logger.info("[ExecutionKernel] Migrated legacy graph_definitions table: added graph_id column")
+
+        try:
+            await conn.run_sync(_migrate_graph_definitions)
         except Exception as e:
             logger.warning(f"[ExecutionKernel] Legacy schema migration skipped/failed: {e}")
 
