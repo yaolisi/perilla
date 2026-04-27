@@ -1,0 +1,50 @@
+groups:
+  - name: openvitamin.inference
+    rules:
+      - alert: OpenVitaminInferenceP95TooHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, operation) (
+              rate(openvitamin_inference_latency_seconds_bucket[5m])
+            )
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: openvitamin-backend
+        annotations:
+          summary: "Inference P95 latency is high"
+          description: "operation={{ $labels.operation }} P95 latency > 5s for 5 minutes."
+
+      - alert: OpenVitaminInferenceErrorRateHigh
+        expr: |
+          (
+            sum(rate(openvitamin_inference_errors_total[5m]))
+            /
+            clamp_min(sum(rate(openvitamin_inference_latency_seconds_count[5m])), 1)
+          ) > 0.10
+        for: 10m
+        labels:
+          severity: critical
+          service: openvitamin-backend
+        annotations:
+          summary: "Inference error rate is high"
+          description: "Inference error rate > 10% for 10 minutes."
+
+  - name: openvitamin.agent
+    rules:
+      - alert: OpenVitaminAgentFailureRateHigh
+        expr: |
+          (
+            sum(rate(openvitamin_agent_run_failures_total[10m]))
+            /
+            clamp_min(sum(rate(openvitamin_agent_runs_total[10m])), 1)
+          ) > 0.10
+        for: 10m
+        labels:
+          severity: critical
+          service: openvitamin-backend
+        annotations:
+          summary: "Agent failure rate is high"
+          description: "Agent run failure rate > 10% for 10 minutes."

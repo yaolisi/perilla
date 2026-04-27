@@ -1,0 +1,231 @@
+name: monitoring-alerting-e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: "Error injection rounds for alert drill"
+        required: false
+        default: "30"
+      concurrency:
+        description: "Concurrent error requests per round"
+        required: false
+        default: "4"
+      scrape_wait_seconds:
+        description: "Seconds to wait for Prometheus scrape"
+        required: false
+        default: "45"
+      recovery_timeout_seconds:
+        description: "Seconds to wait for alert recovery"
+        required: false
+        default: "900"
+      poll_interval_seconds:
+        description: "Alertmanager polling interval seconds"
+        required: false
+        default: "15"
+  schedule:
+    - cron: "0 3 * * 1"
+
+concurrency:
+  group: monitoring-alerting-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MONITORING_ISSUE_PREFIX: "Monitoring alerting E2E failed"
+  MONITORING_ISSUE_LABELS: "bug,ci,monitoring"
+
+jobs:
+  alerting-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build and run monitoring alerting E2E
+        env:
+          # CI 环境默认不向真实渠道告警，避免噪音；如需真实通知可在 repo secrets 覆盖。
+          SMTP_SMARTHOST: ${{ secrets.SMTP_SMARTHOST }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          SMTP_AUTH_USERNAME: ${{ secrets.SMTP_AUTH_USERNAME }}
+          SMTP_AUTH_PASSWORD: ${{ secrets.SMTP_AUTH_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+          ALERT_CRITICAL_EMAIL_TO: ${{ secrets.ALERT_CRITICAL_EMAIL_TO }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_ALERT_CHANNEL: ${{ secrets.SLACK_ALERT_CHANNEL }}
+        run: |
+          make monitoring-e2e-clean \
+            BACKEND_URL="http://127.0.0.1:8000" \
+            ALERTMANAGER_URL="http://127.0.0.1:9093" \
+            ROUNDS="${{ inputs.rounds || '30' }}" \
+            CONCURRENCY="${{ inputs.concurrency || '4' }}" \
+            SCRAPE_WAIT_SECONDS="${{ inputs.scrape_wait_seconds || '45' }}" \
+            RECOVERY_TIMEOUT_SECONDS="${{ inputs.recovery_timeout_seconds || '900' }}" \
+            POLL_INTERVAL_SECONDS="${{ inputs.poll_interval_seconds || '15' }}"
+
+      - name: Dump docker compose state on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yml -f deploy/monitoring/docker-compose.monitoring.yml ps || true
+          docker compose -f docker-compose.yml -f deploy/monitoring/docker-compose.monitoring.yml logs --no-color --tail=200 || true
+
+      - name: Prepare monitoring failure issue draft
+        if: failure()
+        run: |
+          cat > monitoring-alerting-e2e-issue.md <<'EOF'
+          # Monitoring alerting E2E failure
+
+          - workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          - workflow: `${{ github.workflow }}`
+          - ref: `${{ github.ref }}`
+          - actor: `${{ github.actor }}`
+
+          ## Inputs
+          - rounds: `${{ inputs.rounds || '30' }}`
+          - concurrency: `${{ inputs.concurrency || '4' }}`
+          - scrape_wait_seconds: `${{ inputs.scrape_wait_seconds || '45' }}`
+          - recovery_timeout_seconds: `${{ inputs.recovery_timeout_seconds || '900' }}`
+          - poll_interval_seconds: `${{ inputs.poll_interval_seconds || '15' }}`
+
+          ## Notes
+          - This issue was auto-generated because monitoring alerting E2E CI failed.
+          - Please inspect workflow logs and docker compose failure dump step.
+          EOF
+
+      - name: Upload monitoring issue draft
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-alerting-e2e-issue-draft
+          path: monitoring-alerting-e2e-issue.md
+          if-no-files-found: warn
+
+      - name: Create or update issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          ISSUE_PREFIX: ${{ env.MONITORING_ISSUE_PREFIX }}
+          ISSUE_LABELS: ${{ env.MONITORING_ISSUE_LABELS }}
+        with:
+          script: |
+            const fs = require('fs');
+            const issuePath = 'monitoring-alerting-e2e-issue.md';
+            if (!fs.existsSync(issuePath)) {
+              core.info('issue draft missing, skip');
+              return;
+            }
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issuePrefix = process.env.ISSUE_PREFIX || 'Monitoring alerting E2E failed';
+            const title = `${issuePrefix}: run #${context.runNumber}`;
+            const labels = (process.env.ISSUE_LABELS || 'bug,ci,monitoring')
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const body = fs.readFileSync(issuePath, 'utf8');
+
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              labels: labels.join(','),
+              per_page: 100
+            });
+
+            const duplicate = existing.find(
+              (it) =>
+                !it.pull_request &&
+                typeof it.title === 'string' &&
+                it.title.startsWith(issuePrefix)
+            );
+
+            if (duplicate) {
+              const comment = [
+                `Detected another monitoring alerting E2E failure in run #${context.runNumber}.`,
+                '',
+                `Run URL: https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+                '',
+                '---',
+                body
+              ].join('\n');
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: duplicate.number,
+                body: comment
+              });
+              core.info(`Duplicate issue found (#${duplicate.number}); appended comment.`);
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title,
+              body,
+              labels
+            });
+
+      - name: Auto close issue when recovered
+        if: success()
+        uses: actions/github-script@v7
+        env:
+          ISSUE_PREFIX: ${{ env.MONITORING_ISSUE_PREFIX }}
+          ISSUE_LABELS: ${{ env.MONITORING_ISSUE_LABELS }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const labels = (process.env.ISSUE_LABELS || 'bug,ci,monitoring')
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const issuePrefix = process.env.ISSUE_PREFIX || 'Monitoring alerting E2E failed';
+
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              labels: labels.join(','),
+              per_page: 100
+            });
+
+            const targets = existing.filter(
+              (it) =>
+                !it.pull_request &&
+                typeof it.title === 'string' &&
+                it.title.startsWith(issuePrefix)
+            );
+
+            if (!targets.length) {
+              core.info('no open monitoring alerting E2E issue to close');
+              return;
+            }
+
+            for (const it of targets) {
+              const comment = [
+                `Monitoring alerting E2E recovered in run #${context.runNumber}.`,
+                '',
+                `Run URL: https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+                '',
+                'Closing this issue automatically.'
+              ].join('\n');
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: it.number,
+                body: comment
+              });
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: it.number,
+                state: 'closed'
+              });
+              core.info(`Closed recovered issue #${it.number}`);
+            }

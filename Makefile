@@ -1,4 +1,4 @@
-.PHONY: help bootstrap bootstrap-prod env-init install install-gpu install-prod install-prod-soft up up-gpu up-prod down down-gpu down-prod status logs healthcheck doctor security-guardrails dependency-policy dependency-scan test-no-fallback test-workflow-control-flow smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check reset
+.PHONY: help bootstrap bootstrap-prod env-init install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails dependency-policy dependency-scan test-no-fallback test-workflow-control-flow smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit drill-alerting reset
 
 CB_BASE_URL ?= http://127.0.0.1:8000
 CB_MODEL ?= ollama:deepseek-r1:32b
@@ -15,6 +15,20 @@ CB_MIN_THROUGHPUT_RATIO ?= 1.5
 CB_MAX_FIRST_RESPONSE_RATIO ?= 0.3333
 CB_MIN_SUCCESS_RATE ?= 0.99
 CB_LAST_N ?= 10
+EVENT_BUS_BASE_URL ?= http://127.0.0.1:8000
+EVENT_BUS_SMOKE_EVENT_TYPE ?= agent.status.changed
+EVENT_BUS_SMOKE_LIMIT ?= 20
+ALERT_DRILL_BACKEND_URL ?= http://127.0.0.1:8000
+ALERT_DRILL_ALERTMANAGER_URL ?= http://127.0.0.1:9093
+ALERT_DRILL_ROUNDS ?= 30
+ALERT_DRILL_CONCURRENCY ?= 4
+ALERT_DRILL_SCRAPE_WAIT_SECONDS ?= 45
+ALERT_DRILL_RECOVERY_TIMEOUT_SECONDS ?= 900
+ALERT_DRILL_POLL_INTERVAL_SECONDS ?= 15
+ALERT_DRILL_ALERTS ?= OpenVitaminInferenceErrorRateHigh,OpenVitaminAgentFailureRateHigh,OpenVitaminInferenceP95TooHigh
+MONITORING_PROMETHEUS_URL ?= http://127.0.0.1:9090
+MONITORING_ALERTMANAGER_URL ?= http://127.0.0.1:9093
+MONITORING_GRAFANA_URL ?= http://127.0.0.1:3000
 
 help:
 	@echo "OpenVitamin Docker helper targets:"
@@ -30,10 +44,25 @@ help:
 	@echo "  make up            - Start base profile"
 	@echo "  make up-gpu        - Start GPU profile"
 	@echo "  make up-prod       - Start production profile"
+	@echo "  make up-monitoring - Start monitoring stack (Prometheus/Grafana/Alertmanager)"
 	@echo "  make down          - Stop base profile"
 	@echo "  make down-gpu      - Stop GPU profile"
 	@echo "  make down-prod     - Stop production profile"
+	@echo "  make down-monitoring"
+	@echo "                   - Stop monitoring stack"
 	@echo "  make status        - Show status in all profile views"
+	@echo "  make status-monitoring"
+	@echo "                   - Show monitoring stack status"
+	@echo "  make monitoring-smoke"
+	@echo "                   - Run monitoring API smoke checks"
+	@echo "  make monitoring-e2e"
+	@echo "                   - Start monitoring and run full alerting E2E drill"
+	@echo "  make monitoring-e2e-clean"
+	@echo "                   - Run monitoring-e2e and always stop monitoring stack"
+	@echo "  make monitoring-all"
+	@echo "                   - Print runbook and run full monitoring E2E clean flow"
+	@echo "  make ops-drill-guide"
+	@echo "                   - Print local/CI monitoring drill runbook"
 	@echo "  make logs          - Tail logs"
 	@echo "  make healthcheck   - Run health checks"
 	@echo "  make doctor        - Run environment diagnostics"
@@ -93,6 +122,14 @@ help:
 	@echo "                   - Release gate: cb-fast + cb-all"
 	@echo "  make cb-pipeline ... AUTO_TRIAGE=1"
 	@echo "                   - Auto-run triage suggestions when gate fails"
+	@echo "  EVENT_BUS_SMOKE_ADMIN_TOKEN=... make event-bus-smoke"
+	@echo "                   - Run EventBus DLQ smoke script against target backend"
+	@echo "  EVENT_BUS_SMOKE_ADMIN_TOKEN=... make event-bus-smoke-pytest"
+	@echo "                   - Run pytest external smoke wrapper for EventBus DLQ"
+	@echo "  make event-bus-smoke-unit"
+	@echo "                   - Run local unit regression tests for EventBus smoke script"
+	@echo "  make drill-alerting"
+	@echo "                   - Run one-command alert trigger + recovery verification"
 	@echo "  make reset         - Remove containers and volumes"
 
 install:
@@ -129,6 +166,9 @@ up-gpu:
 up-prod:
 	@bash scripts/up-prod.sh
 
+up-monitoring:
+	@docker compose -f docker-compose.yml -f deploy/monitoring/docker-compose.monitoring.yml up -d
+
 down:
 	@bash scripts/down.sh
 
@@ -138,8 +178,73 @@ down-gpu:
 down-prod:
 	@bash scripts/down-prod.sh
 
+down-monitoring:
+	@docker compose -f docker-compose.yml -f deploy/monitoring/docker-compose.monitoring.yml down
+
 status:
 	@bash scripts/status.sh
+
+status-monitoring:
+	@docker compose -f docker-compose.yml -f deploy/monitoring/docker-compose.monitoring.yml ps
+
+monitoring-smoke:
+	@python backend/scripts/monitoring_smoke.py \
+		--prometheus-url "$(or $(PROMETHEUS_URL),$(MONITORING_PROMETHEUS_URL))" \
+		--alertmanager-url "$(or $(ALERTMANAGER_URL),$(MONITORING_ALERTMANAGER_URL))" \
+		--grafana-url "$(or $(GRAFANA_URL),$(MONITORING_GRAFANA_URL))"
+
+monitoring-e2e:
+	@$(MAKE) up-monitoring
+	@$(MAKE) monitoring-smoke \
+		PROMETHEUS_URL="$(or $(PROMETHEUS_URL),$(MONITORING_PROMETHEUS_URL))" \
+		ALERTMANAGER_URL="$(or $(ALERTMANAGER_URL),$(MONITORING_ALERTMANAGER_URL))" \
+		GRAFANA_URL="$(or $(GRAFANA_URL),$(MONITORING_GRAFANA_URL))"
+	@$(MAKE) drill-alerting \
+		BACKEND_URL="$(or $(BACKEND_URL),$(ALERT_DRILL_BACKEND_URL))" \
+		ALERTMANAGER_URL="$(or $(ALERTMANAGER_URL),$(ALERT_DRILL_ALERTMANAGER_URL))" \
+		ROUNDS="$(or $(ROUNDS),$(ALERT_DRILL_ROUNDS))" \
+		CONCURRENCY="$(or $(CONCURRENCY),$(ALERT_DRILL_CONCURRENCY))" \
+		SCRAPE_WAIT_SECONDS="$(or $(SCRAPE_WAIT_SECONDS),$(ALERT_DRILL_SCRAPE_WAIT_SECONDS))" \
+		RECOVERY_TIMEOUT_SECONDS="$(or $(RECOVERY_TIMEOUT_SECONDS),$(ALERT_DRILL_RECOVERY_TIMEOUT_SECONDS))" \
+		POLL_INTERVAL_SECONDS="$(or $(POLL_INTERVAL_SECONDS),$(ALERT_DRILL_POLL_INTERVAL_SECONDS))" \
+		ALERTS="$(or $(ALERTS),$(ALERT_DRILL_ALERTS))"
+	@$(MAKE) status-monitoring
+
+monitoring-e2e-clean:
+	@status=0; \
+	$(MAKE) monitoring-e2e || status=$$?; \
+	$(MAKE) down-monitoring; \
+	exit $$status
+
+monitoring-all:
+	@$(MAKE) ops-drill-guide
+	@$(MAKE) monitoring-e2e-clean
+
+ops-drill-guide:
+	@echo "OpenVitamin Monitoring Drill Guide"
+	@echo ""
+	@echo "[Local quick path]"
+	@echo "  1) make up-monitoring"
+	@echo "  2) make monitoring-smoke"
+	@echo "  3) make drill-alerting"
+	@echo "  4) make status-monitoring"
+	@echo "  5) make down-monitoring"
+	@echo ""
+	@echo "[Local one-command]"
+	@echo "  - make monitoring-e2e          # keep stack after run"
+	@echo "  - make monitoring-e2e-clean    # auto stop stack after run"
+	@echo ""
+	@echo "[Parameter overrides]"
+	@echo "  - make drill-alerting ROUNDS=50 CONCURRENCY=8 SCRAPE_WAIT_SECONDS=60"
+	@echo "  - make monitoring-smoke PROMETHEUS_URL=http://127.0.0.1:9090"
+	@echo ""
+	@echo "[CI workflow]"
+	@echo "  - .github/workflows/monitoring-alerting-e2e.yml"
+	@echo "  - Trigger manually via workflow_dispatch or rely on schedule"
+	@echo ""
+	@echo "[Notification secrets (optional)]"
+	@echo "  SMTP_SMARTHOST, SMTP_FROM, SMTP_AUTH_USERNAME, SMTP_AUTH_PASSWORD"
+	@echo "  ALERT_EMAIL_TO, ALERT_CRITICAL_EMAIL_TO, SLACK_WEBHOOK_URL, SLACK_ALERT_CHANNEL"
 
 logs:
 	@bash scripts/logs.sh
@@ -404,6 +509,44 @@ cb-release-check:
 		$(if $(CHECK_API),CHECK_API=1,) \
 		$(if $(API_KEY),API_KEY="$(API_KEY)",) \
 		$(if $(API_KEY_HEADER),API_KEY_HEADER="$(API_KEY_HEADER)",)
+
+event-bus-smoke:
+	@if [ -z "$$EVENT_BUS_SMOKE_ADMIN_TOKEN" ]; then \
+		echo "EVENT_BUS_SMOKE_ADMIN_TOKEN is required"; \
+		exit 2; \
+	fi
+	@python backend/scripts/event_bus_dlq_smoke.py \
+		--base-url "$(EVENT_BUS_BASE_URL)" \
+		--admin-token "$$EVENT_BUS_SMOKE_ADMIN_TOKEN" \
+		--event-type "$(EVENT_BUS_SMOKE_EVENT_TYPE)" \
+		--limit "$(EVENT_BUS_SMOKE_LIMIT)"
+
+event-bus-smoke-pytest:
+	@if [ -z "$$EVENT_BUS_SMOKE_ADMIN_TOKEN" ]; then \
+		echo "EVENT_BUS_SMOKE_ADMIN_TOKEN is required"; \
+		exit 2; \
+	fi
+	@EVENT_BUS_SMOKE_BASE_URL="$(EVENT_BUS_BASE_URL)" \
+		EVENT_BUS_SMOKE_ADMIN_TOKEN="$$EVENT_BUS_SMOKE_ADMIN_TOKEN" \
+		EVENT_BUS_SMOKE_EVENT_TYPE="$(EVENT_BUS_SMOKE_EVENT_TYPE)" \
+		EVENT_BUS_SMOKE_LIMIT="$(EVENT_BUS_SMOKE_LIMIT)" \
+		PYTHONPATH=backend \
+		python -m pytest backend/tests/test_event_bus_smoke_external.py -q
+
+event-bus-smoke-unit:
+	@PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=backend \
+		python -m pytest -c backend/tests/pytest.smoke.ini backend/tests/test_event_bus_dlq_smoke_script.py
+
+drill-alerting:
+	@python backend/scripts/alerting_e2e_drill.py \
+		--backend-url "$(or $(BACKEND_URL),$(ALERT_DRILL_BACKEND_URL))" \
+		--alertmanager-url "$(or $(ALERTMANAGER_URL),$(ALERT_DRILL_ALERTMANAGER_URL))" \
+		--rounds "$(or $(ROUNDS),$(ALERT_DRILL_ROUNDS))" \
+		--concurrency "$(or $(CONCURRENCY),$(ALERT_DRILL_CONCURRENCY))" \
+		--scrape-wait-seconds "$(or $(SCRAPE_WAIT_SECONDS),$(ALERT_DRILL_SCRAPE_WAIT_SECONDS))" \
+		--recovery-timeout-seconds "$(or $(RECOVERY_TIMEOUT_SECONDS),$(ALERT_DRILL_RECOVERY_TIMEOUT_SECONDS))" \
+		--poll-interval-seconds "$(or $(POLL_INTERVAL_SECONDS),$(ALERT_DRILL_POLL_INTERVAL_SECONDS))" \
+		--alerts "$(or $(ALERTS),$(ALERT_DRILL_ALERTS))"
 
 reset:
 	@bash scripts/reset.sh

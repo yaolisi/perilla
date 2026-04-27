@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import asyncio
 
-from log import logger
+from log import logger, setup_logger
 from config.settings import settings
 from config.settings import apply_production_security_defaults
 from config.settings import validate_production_security_guardrails
@@ -57,6 +57,40 @@ from middleware.request_whitelist import enforce_request_body_whitelist
 
 MODEL_NOT_FOUND_ERROR = "Model not found"
 AdminRole = Annotated[Any, Depends(require_authenticated_platform_admin)]
+
+
+def _configure_platform_logging() -> None:
+    setup_logger(
+        name="ai_platform",
+        backup_count=max(1, int(getattr(settings, "log_backup_count", 30) or 30)),
+        debug=bool(getattr(settings, "debug", True)),
+        level=(getattr(settings, "log_level", "") or "").strip() or None,
+        format_type=(getattr(settings, "log_format", "text") or "text").strip().lower(),
+    )
+    logger.info(
+        "[Logging] configured format=%s level=%s backup_count=%s",
+        (getattr(settings, "log_format", "text") or "text").strip().lower(),
+        (getattr(settings, "log_level", "") or "auto").strip() or "auto",
+        max(1, int(getattr(settings, "log_backup_count", 30) or 30)),
+    )
+
+
+def _configure_prometheus_metrics(app: FastAPI) -> None:
+    if not bool(getattr(settings, "prometheus_enabled", True)):
+        logger.info("[Metrics] Prometheus disabled by settings")
+        return
+    try:
+        from prometheus_fastapi_instrumentator import Instrumentator
+
+        endpoint = str(getattr(settings, "prometheus_metrics_path", "/metrics") or "/metrics")
+        Instrumentator(
+            should_group_status_codes=True,
+            should_ignore_untemplated=True,
+            excluded_handlers=["/api/health", "/api/health/live", "/api/health/ready"],
+        ).instrument(app).expose(app, endpoint=endpoint, include_in_schema=False)
+        logger.info("[Metrics] Prometheus endpoint enabled at %s", endpoint)
+    except Exception as e:
+        logger.warning("[Metrics] Prometheus setup skipped: %s", e)
 
 
 def _apply_security_baseline() -> None:
@@ -109,6 +143,7 @@ def _initialize_database_tables() -> None:
             AgentTrace,
             ImageGenerationJobORM,
             ImageGenerationWarmupORM,
+            EventDlqORM,
         )
         from core.data.models.audit import AuditLogORM  # noqa: F401
         from core.data.models.workflow import WorkflowExecutionQueueORM  # noqa: F401
@@ -228,9 +263,11 @@ async def _shutdown_cleanup_async() -> int:
     logger.info("[Shutdown] Performing cleanup of loaded models...")
     unloaded_count = 0
     try:
+        from core.events import get_event_bus
         from core.models.registry import get_model_registry
         from core.runtimes.factory import get_runtime_factory
 
+        await get_event_bus().stop()
         registry = get_model_registry()
         factory = get_runtime_factory()
         unloaded_count = await _shutdown_unload_registered_models(registry, factory)
@@ -384,6 +421,12 @@ async def lifespan(app: FastAPI):
     _recover_expired_workflow_leases()
     _start_model_json_snapshot_task(app)
     _register_shutdown_handlers()
+    try:
+        from core.events import get_event_bus
+
+        await get_event_bus().start()
+    except Exception as e:
+        logger.warning(f"[Startup] Event bus start failed: {e}")
     await _load_plugins_and_skills()
     await _startup_scan_models()
     try:
@@ -399,6 +442,7 @@ app = FastAPI(
     lifespan=lifespan,
     dependencies=[Depends(enforce_request_body_whitelist)],
 )
+_configure_platform_logging()
 register_error_handlers(app)
 
 # 中间件顺序：先注册的更靠近应用内核；外层后注册，请求先经过外层。
@@ -494,6 +538,7 @@ app.include_router(events_router)
 app.include_router(collaboration_router)
 app.include_router(workflows_router)
 app.include_router(audit_router)
+_configure_prometheus_metrics(app)
 
 
 @app.get("/")

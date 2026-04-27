@@ -20,6 +20,7 @@ from .models import AgentState, ExecutionMode, Plan, ExecutionTrace
 from .executor_v2 import PlanBasedExecutor
 from .planner import get_planner
 from core.types import Message
+from core.observability import get_prometheus_business_metrics
 
 
 # Feature flag: Use Execution Kernel (new DAG engine) instead of PlanBasedExecutor
@@ -253,6 +254,7 @@ class AgentRuntime:
         logger.info(f"[AgentRuntime] Running plan_based mode for agent {agent.agent_id}")
         run_start = time.perf_counter()
         metrics = AgentV2Metrics(agent_id=agent.agent_id, session_id=session.session_id or "")
+        prom_metrics = get_prometheus_business_metrics()
         log_structured("Runtime", "run_start", agent_id=agent.agent_id, session_id=session.session_id or "")
         
         # 确保 session 有 trace_id，便于 Trace 页按 session 查询
@@ -498,6 +500,11 @@ class AgentRuntime:
                         )
             except Exception as e:
                 logger.warning(f"[AgentRuntime] memory extraction skipped: {e}")
+            prom_metrics.observe_agent_run(
+                mode=ExecutionMode.PLAN_BASED.value,
+                engine=metrics.execution_engine or "unknown",
+                success=session.status != "error",
+            )
             
         except Exception as e:
             metrics.total_run_ms = round((time.perf_counter() - run_start) * 1000, 2)
@@ -514,6 +521,11 @@ class AgentRuntime:
                 session_store.save_session(session)
             except Exception:
                 pass
+            prom_metrics.observe_agent_run(
+                mode=ExecutionMode.PLAN_BASED.value,
+                engine=metrics.execution_engine or "unknown",
+                success=False,
+            )
         
         return session
 

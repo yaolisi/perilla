@@ -13,6 +13,7 @@ from log import logger
 from config.settings import settings
 from core.cache import get_memory_cache_client, get_redis_cache_client
 from core.models.registry import get_model_registry
+from core.events import get_event_bus
 
 from core.inference.router.model_router import ModelRouter, RoutingResult
 from core.inference.providers.provider_runtime_adapter import ProviderRuntimeAdapter
@@ -27,6 +28,7 @@ from core.inference.stats import (
     record_inference_cache_hit,
     record_inference_cache_miss,
 )
+from core.observability import get_prometheus_business_metrics
 
 
 class InferenceGateway:
@@ -53,6 +55,7 @@ class InferenceGateway:
         self.memory_cache = get_memory_cache_client()
         self.cache = get_redis_cache_client()
         self.model_registry = get_model_registry()
+        self.prom_metrics = get_prometheus_business_metrics()
 
     @staticmethod
     def _is_admin_request(metadata: dict[str, Any]) -> bool:
@@ -199,6 +202,32 @@ class InferenceGateway:
         )
         return max(1, int(overrides.get(model_type, base_ttl)))
 
+    async def _emit_inference_completed(
+        self,
+        *,
+        request: InferenceRequest,
+        routing: RoutingResult,
+        cache_hit: bool,
+    ) -> None:
+        try:
+            meta = getattr(request, "metadata", {}) or {}
+            await get_event_bus().publish(
+                event_type="inference.completed",
+                source="inference_gateway",
+                payload={
+                    "model_alias": request.model_alias,
+                    "resolved_model": routing.model_id,
+                    "provider": routing.provider,
+                    "resolved_via": routing.resolved_via,
+                    "cache_hit": cache_hit,
+                    "session_id": meta.get("session_id"),
+                    "trace_id": meta.get("trace_id"),
+                    "agent_id": meta.get("agent_id"),
+                },
+            )
+        except Exception as e:
+            logger.debug("[InferenceGateway] emit inference.completed failed: %s", e)
+
     async def clear_cache(
         self,
         *,
@@ -300,123 +329,173 @@ class InferenceGateway:
         """
         self._validate_messages(request)
         self._apply_request_priority(request)
-        # 1. Route alias to provider + model_id
-        routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
-        meta = getattr(request, "metadata", {}) or {}
-        logger.info(
-            "[InferenceGateway] Routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
-            request.model_alias,
-            routing.provider,
-            routing.model_id,
-            routing.resolved_via,
-            meta.get("session_id"),
-            meta.get("trace_id"),
-            meta.get("agent_id"),
-        )
-        
-        cache_key = self._build_generate_cache_key(routing, request)
-        cache_ttl = self._resolve_generate_cache_ttl(routing)
-        generate_started_at = time.time()
-        cached = self.memory_cache.get_json(cache_key)
-        if not cached:
-            cached = await self.cache.get_json(cache_key)
-            if cached:
-                self.memory_cache.set_json(cache_key, cached, cache_ttl)
-        if cached:
-            try:
-                response = InferenceResponse(**cached)
-                saved_latency_ms = max(0.0, (time.time() - generate_started_at) * 1000.0)
-                record_inference_cache_hit(saved_latency_ms=saved_latency_ms)
-                response.metadata = {
-                    **(response.metadata or {}),
-                    "cache_hit": True,
-                    "cache_layer": "memory_or_redis",
-                    "cache_saved_latency_ms": round(saved_latency_ms, 2),
-                }
-                return response
-            except Exception:
-                pass
-        record_inference_cache_miss()
-
-        # 2. Execute via adapter
-        if routing.resolved_via == "direct":
-            # Passthrough: use model_alias as model_id directly
-            response = await self.adapter.generate(
-                "auto",
+        operation = "generate"
+        started_at = time.perf_counter()
+        self.prom_metrics.observe_inference_started(operation=operation)
+        provider_name = "unknown"
+        try:
+            routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
+            provider_name = routing.provider
+            meta = getattr(request, "metadata", {}) or {}
+            logger.info(
+                "[InferenceGateway] Routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
                 request.model_alias,
-                request
-            )
-        else:
-            response = await self.adapter.generate(
                 routing.provider,
                 routing.model_id,
-                request
+                routing.resolved_via,
+                meta.get("session_id"),
+                meta.get("trace_id"),
+                meta.get("agent_id"),
             )
 
-        response.metadata = {**(response.metadata or {}), "cache_hit": False}
-        self.memory_cache.set_json(cache_key, response.model_dump(), cache_ttl)
-        await self.cache.set_json(cache_key, response.model_dump(), cache_ttl)
-        return response
+            cache_key = self._build_generate_cache_key(routing, request)
+            cache_ttl = self._resolve_generate_cache_ttl(routing)
+            generate_started_at = time.time()
+            cached = self.memory_cache.get_json(cache_key)
+            if not cached:
+                cached = await self.cache.get_json(cache_key)
+                if cached:
+                    self.memory_cache.set_json(cache_key, cached, cache_ttl)
+            if cached:
+                try:
+                    response = InferenceResponse(**cached)
+                    saved_latency_ms = max(0.0, (time.time() - generate_started_at) * 1000.0)
+                    record_inference_cache_hit(saved_latency_ms=saved_latency_ms)
+                    response.metadata = {
+                        **(response.metadata or {}),
+                        "cache_hit": True,
+                        "cache_layer": "memory_or_redis",
+                        "cache_saved_latency_ms": round(saved_latency_ms, 2),
+                    }
+                    await self._emit_inference_completed(request=request, routing=routing, cache_hit=True)
+                    self.prom_metrics.observe_inference_finished(
+                        operation=operation,
+                        provider=routing.provider,
+                        model=routing.model_id,
+                        latency_seconds=(time.perf_counter() - started_at),
+                    )
+                    return response
+                except Exception:
+                    pass
+            record_inference_cache_miss()
+
+            if routing.resolved_via == "direct":
+                response = await self.adapter.generate("auto", request.model_alias, request)
+            else:
+                response = await self.adapter.generate(routing.provider, routing.model_id, request)
+
+            response.metadata = {**(response.metadata or {}), "cache_hit": False}
+            self.memory_cache.set_json(cache_key, response.model_dump(), cache_ttl)
+            await self.cache.set_json(cache_key, response.model_dump(), cache_ttl)
+            await self._emit_inference_completed(request=request, routing=routing, cache_hit=False)
+            self.prom_metrics.observe_inference_finished(
+                operation=operation,
+                provider=routing.provider,
+                model=routing.model_id,
+                latency_seconds=(time.perf_counter() - started_at),
+            )
+            return response
+        except Exception:
+            self.prom_metrics.observe_inference_failed(operation=operation, provider=provider_name)
+            raise
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         self._apply_request_priority(request)
-        routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
-        meta = getattr(request, "metadata", {}) or {}
-        logger.info(
-            "[InferenceGateway] Embed routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
-            request.model_alias,
-            routing.provider,
-            routing.model_id,
-            routing.resolved_via,
-            meta.get("session_id"),
-            meta.get("trace_id"),
-            meta.get("agent_id"),
-        )
-        cache_key = self._build_embedding_cache_key(routing, request)
-        cache_ttl = max(1, int(getattr(settings, "embedding_cache_ttl_seconds", 86400)))
-        cached = self.memory_cache.get_json(cache_key)
-        if not cached:
-            cached = await self.cache.get_json(cache_key)
+        operation = "embed"
+        started_at = time.perf_counter()
+        self.prom_metrics.observe_inference_started(operation=operation)
+        provider_name = "unknown"
+        try:
+            routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
+            provider_name = routing.provider
+            meta = getattr(request, "metadata", {}) or {}
+            logger.info(
+                "[InferenceGateway] Embed routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
+                request.model_alias,
+                routing.provider,
+                routing.model_id,
+                routing.resolved_via,
+                meta.get("session_id"),
+                meta.get("trace_id"),
+                meta.get("agent_id"),
+            )
+            cache_key = self._build_embedding_cache_key(routing, request)
+            cache_ttl = max(1, int(getattr(settings, "embedding_cache_ttl_seconds", 86400)))
+            cached = self.memory_cache.get_json(cache_key)
+            if not cached:
+                cached = await self.cache.get_json(cache_key)
+                if cached:
+                    self.memory_cache.set_json(cache_key, cached, cache_ttl)
             if cached:
-                self.memory_cache.set_json(cache_key, cached, cache_ttl)
-        if cached:
-            try:
-                response = EmbeddingResponse(**cached)
-                record_inference_cache_hit()
-                response.metadata = {**(response.metadata or {}), "cache_hit": True, "cache_layer": "memory_or_redis"}
-                return response
-            except Exception:
-                pass
-        record_inference_cache_miss()
+                try:
+                    response = EmbeddingResponse(**cached)
+                    record_inference_cache_hit()
+                    response.metadata = {**(response.metadata or {}), "cache_hit": True, "cache_layer": "memory_or_redis"}
+                    self.prom_metrics.observe_inference_finished(
+                        operation=operation,
+                        provider=routing.provider,
+                        model=routing.model_id,
+                        latency_seconds=(time.perf_counter() - started_at),
+                    )
+                    return response
+                except Exception:
+                    pass
+            record_inference_cache_miss()
 
-        if routing.resolved_via == "direct":
-            response = await self.adapter.embed("auto", request.model_alias, request)
-        else:
-            response = await self.adapter.embed(routing.provider, routing.model_id, request)
-        response.metadata = {**(response.metadata or {}), "cache_hit": False}
-        self.memory_cache.set_json(cache_key, response.model_dump(), cache_ttl)
-        await self.cache.set_json(cache_key, response.model_dump(), cache_ttl)
-        return response
+            if routing.resolved_via == "direct":
+                response = await self.adapter.embed("auto", request.model_alias, request)
+            else:
+                response = await self.adapter.embed(routing.provider, routing.model_id, request)
+            response.metadata = {**(response.metadata or {}), "cache_hit": False}
+            self.memory_cache.set_json(cache_key, response.model_dump(), cache_ttl)
+            await self.cache.set_json(cache_key, response.model_dump(), cache_ttl)
+            self.prom_metrics.observe_inference_finished(
+                operation=operation,
+                provider=routing.provider,
+                model=routing.model_id,
+                latency_seconds=(time.perf_counter() - started_at),
+            )
+            return response
+        except Exception:
+            self.prom_metrics.observe_inference_failed(operation=operation, provider=provider_name)
+            raise
 
     async def transcribe(self, request: ASRRequest) -> ASRResponse:
-        routing = self.router.resolve(
-            request.model_alias,
-            request_metadata=getattr(request, "metadata", {}) or {},
-        )
-        meta = getattr(request, "metadata", {}) or {}
-        logger.info(
-            "[InferenceGateway] ASR routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
-            request.model_alias,
-            routing.provider,
-            routing.model_id,
-            routing.resolved_via,
-            meta.get("session_id"),
-            meta.get("trace_id"),
-            meta.get("agent_id"),
-        )
-        if routing.resolved_via == "direct":
-            return await self.adapter.transcribe("auto", request.model_alias, request)
-        return await self.adapter.transcribe(routing.provider, routing.model_id, request)
+        operation = "transcribe"
+        started_at = time.perf_counter()
+        self.prom_metrics.observe_inference_started(operation=operation)
+        provider_name = "unknown"
+        try:
+            routing = self.router.resolve(
+                request.model_alias,
+                request_metadata=getattr(request, "metadata", {}) or {},
+            )
+            provider_name = routing.provider
+            meta = getattr(request, "metadata", {}) or {}
+            logger.info(
+                "[InferenceGateway] ASR routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
+                request.model_alias,
+                routing.provider,
+                routing.model_id,
+                routing.resolved_via,
+                meta.get("session_id"),
+                meta.get("trace_id"),
+                meta.get("agent_id"),
+            )
+            if routing.resolved_via == "direct":
+                response = await self.adapter.transcribe("auto", request.model_alias, request)
+            else:
+                response = await self.adapter.transcribe(routing.provider, routing.model_id, request)
+            self.prom_metrics.observe_inference_finished(
+                operation=operation,
+                provider=routing.provider,
+                model=routing.model_id,
+                latency_seconds=(time.perf_counter() - started_at),
+            )
+            return response
+        except Exception:
+            self.prom_metrics.observe_inference_failed(operation=operation, provider=provider_name)
+            raise
     
     async def stream(self, request: InferenceRequest) -> AsyncIterator[str]:
         """
@@ -430,7 +509,9 @@ class InferenceGateway:
         """
         self._validate_messages(request)
         self._apply_request_priority(request)
-        # 1. Route alias to provider + model_id
+        operation = "stream"
+        started_at = time.perf_counter()
+        self.prom_metrics.observe_inference_started(operation=operation)
         routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
         
         meta = getattr(request, "metadata", {}) or {}
@@ -446,21 +527,31 @@ class InferenceGateway:
         )
         
         # 2. Stream via adapter
-        if routing.resolved_via == "direct":
-            async for token in self.adapter.stream(
-                "auto",
-                request.model_alias,
-                request
-            ):
-                yield token
-            return
-        
-        async for token in self.adapter.stream(
-            routing.provider,
-            routing.model_id,
-            request
-        ):
-            yield token
+        try:
+            if routing.resolved_via == "direct":
+                async for token in self.adapter.stream(
+                    "auto",
+                    request.model_alias,
+                    request
+                ):
+                    yield token
+            else:
+                async for token in self.adapter.stream(
+                    routing.provider,
+                    routing.model_id,
+                    request
+                ):
+                    yield token
+        except Exception:
+            self.prom_metrics.observe_inference_failed(operation=operation, provider=routing.provider)
+            raise
+        else:
+            self.prom_metrics.observe_inference_finished(
+                operation=operation,
+                provider=routing.provider,
+                model=routing.model_id,
+                latency_seconds=(time.perf_counter() - started_at),
+            )
     
     def get_routing_info(self, model_alias: str) -> RoutingResult:
         """

@@ -84,6 +84,11 @@ class RequestTraceMiddleware(BaseHTTPMiddleware):
         response.headers["X-Response-Time-Ms"] = str(elapsed_ms)
         logger.info(
             f"[Request] {request.method} {request.url.path} "
-            f"status={response.status_code} request_id={request_id} trace_id={trace_id} latency_ms={elapsed_ms}"
+            f"status={response.status_code} request_id={request_id} trace_id={trace_id} latency_ms={elapsed_ms}",
+            extra={
+                "component": "RequestTrace",
+                "trace_id": trace_id,
+                "request_id": request_id,
+            },
         )
         return response

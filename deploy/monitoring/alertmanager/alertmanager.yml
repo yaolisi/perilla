@@ -1,0 +1,47 @@
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: '${SMTP_SMARTHOST:smtp.example.com:587}'
+  smtp_from: '${SMTP_FROM:openvitamin-alerts@example.com}'
+  smtp_auth_username: '${SMTP_AUTH_USERNAME:}'
+  smtp_auth_password: '${SMTP_AUTH_PASSWORD:}'
+  smtp_require_tls: true
+
+route:
+  group_by: ['alertname', 'service']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 2h
+  receiver: 'default-email'
+  routes:
+    - matchers:
+        - severity="critical"
+      receiver: 'critical-slack'
+      continue: true
+    - matchers:
+        - severity="critical"
+      receiver: 'critical-email'
+
+receivers:
+  - name: 'default-email'
+    email_configs:
+      - to: '${ALERT_EMAIL_TO:ops@example.com}'
+        send_resolved: true
+
+  - name: 'critical-email'
+    email_configs:
+      - to: '${ALERT_CRITICAL_EMAIL_TO:ops-critical@example.com}'
+        send_resolved: true
+
+  - name: 'critical-slack'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL:https://hooks.slack.com/services/REPLACE/ME}'
+        channel: '${SLACK_ALERT_CHANNEL:#openvitamin-alerts}'
+        send_resolved: true
+        title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+        text: >
+          {{ range .Alerts -}}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          *Service:* {{ .Labels.service }}
+          {{ end }}

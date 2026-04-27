@@ -250,6 +250,16 @@ class Settings(BaseSettings):
     inference_cache_clear_challenge_rate_max_per_window: int = 5
     # Embedding 缓存 24 小时
     embedding_cache_ttl_seconds: int = 86400
+    # 事件总线（跨模块异步通信）
+    event_bus_enabled: bool = False
+    event_bus_backend: str = "redis"  # redis | inprocess
+    event_bus_redis_url: str = "redis://127.0.0.1:6379/1"
+    event_bus_channel_prefix: str = "openvitamin:event"
+    event_bus_handler_retry_attempts: int = 1
+    event_bus_handler_retry_delay_ms: int = 200
+    event_bus_dlq_max_items: int = 200
+    event_bus_replay_max_batch: int = 100
+    event_bus_replay_min_interval_ms: int = 1000
     # 知识库向量索引 Redis 快照（用于重启后快速恢复向量表）
     kb_vector_snapshot_redis_enabled: bool = True
     kb_vector_snapshot_redis_prefix: str = "openvitamin:kbvec"
@@ -406,9 +416,18 @@ class Settings(BaseSettings):
     image_generation_max_pending_jobs_per_model: int = 4
 
     # API 可观测性与治理（enhanced）
+    # 日志输出格式：text | json（生产建议 json）
+    log_format: str = "text"
+    # 日志级别：为空时按 debug 自动选择（debug=True => DEBUG，False => INFO）
+    log_level: str = ""
+    # 日志文件保留天数（按天轮转）
+    log_backup_count: int = 30
     # 请求追踪：响应中返回 X-Request-Id，并输出请求耗时日志
     request_trace_enabled: bool = True
     request_trace_header_name: str = "X-Request-Id"
+    # Prometheus 指标端点
+    prometheus_enabled: bool = True
+    prometheus_metrics_path: str = "/metrics"
     # 简化限流：每个窗口内允许的请求数。<=0 时关闭限流。
     api_rate_limit_enabled: bool = True
     api_rate_limit_requests: int = 120
