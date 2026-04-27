@@ -1,6 +1,6 @@
 # Contributing
 
-感谢你对 OpenVitamin 的关注。
+感谢你对 perilla 的关注。
 
 本项目欢迎 issue、文档修正、测试补充、Bug 修复与功能改进。在提交贡献前，请先阅读本文件与根目录的 `AGENTS.md`。
 

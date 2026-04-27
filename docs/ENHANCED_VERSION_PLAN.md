@@ -1,6 +1,6 @@
-# openvitamin_enhanced 分批交付计划
+# perilla 分批交付计划
 
-本目录为「增强版」并行副本，在不影响原 `OpenVitamin` 主仓库的前提下迭代治理与可观测能力。
+本文档记录 **perilla** 仓库在治理与可观测能力上的分批交付（可与主线功能迭代并行推进）。
 
 ## Batch 1 — RBAC 平台角色
 

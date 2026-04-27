@@ -1,4 +1,4 @@
-# OpenVitamin大模型与智能体应用平台 API 文档
+# perilla大模型与智能体应用平台 API 文档
 
 ## 目录
 
@@ -110,7 +110,7 @@
 
 ## 1. 概述
 
-本文档为 OpenVitamin大模型与智能体应用平台后端 API 的说明。平台通过**统一推理网关**管理 LLM、VLM、Embedding、ASR、**Perception（视觉感知）** 与 **Image Generation（文生图）** 等模型，并提供智能体、技能、知识库、Workflow、备份等能力。内置工具包含 **vision.detect_objects**（YOLO 目标检测）、**vision.segment_objects**（FastSAM 实例分割，彩色 mask+轮廓）；前端不直连模型与工具，所有调用经网关统一出口。
+本文档为 perilla大模型与智能体应用平台后端 API 的说明。平台通过**统一推理网关**管理 LLM、VLM、Embedding、ASR、**Perception（视觉感知）** 与 **Image Generation（文生图）** 等模型，并提供智能体、技能、知识库、Workflow、备份等能力。内置工具包含 **vision.detect_objects**（YOLO 目标检测）、**vision.segment_objects**（FastSAM 实例分割，彩色 mask+轮廓）；前端不直连模型与工具，所有调用经网关统一出口。
 
 **基础 URL**：`http://localhost:8000`  
 **API 版本**：v1
@@ -146,7 +146,7 @@ GET /
 **Response:**
 ```json
 {
-  "message": "Welcome to OpenVitamin大模型与智能体应用平台",
+  "message": "Welcome to perilla大模型与智能体应用平台",
   "version": "1.0.0"
 }
 ```
@@ -524,7 +524,7 @@ GET /api/system/config
 ```json
 {
   "ollama_base_url": "http://localhost:11434",
-  "app_name": "OpenVitamin大模型与智能体应用平台",
+  "app_name": "perilla大模型与智能体应用平台",
   "version": "1.0.0",
   "local_model_directory": "/path/to/models",
   "settings": {
