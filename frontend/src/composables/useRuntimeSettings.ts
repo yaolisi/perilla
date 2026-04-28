@@ -109,6 +109,8 @@ export function useRuntimeSettings() {
 }`
 
   const config = ref<SystemConfig | null>(null)
+  /** GET /api/system/config 返回的 MCP 服务端推送→事件总线生效值；旧后端则为 null（不展示只读条） */
+  const mcpHttpEmitEffective = ref<boolean | null>(null)
   const isSaving = ref(false)
   const saveSuccess = ref(false)
   const saveError = ref('')
@@ -127,6 +129,10 @@ export function useRuntimeSettings() {
     try {
       const c = await getSystemConfig()
       config.value = c
+      {
+        const eff = c.mcp_http_emit_server_push_events_effective
+        mcpHttpEmitEffective.value = typeof eff === 'boolean' ? eff : null
+      }
       const s = c.settings ?? {}
       autoUnloadLocalModelOnSwitch.value = parseBool(s.autoUnloadLocalModelOnSwitch, false)
       runtimeAutoReleaseEnabled.value = parseBool(s.runtimeAutoReleaseEnabled, true)
@@ -215,6 +221,7 @@ export function useRuntimeSettings() {
       isEditing.value = false
     } catch (e) {
       console.error('Failed to load system config:', e)
+      mcpHttpEmitEffective.value = null
     }
   }
 
@@ -777,6 +784,7 @@ export function useRuntimeSettings() {
     inferencePriorityPanelPreemptionCooldownBusyThreshold,
     fillSmartRoutingTemplate,
     clearSmartRoutingPolicies,
+    mcpHttpEmitEffective,
     config,
     isSaving,
     saveSuccess,

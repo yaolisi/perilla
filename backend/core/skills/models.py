@@ -66,6 +66,14 @@ class SkillDefinition:
         if not self.output_schema:
             raise ValueError("output_schema is required")
     
+    def is_mcp_skill(self) -> bool:
+        """MCP stdio 工具映射，或显式分类为 mcp（与前端/发现层展示一致）。"""
+        d = self.definition if isinstance(self.definition, dict) else {}
+        if d.get("kind") == "mcp_stdio":
+            return True
+        cats = self.category if isinstance(self.category, list) else []
+        return any(str(c).lower() == "mcp" for c in cats)
+    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -84,6 +92,7 @@ class SkillDefinition:
             "output_schema": self.output_schema,
             "enabled": self.enabled,
             "composable": self.composable,
+            "is_mcp": self.is_mcp_skill(),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -130,6 +139,12 @@ class Skill:
     created_at: datetime
     updated_at: datetime
     
+    def is_mcp_skill(self) -> bool:
+        d = self.definition if isinstance(self.definition, dict) else {}
+        if d.get("kind") == "mcp_stdio":
+            return True
+        return (self.category or "").strip().lower() == "mcp"
+    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -140,6 +155,7 @@ class Skill:
             "definition": self.definition,
             "input_schema": self.input_schema,
             "enabled": self.enabled,
+            "is_mcp": self.is_mcp_skill(),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

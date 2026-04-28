@@ -51,6 +51,7 @@ from api.events import router as events_router
 from api.collaboration import router as collaboration_router
 from api.workflows import router as workflows_router
 from api.audit import router as audit_router
+from api.mcp import router as mcp_router
 from api.errors import register_error_handlers
 from core.security.deps import require_authenticated_platform_admin
 from middleware.request_whitelist import enforce_request_body_whitelist
@@ -152,6 +153,7 @@ def _initialize_database_tables() -> None:
             ImageGenerationJobORM,
             ImageGenerationWarmupORM,
             EventDlqORM,
+            McpServer,
         )
         from core.data.models.audit import AuditLogORM  # noqa: F401
         from core.data.models.workflow import WorkflowExecutionQueueORM  # noqa: F401
@@ -177,6 +179,12 @@ def _initialize_database_tables() -> None:
                     conn.execute(
                         text("ALTER TABLE audit_logs ADD COLUMN tenant_id VARCHAR(128) DEFAULT 'default'")
                     )
+            if "mcp_servers" in insp.get_table_names():
+                mcp_cols = {c["name"] for c in insp.get_columns("mcp_servers")}
+                if "transport" not in mcp_cols:
+                    conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN transport VARCHAR(32) DEFAULT 'stdio'"))
+                if "base_url" not in mcp_cols:
+                    conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN base_url TEXT"))
             conn.commit()
         logger.info("Database tables initialized")
     except Exception as e:
@@ -562,6 +570,7 @@ app.include_router(events_router)
 app.include_router(collaboration_router)
 app.include_router(workflows_router)
 app.include_router(audit_router)
+app.include_router(mcp_router)
 _configure_prometheus_metrics(app)
 
 

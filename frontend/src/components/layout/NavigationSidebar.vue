@@ -16,25 +16,23 @@ import {
   ChevronLeft,
   Image
 } from 'lucide-vue-next'
-import { getSystemConfig } from '@/services/api'
-
+import { useSystemConfigWithDebounce } from '@/composables/useSystemConfigWithDebounce'
 const { activeView, setView } = useNavigation()
 const { t } = useI18n()
 
+const { systemConfig, refreshSystemConfig } = useSystemConfigWithDebounce({
+  logPrefix: 'NavigationSidebar',
+})
+const systemVersion = computed(() => systemConfig.value?.version?.trim() || '')
+
 // Collapsible sidebar state
 const isCollapsed = ref(false)
-const systemVersion = ref<string>('')
 const toggleSidebar = () => {
   isCollapsed.value = !isCollapsed.value
 }
 
-onMounted(async () => {
-  try {
-    const config = await getSystemConfig()
-    systemVersion.value = config.version || ''
-  } catch (error) {
-    console.error('Failed to fetch system version:', error)
-  }
+onMounted(() => {
+  void refreshSystemConfig()
 })
 
 // Navigation items grouped by category

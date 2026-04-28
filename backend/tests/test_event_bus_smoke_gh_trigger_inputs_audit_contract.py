@@ -106,6 +106,20 @@ def test_validate_payload_rejects_non_positive_generated_at_ms() -> None:
     assert any(f"[{ERR_GH_TRIGGER_GENERATED_AT_POSITIVE_INVALID}]" in e for e in errors)
 
 
+def test_validate_payload_rejects_bool_numeric_runtime_fields() -> None:
+    payload = _base_payload()
+    payload["schema_version"] = True
+    payload["generated_at_ms"] = True
+    payload["completed_at_ms"] = True
+    payload["duration_ms"] = False
+    payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
+    errors = validate_payload(payload)
+    assert any("schema_version must be 1" in e for e in errors)
+    assert any("generated_at_ms must be int" in e for e in errors)
+    assert any("completed_at_ms must be int" in e for e in errors)
+    assert any("duration_ms must be int" in e for e in errors)
+
+
 def test_validate_payload_rejects_non_positive_completed_at_ms() -> None:
     payload = _base_payload()
     payload["completed_at_ms"] = 0

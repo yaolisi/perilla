@@ -20,11 +20,15 @@ import {
   Database,
   SearchCode,
   Binary,
+  Wrench,
   Trash2,
-  Lightbulb
+  Lightbulb,
+  Wand2,
+  Plug,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { 
   Select, 
@@ -33,9 +37,17 @@ import {
   SelectTrigger, 
   SelectValue 
 } from '@/components/ui/select'
-import { getSystemConfig, listAgents, listModels, deleteAgent, type ModelInfo, type SystemConfig } from '@/services/api'
+import {
+  listAgents,
+  listModels,
+  deleteAgent,
+  createAgent,
+  generateAgentFromNl,
+  type ModelInfo,
+  type GenerateAgentFromNlResponse,
+} from '@/services/api'
 import { useSystemMetrics } from '@/composables/useSystemMetrics'
-
+import { useSystemConfigWithDebounce } from '@/composables/useSystemConfigWithDebounce'
 // Loading State
 const loading = ref(true)
 const agents = ref<any[]>([])
@@ -45,6 +57,8 @@ const selectedModelFamily = ref<string>('all')
 const selectedStatus = ref<string>('all')
 const selectedRag = ref<string>('all')
 const selectedTool = ref<string>('all')
+/** 已启技能中是否含 MCP（与技能中心 / 元信息一致） */
+const selectedMcp = ref<'all' | 'with_mcp' | 'without_mcp'>('all')
 /** 工具失败反思建议 model_params.tool_failure_reflection */
 const selectedReflection = ref<string>('all')
 
@@ -168,6 +182,22 @@ const fetchAgents = async (showLoading = true) => {
       const hasPython = effectiveSkills.some((id: string) => id.includes('python') || id === 'builtin_python.run')
       // Display list: builtin_* -> tool name, else skill id (for badges & filter)
       const tools = effectiveSkills.map((s: string) => s.startsWith('builtin_') ? s.slice(8) : s)
+      const meta = agent.enabled_skills_meta as
+        | Array<{ id: string; name: string; is_mcp: boolean }>
+        | undefined
+      const skillChips = effectiveSkills.map((skillId: string) => {
+        const slug = skillId.startsWith('builtin_') ? skillId.slice(8) : skillId
+        const m = meta?.find((x) => x.id === skillId)
+        const nm = (m?.name || '').trim()
+        const label = nm && m ? m.name : getToolName(slug)
+        return {
+          key: skillId,
+          slug,
+          label,
+          isMcp: m ? !!m.is_mcp : false,
+        }
+      })
+      const has_mcp_skill = skillChips.some((c) => c.isMcp)
       const mp = agent.model_params && typeof agent.model_params === 'object' ? agent.model_params as Record<string, unknown> : null
       const tfr = mp?.tool_failure_reflection
       const toolFailureReflection =
@@ -183,6 +213,8 @@ const fetchAgents = async (showLoading = true) => {
       runtime_label: runtimeLabelForBackend(runtimeBackend),
       rag_count: agent.rag_ids?.length || 0,
       tools,
+      skillChips,
+      has_mcp_skill,
       tool_failure_reflection: toolFailureReflection,
       icon: hasWeb ? Globe : (hasPython ? Code2 : Bot),
       color: hasWeb ? 'blue' : (hasPython ? 'orange' : 'indigo')
@@ -199,7 +231,9 @@ const fetchAgents = async (showLoading = true) => {
 }
 
 const { metrics } = useSystemMetrics()
-const systemConfig = ref<SystemConfig | null>(null)
+const { systemConfig, refreshSystemConfig } = useSystemConfigWithDebounce({
+  logPrefix: 'AgentsManagementView',
+})
 const wasDeactivated = ref(false)
 
 // Format last heartbeat time
@@ -211,12 +245,7 @@ const lastHeartbeat = computed(() => {
 
 onMounted(async () => {
   await fetchAgents()
-  try {
-    const configData = await getSystemConfig()
-    systemConfig.value = configData
-  } catch (error) {
-    console.error('[AgentsManagementView] Failed to fetch system data:', error)
-  }
+  await refreshSystemConfig()
 })
 
 onDeactivated(() => { wasDeactivated.value = true })
@@ -295,6 +324,12 @@ const filteredAgents = computed(() => {
     result = result.filter(agent => agent.tools?.includes(selectedTool.value))
   }
 
+  if (selectedMcp.value === 'with_mcp') {
+    result = result.filter((agent) => agent.has_mcp_skill === true)
+  } else if (selectedMcp.value === 'without_mcp') {
+    result = result.filter((agent) => !agent.has_mcp_skill)
+  }
+
   if (selectedReflection.value === 'on') {
     result = result.filter((agent) => agent.tool_failure_reflection === true)
   } else if (selectedReflection.value === 'off') {
@@ -315,6 +350,13 @@ const filteredAgents = computed(() => {
       if (agent.runtime_label?.toLowerCase().includes(query)) return true
       // Search in tool names
       if (agent.tools?.some((tool: string) => tool.toLowerCase().includes(query))) return true
+      if (
+        agent.skillChips?.some((c: { label: string }) =>
+          (c.label || '').toLowerCase().includes(query),
+        )
+      ) {
+        return true
+      }
       return false
     })
   }
@@ -324,6 +366,73 @@ const filteredAgents = computed(() => {
 
 const handleCreateAgent = () => {
   router.push('/agents/create')
+}
+
+const nlOpen = ref(false)
+const nlDescription = ref('')
+/** 选中的模型 id；__default__ 表示交给后端选默认模型 */
+const nlModelId = ref<string>('__default__')
+const nlBusy = ref(false)
+const nlCreating = ref(false)
+const nlResult = ref<GenerateAgentFromNlResponse | null>(null)
+
+const modelOptions = computed(() => Object.values(modelsIndex.value))
+
+const openNlDialog = () => {
+  nlDescription.value = ''
+  nlModelId.value = '__default__'
+  nlResult.value = null
+  nlOpen.value = true
+}
+
+const closeNlDialog = () => {
+  nlOpen.value = false
+}
+
+const runNlGenerate = async () => {
+  const q = nlDescription.value.trim()
+  if (q.length < 4) {
+    alert(t('agents.nl.err_short'))
+    return
+  }
+  nlBusy.value = true
+  nlResult.value = null
+  try {
+    nlResult.value = await generateAgentFromNl({
+      description: q,
+      model_id: nlModelId.value === '__default__' ? undefined : nlModelId.value,
+      top_skills: 12,
+    })
+  } catch (e) {
+    alert(e instanceof Error ? e.message : t('agents.nl.loading'))
+  } finally {
+    nlBusy.value = false
+  }
+}
+
+const confirmNlCreate = async () => {
+  const d = nlResult.value?.draft
+  if (!d?.name?.trim() || !d.model_id) return
+  nlCreating.value = true
+  try {
+    const agent = await createAgent({
+      name: d.name.trim(),
+      description: (d.description || '').trim(),
+      model_id: d.model_id,
+      system_prompt: (d.system_prompt || '').trim(),
+      enabled_skills: d.enabled_skills || [],
+      execution_mode: d.execution_mode || 'legacy',
+      max_steps: d.max_steps ?? 20,
+      temperature: d.temperature ?? 0.7,
+    })
+    nlOpen.value = false
+    await fetchAgents(false)
+    router.push(`/agents/${agent.agent_id}/edit`)
+  } catch (e) {
+    alert(e instanceof Error ? e.message : 'Create failed')
+  } finally {
+    nlCreating.value = false
+  }
 }
 
 const handleRunAgent = (agentId: string) => {
@@ -369,10 +478,20 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
             class="pl-10 h-10 bg-muted border-border focus:border-blue-500/50 transition-all rounded-lg text-sm"
           />
         </div>
-        <Button @click="handleCreateAgent" class="bg-blue-600 hover:bg-blue-700 text-white font-bold h-10 px-4 gap-2 rounded-lg shadow-lg shadow-blue-500/20">
-          <Plus class="w-4 h-4" />
-          {{ t('agents.create_button') }}
-        </Button>
+        <div class="flex items-center gap-2">
+          <Button
+            variant="outline"
+            class="h-10 px-4 gap-2 rounded-lg border-border"
+            @click="openNlDialog"
+          >
+            <Wand2 class="w-4 h-4" />
+            {{ t('agents.nl.open') }}
+          </Button>
+          <Button @click="handleCreateAgent" class="bg-blue-600 hover:bg-blue-700 text-white font-bold h-10 px-4 gap-2 rounded-lg shadow-lg shadow-blue-500/20">
+            <Plus class="w-4 h-4" />
+            {{ t('agents.create_button') }}
+          </Button>
+        </div>
       </div>
     </header>
 
@@ -430,6 +549,18 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
         </SelectContent>
       </Select>
 
+      <Select v-model="selectedMcp">
+        <SelectTrigger class="w-[150px] h-9 bg-muted border-border rounded-md text-xs">
+          <span class="text-muted-foreground mr-1">{{ t('agents.filters.mcp_skills') }}:</span>
+          <SelectValue :placeholder="t('agents.filters.all')" />
+        </SelectTrigger>
+        <SelectContent class="bg-card border-border">
+          <SelectItem value="all">{{ t('agents.filters.all') }}</SelectItem>
+          <SelectItem value="with_mcp">{{ t('agents.filters.mcp_with') }}</SelectItem>
+          <SelectItem value="without_mcp">{{ t('agents.filters.mcp_without') }}</SelectItem>
+        </SelectContent>
+      </Select>
+
       <Select v-model="selectedReflection">
         <SelectTrigger class="w-[150px] h-9 bg-muted border-border rounded-md text-xs">
           <span class="text-muted-foreground mr-1">{{ t('agents.filters.reflection') }}:</span>
@@ -443,7 +574,7 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
       </Select>
 
       <button 
-        @click="selectedModelFamily = 'all'; selectedStatus = 'all'; selectedRag = 'all'; selectedTool = 'all'; selectedReflection = 'all'; searchQuery = ''"
+        @click="selectedModelFamily = 'all'; selectedStatus = 'all'; selectedRag = 'all'; selectedTool = 'all'; selectedMcp = 'all'; selectedReflection = 'all'; searchQuery = ''"
         class="text-xs font-medium text-muted-foreground/60 hover:text-foreground transition-colors ml-2"
       >
         {{ t('agents.filters.clear_all') }}
@@ -471,6 +602,14 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
             <div class="flex flex-col items-end gap-1.5">
               <Badge :class="['px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-widest border', getStatusColor(agent.status)]">
                 {{ agent.status === 'RUNNING' ? t('agents.status.running') : (agent.status === 'READY' ? t('agents.status.ready') : t('agents.status.error')) }}
+              </Badge>
+              <Badge
+                v-if="agent.has_mcp_skill"
+                variant="outline"
+                class="px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wide border-violet-500/40 bg-violet-500/10 text-violet-800 dark:text-violet-200 gap-1"
+              >
+                <Plug class="w-3 h-3" />
+                MCP
               </Badge>
               <Badge
                 v-if="agent.tool_failure_reflection"
@@ -506,22 +645,29 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
             </div>
           </div>
 
-          <!-- Tools -->
+          <!-- Skills / tools -->
           <div class="flex flex-wrap gap-2">
             <div 
-              v-for="tool in agent.tools" 
-              :key="tool"
-              class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-muted border border-border text-[10px] font-bold text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-all cursor-default"
+              v-for="chip in agent.skillChips" 
+              :key="chip.key"
+              :class="[
+                'flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-bold transition-all cursor-default max-w-full',
+                chip.isMcp
+                  ? 'bg-violet-500/10 border-violet-500/25 text-violet-900 dark:text-violet-100'
+                  : 'bg-muted border-border text-muted-foreground hover:bg-muted/80 hover:text-foreground',
+              ]"
             >
-              <Globe v-if="tool === 'web-search' || tool === 'web.search'" class="w-3 h-3" />
-              <Code2 v-else-if="tool === 'python-interpreter' || tool === 'python.run'" class="w-3 h-3" />
-              <Database v-else-if="tool === 'sql-engine' || tool === 'sql.query'" class="w-3 h-3" />
-              <FileText v-else-if="tool === 'file.read' || tool === 'file.list' || tool === 'content-gen'" class="w-3 h-3" />
-              <Terminal v-else-if="tool === 'terminal'" class="w-3 h-3" />
-              <FileCode v-else-if="tool === 'fs-access'" class="w-3 h-3" />
-              <SearchCode v-else-if="tool === 'audit' || tool === 'scanner'" class="w-3 h-3" />
-              <Activity v-else-if="tool === 'metrics'" class="w-3 h-3" />
-              {{ getToolName(tool) }}
+              <Plug v-if="chip.isMcp" class="w-3 h-3 shrink-0 text-violet-600 dark:text-violet-400" />
+              <Globe v-else-if="chip.slug === 'web-search' || chip.slug === 'web.search'" class="w-3 h-3 shrink-0" />
+              <Code2 v-else-if="chip.slug === 'python-interpreter' || chip.slug === 'python.run'" class="w-3 h-3 shrink-0" />
+              <Database v-else-if="chip.slug === 'sql-engine' || chip.slug === 'sql.query'" class="w-3 h-3 shrink-0" />
+              <FileText v-else-if="chip.slug === 'file.read' || chip.slug === 'file.list' || chip.slug === 'content-gen'" class="w-3 h-3 shrink-0" />
+              <Terminal v-else-if="chip.slug === 'terminal'" class="w-3 h-3 shrink-0" />
+              <FileCode v-else-if="chip.slug === 'fs-access'" class="w-3 h-3 shrink-0" />
+              <SearchCode v-else-if="chip.slug === 'audit' || chip.slug === 'scanner'" class="w-3 h-3 shrink-0" />
+              <Activity v-else-if="chip.slug === 'metrics'" class="w-3 h-3 shrink-0" />
+              <Wrench v-else class="w-3 h-3 shrink-0 opacity-70" />
+              <span class="truncate min-w-0">{{ chip.label }}</span>
             </div>
           </div>
 
@@ -577,10 +723,16 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
       <p class="text-muted-foreground/80 max-w-md mb-8 leading-relaxed">
         {{ t('agents.empty_state.subtitle') }}
       </p>
-      <Button @click="handleCreateAgent" class="bg-blue-600 hover:bg-blue-700 text-white font-bold h-12 px-8 gap-2 rounded-xl shadow-lg shadow-blue-500/20 transition-all hover:scale-105 active:scale-95">
-        <Plus class="w-5 h-5" />
-        {{ t('agents.empty_state.create_first') }}
-      </Button>
+      <div class="flex flex-col sm:flex-row gap-3 justify-center">
+        <Button variant="outline" class="h-12 px-8 gap-2 rounded-xl border-border" @click="openNlDialog">
+          <Wand2 class="w-5 h-5" />
+          {{ t('agents.nl.open') }}
+        </Button>
+        <Button @click="handleCreateAgent" class="bg-blue-600 hover:bg-blue-700 text-white font-bold h-12 px-8 gap-2 rounded-xl shadow-lg shadow-blue-500/20 transition-all hover:scale-105 active:scale-95">
+          <Plus class="w-5 h-5" />
+          {{ t('agents.empty_state.create_first') }}
+        </Button>
+      </div>
     </div>
 
     <!-- Loading State -->
@@ -592,6 +744,105 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
     </div>
 
     <!-- Page Footer (System Info) -->
+    <Teleport to="body">
+      <div
+        v-if="nlOpen"
+        class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+        role="dialog"
+        aria-modal="true"
+        @click.self="closeNlDialog"
+      >
+        <div
+          class="bg-card border border-border rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+          @click.stop
+        >
+          <div class="px-6 pt-6 pb-4 border-b border-border shrink-0">
+            <h2 class="text-xl font-bold text-foreground">{{ t('agents.nl.title') }}</h2>
+            <p class="text-sm text-muted-foreground mt-1">{{ t('agents.nl.subtitle') }}</p>
+          </div>
+          <div class="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4">
+            <div class="space-y-2">
+              <label class="text-xs font-semibold text-muted-foreground" for="agent-nl-desc">{{ t('agents.create.desc_label') }}</label>
+              <Textarea
+                id="agent-nl-desc"
+                v-model="nlDescription"
+                class="min-h-[100px] bg-muted border-border text-sm"
+                :placeholder="t('agents.nl.placeholder')"
+              />
+            </div>
+            <div class="space-y-2">
+              <label class="text-xs font-semibold text-muted-foreground" for="agent-nl-model">{{ t('agents.nl.model_label') }}</label>
+              <Select v-model="nlModelId">
+                <SelectTrigger id="agent-nl-model" class="w-full h-10 bg-muted border-border rounded-lg text-sm">
+                  <SelectValue :placeholder="t('agents.nl.model_default')" />
+                </SelectTrigger>
+                <SelectContent class="bg-card border-border max-h-[240px]">
+                  <SelectItem value="__default__">{{ t('agents.nl.model_default') }}</SelectItem>
+                  <SelectItem v-for="m in modelOptions" :key="m.id" :value="m.id">
+                    {{ m.name || m.id }}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="flex gap-2">
+              <Button
+                class="bg-blue-600 hover:bg-blue-700 text-white"
+                :disabled="nlBusy"
+                @click="runNlGenerate"
+              >
+                {{ nlBusy ? t('agents.nl.loading') : t('agents.nl.generate') }}
+              </Button>
+              <Button variant="outline" :disabled="nlBusy || nlCreating" @click="closeNlDialog">
+                {{ t('agents.nl.close') }}
+              </Button>
+            </div>
+            <div v-if="nlResult" class="space-y-3 pt-2 border-t border-border">
+              <p v-if="!nlResult.llm_used" class="text-xs text-amber-600 dark:text-amber-400">
+                {{ t('agents.nl.llm_off') }}
+              </p>
+              <p v-if="nlResult.warnings?.length" class="text-xs text-muted-foreground">
+                {{ t('agents.nl.warnings') }}: {{ nlResult.warnings.join(', ') }}
+              </p>
+              <div class="space-y-1">
+                <p class="text-xs font-semibold text-muted-foreground">{{ t('agents.nl.matched') }}</p>
+                <div class="flex flex-wrap gap-1.5">
+                  <Badge
+                    v-for="s in nlResult.matched_skills"
+                    :key="s.skill_id"
+                    variant="outline"
+                    class="text-[10px]"
+                  >
+                    {{ s.name }}
+                  </Badge>
+                  <span v-if="!nlResult.matched_skills?.length" class="text-xs text-muted-foreground">—</span>
+                </div>
+              </div>
+              <div class="rounded-lg border border-border bg-muted/40 p-3 space-y-2 text-sm">
+                <div><span class="text-muted-foreground">{{ t('agents.nl.draft_name') }}:</span> {{ nlResult.draft.name }}</div>
+                <div><span class="text-muted-foreground">{{ t('agents.nl.draft_desc') }}:</span> {{ nlResult.draft.description }}</div>
+                <div><span class="text-muted-foreground">{{ t('agents.nl.draft_mode') }}:</span> {{ nlResult.draft.execution_mode }}</div>
+                <div>
+                  <span class="text-muted-foreground">{{ t('agents.nl.draft_skills') }}:</span>
+                  {{ (nlResult.draft.enabled_skills || []).join(', ') || '—' }}
+                </div>
+                <div class="text-xs whitespace-pre-wrap max-h-40 overflow-y-auto">
+                  <span class="text-muted-foreground block mb-1">{{ t('agents.nl.draft_prompt') }}</span>
+                  {{ nlResult.draft.system_prompt }}
+                </div>
+              </div>
+              <Button
+                class="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
+                :disabled="nlCreating"
+                @click="confirmNlCreate"
+              >
+                {{ nlCreating ? '…' : t('agents.nl.create') }}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <footer class="h-12 border-t border-border bg-muted px-8 flex items-center justify-between shrink-0 text-[10px] font-bold tracking-tight uppercase">
       <div class="flex items-center gap-6">
         <div class="flex items-center gap-2">

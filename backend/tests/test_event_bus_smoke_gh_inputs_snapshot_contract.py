@@ -66,6 +66,16 @@ def test_validate_payload_rejects_non_positive_generated_at_ms() -> None:
     assert any(f"[{ERR_GH_SNAPSHOT_GENERATED_AT_POSITIVE_INVALID}]" in e for e in errors)
 
 
+def test_validate_payload_rejects_bool_numeric_fields() -> None:
+    payload = _base_payload()
+    payload["schema_version"] = True
+    payload["generated_at_ms"] = False
+    payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
+    errors = validate_payload(payload)
+    assert any("schema_version must be 1" in e for e in errors)
+    assert any("generated_at_ms must be int" in e for e in errors)
+
+
 def test_validate_payload_rejects_sha256_mismatch() -> None:
     payload = _base_payload()
     payload["workflow"] = "changed.yml"
@@ -84,6 +94,16 @@ def test_validate_payload_rejects_invalid_sha256_mode() -> None:
     errors = validate_payload(_base_payload(), payload_sha256_mode="bad")
     assert any("payload_sha256_mode must be one of: strict,off" in e for e in errors)
     assert any(f"[{ERR_GH_SNAPSHOT_PAYLOAD_SHA256_MODE_INVALID}]" in e for e in errors)
+
+
+def test_validate_payload_rejects_bool_expected_schema_version_in_function() -> None:
+    errors = validate_payload(_base_payload(), expected_schema_version=True)  # type: ignore[arg-type]
+    assert any("expected_schema_version must be a positive integer" in e for e in errors)
+
+
+def test_validate_payload_rejects_non_positive_expected_schema_version_in_function() -> None:
+    errors = validate_payload(_base_payload(), expected_schema_version=0)
+    assert any("expected_schema_version must be a positive integer" in e for e in errors)
 
 
 def test_validate_payload_rejects_missing_declared_key() -> None:

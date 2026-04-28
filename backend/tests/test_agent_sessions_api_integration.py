@@ -20,6 +20,8 @@ from core.security.deps import require_authenticated_platform_admin
 from core.security.rbac import PlatformRole
 from core.tools.sandbox import WorkspacePathError
 
+pytestmark = pytest.mark.no_fallback
+
 
 class _MemSessionStore:
     """最小内存实现，覆盖 agent-sessions 路由所需方法。"""
@@ -88,7 +90,6 @@ def _assert_structured(body: dict[str, Any], *, code: str, message_substr: str =
         assert message_substr in str(err.get("message", ""))
 
 
-@pytest.mark.no_fallback
 def test_get_agent_session_not_found_returns_structured_error(
     sessions_client: TestClient,
     fallback_probe,
@@ -173,7 +174,6 @@ def test_patch_agent_session_not_found_returns_structured_error(sessions_client:
     _assert_structured(resp.json(), code="agent_session_not_found")
 
 
-@pytest.mark.no_fallback
 def test_patch_agent_session_save_failed_returns_structured_error(
     sessions_client: TestClient,
     fallback_probe,

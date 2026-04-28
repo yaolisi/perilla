@@ -1,4 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # 颜色定义
 GREEN='\033[0;32m'
@@ -8,11 +12,11 @@ NC='\033[0m'
 echo -e "${BLUE}正在同步启动后端和前端服务...${NC}"
 
 # 启动后端 (在后台运行)
-./run-backend.sh &
+"${SCRIPT_DIR}/run-backend.sh" &
 BACKEND_PID=$!
 
 # 启动前端
-./run-frontend.sh &
+"${SCRIPT_DIR}/run-frontend.sh" &
 FRONTEND_PID=$!
 
 cleanup() {

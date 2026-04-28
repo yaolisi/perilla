@@ -11,8 +11,10 @@ import {
   CheckCircle2,
   Plus,
   Trash2,
+  Plug,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Slider } from '@/components/ui/slider'
@@ -24,6 +26,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { getSkill, updateSkill, deleteSkill, type SkillRecord } from '@/services/api'
+import { isMcpSkillRecord } from '@/utils/skillMeta'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -166,22 +169,32 @@ const handleUpdateSkill = async () => {
   }
   isSubmitting.value = true
   try {
-    const definition: Record<string, unknown> = {}
-    if (skillType.value === 'prompt' || skillType.value === 'composite') {
-      definition.prompt_template = skillLogic.value || ''
-    }
-    if (skillType.value === 'tool' || skillType.value === 'composite') {
-      // For tool/composite, preserve existing tool_name if any
-      if (skill.value?.definition && typeof skill.value.definition === 'object') {
-        const existing = skill.value.definition as Record<string, unknown>
-        if (existing.tool_name) {
-          definition.tool_name = existing.tool_name
-        }
-        if (existing.tool_args_mapping) {
-          definition.tool_args_mapping = existing.tool_args_mapping
+    const existingRaw =
+      skill.value?.definition && typeof skill.value.definition === 'object'
+        ? (skill.value.definition as Record<string, unknown>)
+        : null
+
+    let definition: Record<string, unknown>
+
+    if (existingRaw?.kind === 'mcp_stdio') {
+      definition = { ...existingRaw }
+    } else {
+      definition = {}
+      if (skillType.value === 'prompt' || skillType.value === 'composite') {
+        definition.prompt_template = skillLogic.value || ''
+      }
+      if (skillType.value === 'tool' || skillType.value === 'composite') {
+        if (existingRaw) {
+          if (existingRaw.tool_name) {
+            definition.tool_name = existingRaw.tool_name
+          }
+          if (existingRaw.tool_args_mapping) {
+            definition.tool_args_mapping = existingRaw.tool_args_mapping
+          }
         }
       }
     }
+
     await updateSkill(skillId, {
       name: skillName.value.trim(),
       description: description.value.trim() || undefined,
@@ -203,6 +216,21 @@ const handleUpdateSkill = async () => {
 const handleCancel = () => router.push('/skills')
 
 const isBuiltin = computed(() => (skillId || '').startsWith('builtin_'))
+
+const isMcpSkill = computed(() =>
+  skill.value ? isMcpSkillRecord(skill.value) : false,
+)
+
+const mcpServerConfigId = computed(() => {
+  const d = skill.value?.definition as Record<string, unknown> | undefined
+  if (d?.server_config_id === undefined || d?.server_config_id === null) return ''
+  return String(d.server_config_id)
+})
+
+const mcpToolNameDisplay = computed(() => {
+  const d = skill.value?.definition as Record<string, unknown> | undefined
+  return typeof d?.tool_name === 'string' ? d.tool_name : ''
+})
 
 const handleDelete = async () => {
   if (!window.confirm(t('skills.delete_confirm', { name: skillName.value || skillId }))) return
@@ -254,6 +282,14 @@ onMounted(() => {
         </Button>
         <span class="text-muted-foreground/50">/</span>
         <span class="text-sm font-medium text-foreground">{{ skillName || skillId }}</span>
+        <Badge
+          v-if="isMcpSkill"
+          variant="outline"
+          class="text-[10px] font-bold border-violet-500/40 text-violet-700 dark:text-violet-300 gap-1"
+        >
+          <Plug class="w-3 h-3" />
+          MCP
+        </Badge>
       </div>
       <div class="flex items-center gap-2">
         <Button
@@ -346,12 +382,13 @@ onMounted(() => {
                     <SelectItem value="automation">{{ t('skills.create.cat_automation') }}</SelectItem>
                     <SelectItem value="data">{{ t('skills.create.cat_data') }}</SelectItem>
                     <SelectItem value="utilities">{{ t('skills.create.cat_utilities') }}</SelectItem>
+                    <SelectItem value="mcp">{{ t('skills.create.cat_mcp') }}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div class="space-y-2">
                 <label class="text-sm font-semibold text-foreground">{{ t('common.type') }}</label>
-                <Select v-model="skillType" :disabled="skill?.id?.startsWith('builtin_')">
+                <Select v-model="skillType" :disabled="skill?.id?.startsWith('builtin_') || isMcpSkill">
                   <SelectTrigger class="rounded-lg"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="prompt">{{ t('skills.type_prompt') }}</SelectItem>
@@ -375,6 +412,34 @@ onMounted(() => {
               <div class="col-span-full space-y-2">
                 <label class="text-sm font-semibold text-foreground">{{ t('skills.create.description') }}</label>
                 <Textarea v-model="description" :placeholder="t('skills.create.description_placeholder')" class="rounded-lg min-h-[80px]" />
+              </div>
+              <div
+                v-if="isMcpSkill"
+                class="col-span-full rounded-xl border border-violet-500/30 bg-violet-500/5 p-4 space-y-3"
+              >
+                <div class="flex items-start gap-2">
+                  <Plug class="w-5 h-5 text-violet-600 dark:text-violet-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p class="text-sm font-bold text-foreground">{{ t('skills.mcp_connection_title') }}</p>
+                    <p class="text-xs text-muted-foreground mt-1">{{ t('skills.mcp_connection_desc') }}</p>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <span class="text-muted-foreground text-xs">{{ t('skills.mcp_server_id') }}</span>
+                    <p class="font-mono text-foreground mt-0.5 break-all">{{ mcpServerConfigId || '—' }}</p>
+                  </div>
+                  <div>
+                    <span class="text-muted-foreground text-xs">{{ t('skills.mcp_tool_name') }}</span>
+                    <p class="font-mono text-foreground mt-0.5 break-all">{{ mcpToolNameDisplay || '—' }}</p>
+                  </div>
+                </div>
+                <router-link
+                  to="/settings/mcp"
+                  class="inline-flex text-sm font-medium text-primary hover:underline"
+                >
+                  {{ t('skills.mcp_open_settings') }}
+                </router-link>
               </div>
             </div>
           </section>

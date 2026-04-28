@@ -1,4 +1,4 @@
-.PHONY: help bootstrap bootstrap-prod env-init install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint-backend dependency-policy dependency-scan test-no-fallback test-workflow-control-flow smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
+.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend check-nvmrc-align test-frontend-unit build-frontend pr-check pr-check-fast ci ci-fast quick-check dependency-policy dependency-scan test-no-fallback test-workflow-control-flow smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
 
 CB_BASE_URL ?= http://127.0.0.1:8000
 CB_MODEL ?= ollama:deepseek-r1:32b
@@ -73,10 +73,30 @@ MONITORING_GRAFANA_URL ?= http://127.0.0.1:3000
 
 help:
 	@echo "OpenVitamin Docker helper targets:"
+	@echo "Quick ref (CI parity): make quick-check | make ci-fast | make npm-scripts"
+	@echo "  npm run help       - Same as make help (requires make in PATH)"
+	@echo "  make npm-scripts   - List root package.json scripts (scripts/npm-scripts.sh; any cwd)"
+	@echo "  npm run npm-scripts"
+	@echo "                   - Same listing (run from repo root; or bash scripts/npm-scripts.sh from any cwd)"
+	@echo "  bash scripts/npm-scripts.sh --json"
+	@echo "                   - Same scripts as JSON (npm pkg get scripts)"
+	@echo "  bash scripts/npm-scripts.sh --help"
+	@echo "                   - Options for this helper"
+	@echo "  make npm-scripts-json"
+	@echo "                   - Same as scripts/npm-scripts.sh --json"
+	@echo "  npm run npm-scripts-json"
+	@echo "                   - Same from repo root"
 	@echo "  make bootstrap     - First-time setup (env-init + doctor + install)"
 	@echo "  make bootstrap-prod"
 	@echo "                   - First-time prod setup (env-init + strict doctor + install-prod)"
 	@echo "  make env-init      - Initialize .env from .env.example"
+	@echo "  bash run-all.sh    - Local dev (backend+frontend); cwd-independent via script paths"
+	@echo "  bash run-backend.sh / bash run-frontend.sh"
+	@echo "                   - Split backend (conda/python) vs frontend (npm dev)"
+	@echo "  npm run local-all / local-backend / local-frontend"
+	@echo "                   - Same (run from repo root where package.json lives)"
+	@echo "  make local-all / local-backend / local-frontend"
+	@echo "                   - Same as bash run-all.sh etc. (from repo root)"
 	@echo "  make install       - Build and start base profile"
 	@echo "  make install-gpu   - Build and start GPU profile"
 	@echo "  make install-prod  - Build and start production profile"
@@ -106,21 +126,66 @@ help:
 	@echo "                   - Print local/CI monitoring drill runbook"
 	@echo "  make logs          - Tail logs"
 	@echo "  make healthcheck   - Run health checks"
-	@echo "  make doctor        - Run environment diagnostics"
+	@echo "  make doctor        - Run environment diagnostics (incl. check-nvmrc-align)"
+	@echo "  npm run doctor     - Same (DOCTOR_STRICT_WARNINGS=1 npm run doctor for strict)"
 	@echo "  make security-guardrails"
 	@echo "                   - Enforce production security config gate"
 	@echo "  make lint-backend"
-	@echo "                   - Ruff (E9) + Mypy sample (see .github/workflows/backend-static-analysis.yml)"
+	@echo "                   - Ruff (E9) + Mypy sample (CI backend-static-analysis; step 1 of pr-check)"
+	@echo "  make lint"
+	@echo "                   - Alias for make lint-backend"
+	@echo "  npm run lint-backend"
+	@echo "                   - Same as scripts/lint-backend.sh (pip ruff/mypy on PATH)"
+	@echo "  npm run lint"
+	@echo "                   - Alias for npm run lint-backend"
+	@echo "  make test-no-fallback"
+	@echo "                   - API no-fallback integration tests (CI backend-static-analysis; step 2 of pr-check)"
+	@echo "                   - scripts/test-no-fallback.sh cd to repo root (invoke by path from any cwd)"
+	@echo "  make test-no-fallback TEST_ARGS=\"-k memory -x\""
+	@echo "                   - Same suite with extra pytest args"
+	@echo "                   - TEST_ARGS applies to make pr-check|ci|pr-check-fast|ci-fast (no-fallback step)"
+	@echo "  npm run test-no-fallback -- -k memory -x"
+	@echo "                   - Same suite without make (pytest args after --)"
+	@echo "  make check-nvmrc-align"
+	@echo "                   - cmp .nvmrc vs frontend/.nvmrc (also first step of pr-check / pr-check-fast; before frontend targets)"
+	@echo "  npm run check-nvmrc-align"
+	@echo "                   - Same check without make"
+	@echo "  make test-frontend-unit"
+	@echo "                   - Vitest (frontend/npm run test:unit; CI frontend-build; step 3 of pr-check)"
+	@echo "  npm run test-frontend-unit"
+	@echo "                   - Same from repo root (check-nvmrc-align, then npm --prefix frontend)"
+	@echo "  make build-frontend"
+	@echo "                   - Vue prod build (CI frontend-build; step 4 of pr-check)"
+	@echo "  npm run build-frontend"
+	@echo "                   - Same from repo root (check-nvmrc-align, then npm --prefix frontend)"
+	@echo "  make quick-check"
+	@echo "                   - check-nvmrc-align + lint-backend only (no pytest / frontend)"
+	@echo "  bash scripts/quick-check.sh"
+	@echo "                   - Same from any cwd (no make needed)"
+	@echo "  npm run quick-check"
+	@echo "                   - Same without make"
+	@echo "  make pr-check"
+	@echo "                   - check-nvmrc-align, then lint + no-fallback + vitest + build"
+	@echo "  make ci"
+	@echo "                   - Alias for make pr-check"
+	@echo "  make pr-check-fast"
+	@echo "                   - Same as pr-check but skips build-frontend (faster local loop)"
+	@echo "  make ci-fast"
+	@echo "                   - Alias for make pr-check-fast"
+	@echo "  bash scripts/pr-check.sh / scripts/pr-check-fast.sh"
+	@echo "                   - Same as make pr-check / pr-check-fast (any cwd; optional pytest args)"
+	@echo "  npm run ci / npm run ci-fast"
+	@echo "                   - Same as npm run pr-check / pr-check-fast"
+	@echo "  npm run pr-check-fast -- -k test_agents -x"
+	@echo "                   - Same from repo root (npm forwards args after -- to the script)"
+	@echo "  bash scripts/pr-check-fast.sh -k test_agents -x"
+	@echo "                   - Example: narrow no-fallback step only (rest of pr-check unchanged)"
 	@echo "  make dependency-policy"
 	@echo "                   - Enforce dependency version lock policy"
 	@echo "  make dependency-scan"
 	@echo "                   - Run third-party dependency vulnerability scan"
 	@echo "  DOCTOR_STRICT_WARNINGS=1 make doctor"
 	@echo "                   - Treat warnings as failures"
-	@echo "  make test-no-fallback"
-	@echo "                   - Run API no-fallback regression tests"
-	@echo "  make test-no-fallback TEST_ARGS=\"-k memory -x\""
-	@echo "                   - Run subset/extra pytest args for no-fallback suite"
 	@echo "  make test-workflow-control-flow"
 	@echo "                   - Run workflow control-flow regression suite"
 	@echo "  make smart-routing-smoke"
@@ -169,6 +234,8 @@ help:
 	@echo "                   - Run EventBus DLQ smoke script against target backend"
 	@echo "  EVENT_BUS_SMOKE_ADMIN_TOKEN=... EVENT_BUS_SMOKE_JSON_OUTPUT=event-bus-smoke-result.json make event-bus-smoke"
 	@echo "                   - Run EventBus DLQ smoke script and write structured JSON output"
+	@echo "  EVENT_BUS_SMOKE_EVENT_TYPE=mcp.streamable.server_rpc EVENT_BUS_SMOKE_ADMIN_TOKEN=... make event-bus-smoke"
+	@echo "                   - DLQ smoke with MCP Streamable HTTP server-push event_type (vs default agent.status.changed)"
 	@echo "  EVENT_BUS_SMOKE_RESULT_FILE=custom-smoke-result.json make event-bus-smoke-contract"
 	@echo "                   - Validate contract using a custom default result filename"
 	@echo "  EVENT_BUS_SMOKE_ADMIN_TOKEN=... make event-bus-smoke-pytest"
@@ -273,6 +340,12 @@ help:
 	@echo "                   - Run one-command alert trigger + recovery verification"
 	@echo "  make reset         - Remove containers and volumes"
 
+npm-scripts:
+	@bash scripts/npm-scripts.sh
+
+npm-scripts-json:
+	@bash scripts/npm-scripts.sh --json
+
 install:
 	@bash scripts/install.sh
 
@@ -288,6 +361,15 @@ bootstrap-prod:
 
 env-init:
 	@bash scripts/env-init.sh
+
+local-all:
+	@bash run-all.sh
+
+local-backend:
+	@bash run-backend.sh
+
+local-frontend:
+	@bash run-frontend.sh
 
 install-gpu:
 	@bash scripts/install-gpu.sh
@@ -400,7 +482,31 @@ security-guardrails:
 	@bash scripts/check-security-guardrails.sh
 
 lint-backend:
-	@cd backend && (command -v ruff >/dev/null || pip install -q ruff mypy) && ruff check --select=E9 . && mypy --config-file mypy.ini --follow-imports=skip core/data/base.py execution_kernel/persistence/db.py
+	@bash scripts/lint-backend.sh
+
+lint: lint-backend
+
+check-nvmrc-align:
+	@bash scripts/check-nvmrc-align.sh
+
+test-frontend-unit: check-nvmrc-align
+	@cd frontend && npm run test:unit
+
+build-frontend: check-nvmrc-align
+	@cd frontend && npm run build
+
+pr-check: check-nvmrc-align lint-backend test-no-fallback test-frontend-unit build-frontend
+	@echo "pr-check: OK"
+
+pr-check-fast: check-nvmrc-align lint-backend test-no-fallback test-frontend-unit
+	@echo "pr-check-fast: OK (no build-frontend)"
+
+ci: pr-check
+
+ci-fast: pr-check-fast
+
+quick-check:
+	@bash scripts/quick-check.sh
 
 dependency-policy:
 	@bash scripts/check-dependency-version-policy.sh

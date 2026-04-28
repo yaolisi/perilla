@@ -10,8 +10,6 @@ Skill v2 Executor: 统一执行入口。
 """
 from __future__ import annotations
 
-import re
-import traceback
 from typing import Any, Dict, Optional, Type, cast
 
 import jsonschema  # type: ignore[import-untyped]
@@ -87,8 +85,6 @@ class SkillExecutor:
         Returns:
             执行响应
         """
-        from datetime import datetime
-        
         metrics = ExecutionMetrics()
         
         try:
@@ -352,6 +348,146 @@ class DefaultSkillExecutor(BaseSkillExecutor):
             logger.error(f"[DefaultSkillExecutor] Template rendering failed: {e}")
             return template
     
+    def _build_tool_inputs_from_definition(
+        self,
+        definition: SkillDefinition,
+        request: SkillExecutionRequest,
+    ) -> Dict[str, Any]:
+        """tool_params / tool_args_mapping / request.input 合并（与内置 Tool 路径一致）。"""
+        tool_params = definition.definition.get("tool_params", {})
+        tool_args_mapping = definition.definition.get("tool_args_mapping", {})
+        tool_input: Dict[str, Any] = {}
+        for key, value_template in tool_params.items():
+            if isinstance(value_template, str) and "{{" in value_template:
+                try:
+                    jinja_template = Template(value_template)
+                    rendered_value = jinja_template.render(**request.input)
+                    try:
+                        if rendered_value.isdigit():
+                            tool_input[key] = int(rendered_value)
+                        elif rendered_value.replace(".", "", 1).isdigit():
+                            tool_input[key] = float(rendered_value)
+                        elif rendered_value.lower() in ("true", "false"):
+                            tool_input[key] = rendered_value.lower() == "true"
+                        else:
+                            tool_input[key] = rendered_value
+                    except (ValueError, AttributeError):
+                        tool_input[key] = rendered_value
+                except UndefinedError:
+                    tool_input[key] = None
+            else:
+                tool_input[key] = value_template
+        for target_key, source_key in tool_args_mapping.items():
+            if source_key in request.input:
+                tool_input[target_key] = request.input[source_key]
+        tool_input.update(request.input)
+        logger.debug(f"[DefaultSkillExecutor] Tool input built: {tool_input}")
+        return tool_input
+
+    async def _execute_mcp_stdio(
+        self,
+        definition: SkillDefinition,
+        request: SkillExecutionRequest,
+        _metrics: ExecutionMetrics,
+    ) -> Dict[str, Any]:
+        """MCP stdio Server：tools/call（definition.kind=mcp_stdio）。"""
+        from core.mcp.client import MCPStdioClient
+        from core.mcp.persistence import get_mcp_server
+
+        server_id = (definition.definition.get("server_config_id") or "").strip()
+        mcp_tool = (definition.definition.get("tool_name") or "").strip()
+        if not server_id or not mcp_tool:
+            return {
+                "type": "tool",
+                "output": None,
+                "error": "MCP skill missing server_config_id or tool_name",
+                "skill_id": definition.id,
+                "version": definition.version,
+            }
+        server = get_mcp_server(server_id)
+        if not server:
+            return {
+                "type": "tool",
+                "output": None,
+                "error": f"MCP server not found: {server_id}",
+                "skill_id": definition.id,
+                "version": definition.version,
+            }
+        if not server.get("enabled", True):
+            return {
+                "type": "tool",
+                "output": None,
+                "error": f"MCP server disabled: {server_id}",
+                "skill_id": definition.id,
+                "version": definition.version,
+            }
+        transport = (server.get("transport") or "stdio").strip().lower()
+        env = server.get("env") or {}
+        args = self._build_tool_inputs_from_definition(definition, request)
+        if transport == "http":
+            from core.mcp.http_client import create_mcp_http_client
+            from core.system.runtime_settings import get_mcp_http_emit_server_push_events
+
+            base_url = (server.get("base_url") or "").strip()
+            if not base_url:
+                return {
+                    "type": "tool",
+                    "output": None,
+                    "error": "MCP HTTP server missing base_url",
+                    "skill_id": definition.id,
+                    "version": definition.version,
+                }
+            client = await create_mcp_http_client(
+                base_url,
+                headers=env if env else None,
+                request_timeout=120.0,
+                emit_server_push_events=get_mcp_http_emit_server_push_events(),
+            )
+            kind = "mcp_http"
+        else:
+            command = server.get("command") or []
+            if not command:
+                return {
+                    "type": "tool",
+                    "output": None,
+                    "error": "MCP server command empty",
+                    "skill_id": definition.id,
+                    "version": definition.version,
+                }
+            cwd = (server.get("cwd") or "").strip() or None
+            client = MCPStdioClient(
+                list(command),
+                cwd=cwd,
+                env=env if env else None,
+                request_timeout=120.0,
+            )
+            kind = "mcp_stdio"
+        try:
+            if transport != "http":
+                await client.connect()
+            raw = await client.call_tool(mcp_tool, args)
+            return {
+                "type": "tool",
+                "output": raw,
+                "skill_id": definition.id,
+                "version": definition.version,
+                "tool_name": mcp_tool,
+                "kind": kind,
+            }
+        except Exception as e:
+            logger.exception("[DefaultSkillExecutor] MCP tool execution failed: %s", e)
+            return {
+                "type": "tool",
+                "output": None,
+                "error": str(e),
+                "skill_id": definition.id,
+                "version": definition.version,
+                "tool_name": mcp_tool,
+                "kind": kind,
+            }
+        finally:
+            await client.close()
+
     async def _execute_tool(
         self,
         definition: SkillDefinition,
@@ -369,11 +505,11 @@ class DefaultSkillExecutor(BaseSkillExecutor):
         3. tool_params 模板渲染
         4. 默认值（通过 Jinja2 过滤器或 input_schema）
         """
-        # 获取 tool_name 和参数配置
+        if definition.definition.get("kind") == "mcp_stdio":
+            return await self._execute_mcp_stdio(definition, request, metrics)
+
         tool_name = definition.definition.get("tool_name")
-        tool_params = definition.definition.get("tool_params", {})
-        tool_args_mapping = definition.definition.get("tool_args_mapping", {})
-        
+
         if not tool_name:
             return {
                 "type": "tool",
@@ -382,7 +518,7 @@ class DefaultSkillExecutor(BaseSkillExecutor):
                 "skill_id": definition.id,
                 "version": definition.version
             }
-        
+
         # 构建 ToolContext
         from core.tools.context import ToolContext
         tool_ctx = ToolContext(
@@ -391,47 +527,9 @@ class DefaultSkillExecutor(BaseSkillExecutor):
             workspace=request.metadata.get("workspace", "."),
             permissions=request.metadata.get("permissions", {}),
         )
-        
-        # 构建 tool 输入 - 按优先级顺序
-        tool_input: Dict[str, Any] = {}
-        
-        # 1. 先应用 tool_params 模板（支持 Jinja2 渲染和默认值）
-        for key, value_template in tool_params.items():
-            if isinstance(value_template, str) and "{{" in value_template:
-                # Jinja2 模板渲染
-                try:
-                    jinja_template = Template(value_template)
-                    rendered_value = jinja_template.render(**request.input)
-                    # 尝试类型转换
-                    try:
-                        # 如果是数字字符串，转换为 int/float
-                        if rendered_value.isdigit():
-                            tool_input[key] = int(rendered_value)
-                        elif rendered_value.replace('.', '', 1).isdigit():
-                            tool_input[key] = float(rendered_value)
-                        elif rendered_value.lower() in ('true', 'false'):
-                            tool_input[key] = rendered_value.lower() == 'true'
-                        else:
-                            tool_input[key] = rendered_value
-                    except (ValueError, AttributeError):
-                        tool_input[key] = rendered_value
-                except UndefinedError:
-                    # 变量未定义，使用 None
-                    tool_input[key] = None
-            else:
-                # 直接使用字面量
-                tool_input[key] = value_template
-        
-        # 2. 应用 tool_args_mapping（覆盖 tool_params）
-        for target_key, source_key in tool_args_mapping.items():
-            if source_key in request.input:
-                tool_input[target_key] = request.input[source_key]
-        
-        # 3. 最后应用直接传入的参数（最高优先级）
-        tool_input.update(request.input)
-        
-        logger.debug(f"[DefaultSkillExecutor] Tool input built: {tool_input}")
-        
+
+        tool_input = self._build_tool_inputs_from_definition(definition, request)
+
         # 执行 Tool
         from core.tools.registry import ToolRegistry
         try:

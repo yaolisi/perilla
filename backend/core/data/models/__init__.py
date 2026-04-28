@@ -22,6 +22,7 @@ from core.data.models.image_generation import ImageGenerationJobORM, ImageGenera
 from core.data.models.audit import AuditLogORM
 from core.data.models.idempotency import IdempotencyRecordORM
 from core.data.models.event_dlq import EventDlqORM
+from core.data.models.mcp_server import McpServer
 
 __all__ = [
     "SystemSetting",
@@ -47,4 +48,5 @@ __all__ = [
     "AuditLogORM",
     "IdempotencyRecordORM",
     "EventDlqORM",
+    "McpServer",
 ]

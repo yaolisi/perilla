@@ -10,7 +10,7 @@ if [[ -f ".env" ]]; then
 fi
 
 if [[ ! -f ".env.example" ]]; then
-  echo "Error: .env.example not found." >&2
+  echo >&2 "env-init.sh: .env.example not found (${ROOT_DIR})"
   exit 1
 fi
 

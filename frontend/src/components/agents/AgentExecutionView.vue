@@ -32,6 +32,7 @@ import {
   Share2,
   ExternalLink,
   Lightbulb,
+  Plug,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -62,6 +63,7 @@ import {
   deleteAgentSessionMessage,
   deleteAgentSession,
   listModels,
+  listSkills,
   asrTranscribe,
   getCollaborationSessionsByCorrelation,
   type AgentDefinition, 
@@ -69,9 +71,16 @@ import {
   type AgentTraceEvent,
   type Message,
   type ModelInfo,
-  type CorrelationSummaryResponse
+  type CorrelationSummaryResponse,
+  type SkillRecord,
 } from '@/services/api'
-
+import {
+  isMcpSkillRecord,
+  mergeEnabledSkillsMetaIntoSkillList,
+  skillRecordStubFromEnabledMeta,
+  skillRecordStubFromId,
+} from '@/utils/skillMeta'
+import { useSystemConfigWithDebounce } from '@/composables/useSystemConfigWithDebounce'
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 function messageContentToString(content: Message['content'] | undefined | null): string {
@@ -98,6 +107,8 @@ const emptySessionText = computed(() => t('agents.execution.empty_session'))
 
 const agentId = route.params.id as string
 const agent = ref<AgentDefinition | null>(null)
+/** 用于侧栏 MCP 标记与展示名称（与 enabled_skills id 对齐） */
+const skillsCatalogById = ref<Map<string, SkillRecord>>(new Map())
 const session = ref<AgentSession | null>(null)
 const traces = ref<AgentTraceEvent[]>([])
 const userInput = ref('')
@@ -105,6 +116,9 @@ const isLoading = ref(true)
 const isRunning = ref(false)
 const isLoadingSession = ref(false)
 const modelInfo = ref<ModelInfo | null>(null)
+const { systemConfig, refreshSystemConfig } = useSystemConfigWithDebounce({
+  logPrefix: 'AgentExecutionView',
+})
 
 /** 多 Agent 协作：同链续跑时透传 POST /run */
 function existingCollaborationForRun(): {
@@ -228,12 +242,48 @@ const runtimeLabelForBackend = (backend: string | null | undefined): string => {
 const fetchAgentData = async () => {
   try {
     isLoading.value = true
-    const [agentData, modelsData] = await Promise.all([
-      getAgent(agentId),
-      listModels()
-    ])
+    const [agentData, modelsData] = await Promise.all([getAgent(agentId), listModels()])
     agent.value = agentData
-    
+
+    const ids = agentData.enabled_skills ?? []
+    const meta = agentData.enabled_skills_meta ?? []
+    const metaById = new Map(meta.map((x) => [x.id, x]))
+    /** 按 id 覆盖即可，不要求 meta 与 enabled_skills 同序 */
+    const metaCoversAllIds =
+      ids.length > 0 && ids.every((sid) => metaById.has(sid))
+
+    if (metaCoversAllIds) {
+      skillsCatalogById.value = new Map(
+        ids.map((sid) => {
+          const m = metaById.get(sid)!
+          return [sid, skillRecordStubFromEnabledMeta(m)] as const
+        }),
+      )
+    } else if (ids.length > 0) {
+      try {
+        const skillsRes = await listSkills()
+        const arr = [...(skillsRes?.data ?? [])]
+        mergeEnabledSkillsMetaIntoSkillList(arr, meta.length > 0 ? meta : undefined)
+        const m = new Map(arr.map((s) => [s.id, s] as const))
+        for (const sid of ids) {
+          if (!m.has(sid)) {
+            const mm = metaById.get(sid)
+            m.set(sid, mm ? skillRecordStubFromEnabledMeta(mm) : skillRecordStubFromId(sid))
+          }
+        }
+        skillsCatalogById.value = m
+      } catch {
+        const m = new Map<string, SkillRecord>()
+        for (const sid of ids) {
+          const mm = metaById.get(sid)
+          m.set(sid, mm ? skillRecordStubFromEnabledMeta(mm) : skillRecordStubFromId(sid))
+        }
+        skillsCatalogById.value = m
+      }
+    } else {
+      skillsCatalogById.value = new Map()
+    }
+
     // Find model info for the agent's model_id
     if (agentData?.model_id) {
       const foundModel = modelsData.data?.find((m: ModelInfo) => m.id === agentData.model_id)
@@ -652,6 +702,7 @@ watch(() => (route.query as any)?.[SESSION_QUERY_KEY], async (raw) => {
 })
 
 onMounted(async () => {
+  void refreshSystemConfig()
   await fetchAgentData()
   await fetchSessionsList()
 
@@ -1032,14 +1083,38 @@ const supportsFileProcessing = computed(() => {
   ) || tools.some((t: string) => t === 'file.read' || t === 'file.list' || t === 'vision.detect_objects')
 })
 
-// v1.5: capability list for sidebar — prefer enabled_skills, fallback to tool_ids
-const capabilityDisplayList = computed(() => {
+// v1.5: sidebar — 优先 GET agent 返回的 enabled_skills_meta，否则回退 listSkills 缓存
+const capabilitySidebarItems = computed(() => {
+  const meta = agent.value?.enabled_skills_meta
   const skills = agent.value?.enabled_skills ?? []
   const tools = agent.value?.tool_ids ?? []
+  const catalog = skillsCatalogById.value
+
   if (skills.length > 0) {
-    return skills.map((s: string) => s.startsWith('builtin_') ? s.slice(8) : s)
+    return skills.map((skillId: string) => {
+      const slug = skillId.startsWith('builtin_') ? skillId.slice(8) : skillId
+      const m = meta?.find((x) => x.id === skillId)
+      if (m) {
+        const nm = (m.name || '').trim()
+        return {
+          key: skillId,
+          slug,
+          label: nm ? m.name : getToolName(slug),
+          isMcp: !!m.is_mcp,
+        }
+      }
+      const rec = catalog.get(skillId)
+      const label = rec?.name?.trim() ? rec.name : getToolName(slug)
+      const isMcp = rec ? isMcpSkillRecord(rec) : false
+      return { key: skillId, slug, label, isMcp }
+    })
   }
-  return tools
+  return tools.map((tool: string) => ({
+    key: tool,
+    slug: tool,
+    label: getToolName(tool),
+    isMcp: false,
+  }))
 })
 
 // Handle file selection
@@ -1741,18 +1816,41 @@ watch(() => {
           <section class="space-y-4 p-4 rounded-xl bg-card/50 border border-border/30">
             <h3 class="text-[11px] font-black text-muted-foreground uppercase tracking-[0.2em]">{{ t('agents.execution.capabilities') }}</h3>
             <div class="space-y-3">
-              <div v-for="tool in capabilityDisplayList" :key="tool" class="flex items-center gap-3 group p-2 rounded-lg hover:bg-muted/30 transition-colors">
-                <div class="w-8 h-8 rounded-lg bg-card border border-border/50 flex items-center justify-center text-muted-foreground group-hover:bg-blue-500/10 group-hover:text-blue-500 group-hover:border-blue-500/30 transition-all shadow-sm">
-                  <Globe v-if="tool === 'web-search' || tool === 'web.search'" class="w-4 h-4" />
-                  <Code2 v-else-if="tool === 'python-interpreter' || tool === 'python.run'" class="w-4 h-4" />
-                  <Database v-else-if="tool === 'sql-engine' || tool === 'sql.query'" class="w-4 h-4" />
-                  <FileText v-else-if="tool === 'file.read' || tool === 'file.list' || tool === 'content-gen'" class="w-4 h-4" />
-                  <Terminal v-else-if="tool === 'terminal'" class="w-4 h-4" />
-                  <SearchCode v-else-if="tool === 'audit' || tool === 'scanner'" class="w-4 h-4" />
-                  <Activity v-else-if="tool === 'metrics'" class="w-4 h-4" />
+              <div
+                v-for="item in capabilitySidebarItems"
+                :key="item.key"
+                class="flex items-center gap-2 group p-2 rounded-lg hover:bg-muted/30 transition-colors"
+              >
+                <div
+                  :class="[
+                    'w-8 h-8 rounded-lg bg-card border border-border/50 flex items-center justify-center shrink-0 text-muted-foreground transition-all shadow-sm',
+                    item.isMcp
+                      ? 'group-hover:bg-violet-500/10 group-hover:text-violet-600 dark:group-hover:text-violet-400 group-hover:border-violet-500/30'
+                      : 'group-hover:bg-blue-500/10 group-hover:text-blue-500 group-hover:border-blue-500/30',
+                  ]"
+                >
+                  <Plug v-if="item.isMcp" class="w-4 h-4" />
+                  <Globe v-else-if="item.slug === 'web-search' || item.slug === 'web.search'" class="w-4 h-4" />
+                  <Code2 v-else-if="item.slug === 'python-interpreter' || item.slug === 'python.run'" class="w-4 h-4" />
+                  <Database v-else-if="item.slug === 'sql-engine' || item.slug === 'sql.query'" class="w-4 h-4" />
+                  <FileText v-else-if="item.slug === 'file.read' || item.slug === 'file.list' || item.slug === 'content-gen'" class="w-4 h-4" />
+                  <Terminal v-else-if="item.slug === 'terminal'" class="w-4 h-4" />
+                  <SearchCode v-else-if="item.slug === 'audit' || item.slug === 'scanner'" class="w-4 h-4" />
+                  <Activity v-else-if="item.slug === 'metrics'" class="w-4 h-4" />
                   <Wrench v-else class="w-4 h-4" />
                 </div>
-                <span class="text-xs font-semibold text-muted-foreground group-hover:text-foreground transition-colors">{{ getToolName(tool) }}</span>
+                <div class="min-w-0 flex-1 flex items-center gap-1.5">
+                  <span class="text-xs font-semibold text-muted-foreground group-hover:text-foreground transition-colors truncate">{{
+                    item.label
+                  }}</span>
+                  <Badge
+                    v-if="item.isMcp"
+                    variant="outline"
+                    class="text-[9px] font-bold shrink-0 py-0 px-1 border-violet-500/40 text-violet-700 dark:text-violet-300"
+                  >
+                    MCP
+                  </Badge>
+                </div>
               </div>
             </div>
           </section>
@@ -1779,6 +1877,10 @@ watch(() => {
         <div class="flex items-center gap-2">
           <span class="text-muted-foreground/60">{{ t('agents.execution.status.session') }}:</span>
           <span class="text-foreground font-black">{{ session?.session_id || t('agents.execution.n_a') }}</span>
+        </div>
+        <div class="flex items-center gap-2 max-w-[min(28rem,40vw)] min-w-0">
+          <span class="text-muted-foreground/60 shrink-0">{{ t('agents.footer.local_engine') }}:</span>
+          <span class="text-foreground font-black truncate" :title="systemConfig?.version || ''">{{ systemConfig?.version || t('agents.not_available') }}</span>
         </div>
       </div>
       <div class="flex items-center gap-6">

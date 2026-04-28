@@ -262,6 +262,8 @@ class Settings(BaseSettings):
     event_bus_dlq_max_items: int = 200
     event_bus_replay_max_batch: int = 100
     event_bus_replay_min_interval_ms: int = 1000
+    # MCP Streamable HTTP：GET SSE 上服务端推送是否发到事件总线（mcp.streamable.server_rpc，仅摘要payload）
+    mcp_http_emit_server_push_events: bool = True
     # 知识库向量索引 Redis 快照（用于重启后快速恢复向量表）
     kb_vector_snapshot_redis_enabled: bool = True
     kb_vector_snapshot_redis_prefix: str = "openvitamin:kbvec"

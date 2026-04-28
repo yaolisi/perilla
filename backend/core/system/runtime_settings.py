@@ -195,6 +195,14 @@ def get_continuous_batch_max_size() -> int:
     )
 
 
+def get_mcp_http_emit_server_push_events() -> bool:
+    """MCP Streamable HTTP：GET SSE 服务端推送是否写入事件总线；系统设置可覆盖 .env。"""
+    return _get_bool(
+        "mcpHttpEmitServerPushEvents",
+        bool(getattr(settings, "mcp_http_emit_server_push_events", True)),
+    )
+
+
 def get_skill_discovery_tag_match_weight() -> float:
     """技能语义检索：标签匹配项在混合分中的权重（0–1），语义为 1 减该值。"""
     return _get_float(

@@ -1,10 +1,24 @@
-# 轻量静态检查：全量 ruff/mypy 尚未清零，CI 先保证语法级错误与核心模块类型门禁。
+# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`**（ruff E9 + 目标 mypy）→ `scripts/test-no-fallback.sh`（同一 pip）。对应 `make pr-check` 中前段：仅 **lint-backend + test-no-fallback**；`pr-check` 还含 **test-frontend-unit + build-frontend**（见 `frontend-build`）。本地 **`make pr-check-fast`** = 本段 + Vitest，**不**跑前端生产构建。
 name: backend-static-analysis
 
 on:
   pull_request:
     paths:
       - "backend/**"
+      - "scripts/test-no-fallback.sh"
+      - "scripts/pr-check.sh"
+      - "scripts/pr-check-fast.sh"
+      - "scripts/check-nvmrc-align.sh"
+      - "scripts/lint-backend.sh"
+      - "scripts/quick-check.sh"
+      - "scripts/npm-scripts.sh"
+      # Local `make pr-check*` / CI script parity (scripts/pr-check*.sh → make).
+      - "Makefile"
+      # Exact path at repo root only (not frontend/package.json).
+      - "package.json"
+      - ".nvmrc"
+      - "frontend/.nvmrc"
+      - "pytest.ini"
       - ".github/workflows/backend-static-analysis.yml"
   push:
     branches:
@@ -12,6 +26,20 @@ on:
       - master
     paths:
       - "backend/**"
+      - "scripts/test-no-fallback.sh"
+      - "scripts/pr-check.sh"
+      - "scripts/pr-check-fast.sh"
+      - "scripts/check-nvmrc-align.sh"
+      - "scripts/lint-backend.sh"
+      - "scripts/quick-check.sh"
+      - "scripts/npm-scripts.sh"
+      # Local `make pr-check*` / CI script parity (scripts/pr-check*.sh → make).
+      - "Makefile"
+      # Exact path at repo root only (not frontend/package.json).
+      - "package.json"
+      - ".nvmrc"
+      - "frontend/.nvmrc"
+      - "pytest.ini"
       - ".github/workflows/backend-static-analysis.yml"
 
 concurrency:
@@ -28,6 +56,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Align .nvmrc (repo root vs frontend/)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/check-nvmrc-align.sh
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -37,8 +69,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements/base.txt ruff mypy
 
-      - name: Ruff (syntax / parse errors)
-        run: ruff check --select=E9 .
+      - name: Ruff + Mypy (lint-backend)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/lint-backend.sh
 
-      - name: Mypy (core data + execution kernel DB, skip deep import graph)
-        run: mypy --config-file mypy.ini --follow-imports=skip core/data/base.py execution_kernel/persistence/db.py
+      # 脚本路径为仓库根目录 `scripts/`；默认 working-directory 为 backend，此处显式回到根目录
+      - name: Run test-no-fallback suite
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/test-no-fallback.sh -q

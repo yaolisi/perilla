@@ -8,6 +8,7 @@ import {
   type AgentSessionStatusDelta,
   type WorkflowExecutionStatusDelta
 } from '@/utils/streamDeltas'
+import { notifySystemConfigChanged } from '@/constants/platformEvents'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const CSRF_COOKIE_NAME = 'csrf_token'
@@ -942,6 +943,8 @@ export interface SystemConfig {
   version: string
   local_model_directory: string
   settings?: Record<string, any>
+  /** MCP Streamable HTTP：服务端 SSE 推送是否写入事件总线（DB 覆盖 + .env 回退后的生效值） */
+  mcp_http_emit_server_push_events_effective?: boolean
 }
 
 export async function getSystemMetrics(): Promise<SystemMetrics> {
@@ -1740,6 +1743,10 @@ export interface AgentDefinition {
   system_prompt: string
   /** v1.5: Skill ids the agent can call (only these are visible to the agent) */
   enabled_skills?: string[]
+  /**
+   * GET /api/agents/{id} 附加：每项 id 对应 enabled_skills 中的一项，用于展示名称与 MCP（无需再请求 /api/skills）。
+   */
+  enabled_skills_meta?: Array<{ id: string; name: string; is_mcp: boolean }>
   /** Legacy: tool names; backend derives from enabled_skills when all are builtin_ */
   tool_ids: string[]
   rag_ids: string[]
@@ -1854,6 +1861,155 @@ export async function createAgent(data: CreateAgentRequest): Promise<AgentDefini
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }))
     throw new Error(error.detail || `API error: ${response.statusText}`)
+  }
+  return response.json()
+}
+
+export interface MatchedSkillBrief {
+  skill_id: string
+  name: string
+  semantic_score?: number
+  hybrid_score?: number
+}
+
+/** POST /api/agents/generate-from-nl — 草稿，不落库 */
+export interface GenerateAgentFromNlResponse {
+  draft: CreateAgentRequest & { execution_mode?: string }
+  matched_skills: MatchedSkillBrief[]
+  llm_used: boolean
+  warnings: string[]
+}
+
+export async function generateAgentFromNl(body: {
+  description: string
+  model_id?: string | null
+  top_skills?: number
+}): Promise<GenerateAgentFromNlResponse> {
+  const response = await apiFetch(`${API_BASE_URL}/api/agents/generate-from-nl`, {
+    method: 'POST',
+    body: JSON.stringify({
+      description: body.description,
+      model_id: body.model_id || undefined,
+      top_skills: body.top_skills ?? 12,
+    }),
+  })
+  if (!response.ok) {
+    const err = (await response.json().catch(() => ({}))) as {
+      detail?: string
+      message?: string
+    }
+    throw new Error(
+      err.message || err.detail || `API error: ${response.statusText}`
+    )
+  }
+  return response.json()
+}
+
+// --- MCP (stdio servers, admin API key) ---
+
+export interface McpServerRecord {
+  id: string
+  name: string
+  description: string
+  transport?: 'stdio' | 'http'
+  base_url?: string
+  command: string[]
+  env: Record<string, string>
+  cwd: string
+  enabled: boolean
+}
+
+export interface McpProbeResult {
+  ok: boolean
+  tools: unknown[]
+  negotiated_protocol_version?: string | null
+}
+
+export async function mcpProbe(body: {
+  command?: string[]
+  url?: string
+  cwd?: string | null
+  env?: Record<string, string> | null
+  request_timeout?: number
+}): Promise<McpProbeResult> {
+  const response = await apiFetch(`${API_BASE_URL}/api/mcp/probe`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const err = (await response.json().catch(() => ({}))) as { message?: string; detail?: string }
+    throw new Error(err.message || err.detail || `probe failed: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function listMcpServers(enabledOnly = false): Promise<{ object: string; data: McpServerRecord[] }> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/mcp/servers?enabled_only=${enabledOnly ? 'true' : 'false'}`
+  )
+  if (!response.ok) {
+    throw new Error(`list MCP servers failed: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function createMcpServer(body: {
+  name: string
+  description?: string
+  transport?: 'stdio' | 'http'
+  command?: string[]
+  base_url?: string | null
+  cwd?: string | null
+  env?: Record<string, string> | null
+  enabled?: boolean
+}): Promise<McpServerRecord> {
+  const response = await apiFetch(`${API_BASE_URL}/api/mcp/servers`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const err = (await response.json().catch(() => ({}))) as { message?: string }
+    throw new Error(err.message || `create failed: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function deleteMcpServer(serverId: string): Promise<{ status: string; id: string }> {
+  const response = await apiFetch(`${API_BASE_URL}/api/mcp/servers/${encodeURIComponent(serverId)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const err = (await response.json().catch(() => ({}))) as { message?: string }
+    throw new Error(err.message || `delete failed: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function getMcpServerTools(serverId: string): Promise<{ server_id: string; tools: unknown[] }> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/mcp/servers/${encodeURIComponent(serverId)}/tools`
+  )
+  if (!response.ok) {
+    const err = (await response.json().catch(() => ({}))) as { message?: string }
+    throw new Error(err.message || `tools failed: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function importMcpTools(
+  serverId: string,
+  toolNames?: string[] | null
+): Promise<{ imported: string[]; skipped_existing: string[]; errors: { tool?: string; error?: string }[] }> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/mcp/servers/${encodeURIComponent(serverId)}/import-tools`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ tool_names: toolNames ?? undefined }),
+    }
+  )
+  if (!response.ok) {
+    const err = (await response.json().catch(() => ({}))) as { message?: string }
+    throw new Error(err.message || `import failed: ${response.status}`)
   }
   return response.json()
 }
@@ -2159,6 +2315,8 @@ export interface SkillRecord {
   definition: Record<string, unknown>
   input_schema: Record<string, unknown>
   enabled: boolean
+  /** 后端聚合：MCP stdio 或分类 mcp */
+  is_mcp?: boolean
   created_at: string | null
   updated_at: string | null
 }
@@ -2239,6 +2397,10 @@ export interface SkillDiscoveryItem {
   name?: string
   description?: string
   visibility?: string
+  category?: string | string[]
+  definition?: Record<string, unknown>
+  /** 与 Skills API 一致的聚合标志 */
+  is_mcp?: boolean
   [key: string]: unknown
 }
 
@@ -2323,6 +2485,7 @@ export async function updateSystemConfig(config: Record<string, any>): Promise<{
           : response.statusText
     throw new Error(message)
   }
+  notifySystemConfigChanged()
   return response.json()
 }
 

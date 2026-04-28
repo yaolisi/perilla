@@ -67,23 +67,43 @@ else
   critical "frontend source missing in current folder (expect frontend/package.json)"
 fi
 
+echo ""
+echo "== Node (.nvmrc) =="
+if bash scripts/check-nvmrc-align.sh; then
+  ok ".nvmrc matches frontend/.nvmrc"
+else
+  critical ".nvmrc alignment failed (required for make pr-check / CI)"
+fi
+
 if [[ -f ".env" ]]; then
-  if docker compose --env-file .env -f docker-compose.yml config >/dev/null 2>&1; then
-    ok "base compose config is valid"
+  if [[ ! -f docker-compose.yml ]]; then
+    critical "docker-compose.yml missing — cannot validate compose stacks"
   else
-    critical "base compose config validation failed"
-  fi
+    if docker compose --env-file .env -f docker-compose.yml config >/dev/null 2>&1; then
+      ok "base compose config is valid"
+    else
+      critical "base compose config validation failed"
+    fi
 
-  if docker compose --env-file .env -f docker-compose.yml -f docker-compose.gpu.yml config >/dev/null 2>&1; then
-    ok "gpu compose override is valid"
-  else
-    critical "gpu compose override validation failed"
-  fi
+    if [[ -f docker-compose.gpu.yml ]]; then
+      if docker compose --env-file .env -f docker-compose.yml -f docker-compose.gpu.yml config >/dev/null 2>&1; then
+        ok "gpu compose override is valid"
+      else
+        critical "gpu compose override validation failed"
+      fi
+    else
+      warn "docker-compose.gpu.yml missing — skipped gpu compose validation"
+    fi
 
-  if docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml config >/dev/null 2>&1; then
-    ok "prod compose override is valid"
-  else
-    critical "prod compose override validation failed"
+    if [[ -f docker-compose.prod.yml ]]; then
+      if docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml config >/dev/null 2>&1; then
+        ok "prod compose override is valid"
+      else
+        critical "prod compose override validation failed"
+      fi
+    else
+      warn "docker-compose.prod.yml missing — skipped prod compose validation"
+    fi
   fi
 fi
 

@@ -1,13 +1,48 @@
 """
-PUT /api/agents/{id} 对 execution_strategy / model_params 冲突的集成测试。
+智能体 API 集成测试：execution_strategy / model_params 冲突、enabled_skills_meta（GET 列表/单条、POST 创建）。
 
-使用 dependency_overrides 注入 admin 角色；内存 registry + SkillRegistry stub，避免真实 DB。
+使用 dependency_overrides 注入 admin 角色；内存 registry + SkillRegistry / ModelRegistry stub，避免真实 DB。
 """
 
 from __future__ import annotations
 
-import types
 from typing import Any, Dict, Optional
+
+
+class _FakeSkill:
+    """SkillRegistry stub：必须提供 `to_dict()`（`_enabled_skills_meta` 依赖）。"""
+
+    def __init__(self, skill_id: str) -> None:
+        self.id = skill_id
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"name": self.id.replace("builtin_", "", 1), "is_mcp": False}
+
+
+class _FakeSkillReg:
+    @classmethod
+    def get(cls, skill_id: str, version=None):
+        return _FakeSkill(skill_id)
+
+
+class _StubModel:
+    __slots__ = ("id",)
+
+    def __init__(self, mid: str) -> None:
+        self.id = mid
+
+
+class _FakeModelRegistry:
+    """create_agent 会校验 model_id；仅承认 stub-model。"""
+
+    def get_model(self, model_id: str):
+        if model_id == "stub-model":
+            return _StubModel(model_id)
+        return None
+
+    def list_models(self):
+        return [_StubModel("stub-model")]
+
 
 import pytest
 from fastapi import FastAPI
@@ -18,6 +53,8 @@ from api.errors import register_error_handlers
 from core.agent_runtime.definition import AgentDefinition
 from core.security.deps import require_authenticated_platform_admin
 from core.security.rbac import PlatformRole
+
+pytestmark = pytest.mark.no_fallback
 
 
 class _MemRegistry:
@@ -31,6 +68,10 @@ class _MemRegistry:
         self._agents[agent.agent_id] = agent
         return True
 
+    def create_agent(self, agent: AgentDefinition) -> bool:
+        self._agents[agent.agent_id] = agent
+        return True
+
     def list_agents(self):
         return list(self._agents.values())
 
@@ -40,17 +81,14 @@ def mem_registry(monkeypatch) -> _MemRegistry:
     reg = _MemRegistry()
     monkeypatch.setattr("api.agents.get_agent_registry", lambda: reg)
 
-    class _FakeSkillReg:
-        @classmethod
-        def get(cls, skill_id: str, version=None):
-            return types.SimpleNamespace(id=skill_id)
-
     monkeypatch.setattr("api.agents.SkillRegistry", _FakeSkillReg)
 
     def _no_blocked(skills):
         return []
 
     monkeypatch.setattr("api.agents.get_blocked_skills", _no_blocked)
+
+    monkeypatch.setattr("api.agents.get_model_registry", lambda: _FakeModelRegistry())
 
     return reg
 
@@ -109,7 +147,6 @@ def _put_payload(**kwargs: Any) -> Dict[str, Any]:
     return base
 
 
-@pytest.mark.no_fallback
 def test_put_agent_returns_400_when_execution_strategy_conflicts(
     agents_client: TestClient,
     fallback_probe,
@@ -142,6 +179,114 @@ def test_put_agent_returns_400_when_max_parallel_conflicts(
     assert "max_parallel_nodes conflicts" in resp.json().get("detail", "")
 
 
+def test_get_agent_includes_enabled_skills_meta(agents_client: TestClient):
+    r = agents_client.get(
+        "/api/agents/agent_kernel_e2e",
+        headers={"X-Api-Key": "dummy-admin-key"},
+    )
+    assert r.status_code == 200
+    j = r.json()
+    assert j.get("enabled_skills") == ["builtin_stub.skill"]
+    assert j.get("enabled_skills_meta") == [
+        {
+            "id": "builtin_stub.skill",
+            "name": "stub.skill",
+            "is_mcp": False,
+        }
+    ]
+
+
+def test_list_agents_includes_enabled_skills_meta(agents_client: TestClient):
+    r = agents_client.get(
+        "/api/agents",
+        headers={"X-Api-Key": "dummy-admin-key"},
+    )
+    assert r.status_code == 200
+    j = r.json()
+    assert j.get("object") == "list"
+    data = j.get("data") or []
+    assert len(data) == 1
+    a0 = data[0]
+    assert a0.get("agent_id") == "agent_kernel_e2e"
+    assert a0.get("enabled_skills") == ["builtin_stub.skill"]
+    assert a0.get("enabled_skills_meta") == [
+        {
+            "id": "builtin_stub.skill",
+            "name": "stub.skill",
+            "is_mcp": False,
+        }
+    ]
+
+
+def test_post_create_agent_returns_enabled_skills_meta(
+    agents_client: TestClient,
+    mem_registry: _MemRegistry,
+):
+    before = len(mem_registry.list_agents())
+    resp = agents_client.post(
+        "/api/agents",
+        json={
+            "name": "Created Via API",
+            "description": "",
+            "model_id": "stub-model",
+            "system_prompt": "",
+            "enabled_skills": ["builtin_create.skill"],
+            "rag_ids": [],
+            "max_steps": 10,
+            "temperature": 0.7,
+            "execution_mode": "legacy",
+        },
+        headers={"X-Api-Key": "dummy-admin-key"},
+    )
+    assert resp.status_code == 200
+    j = resp.json()
+    assert j.get("name") == "Created Via API"
+    assert j.get("model_id") == "stub-model"
+    assert j.get("enabled_skills") == ["builtin_create.skill"]
+    assert j.get("enabled_skills_meta") == [
+        {
+            "id": "builtin_create.skill",
+            "name": "create.skill",
+            "is_mcp": False,
+        }
+    ]
+    aid = j.get("agent_id")
+    assert isinstance(aid, str) and aid.startswith("agent_")
+    assert mem_registry.get_agent(aid) is not None
+    assert len(mem_registry.list_agents()) == before + 1
+
+
+def test_put_agent_response_enabled_skills_meta_matches_list_order(
+    mem_registry: _MemRegistry,
+    agents_client: TestClient,
+):
+    """更新 enabled_skills 时，响应中 meta 与列表同序、与 SkillRegistry 展示名一致。"""
+    resp = agents_client.put(
+        "/api/agents/agent_kernel_e2e",
+        json=_put_payload(
+            enabled_skills=["builtin_zebra.skill", "builtin_apple.skill"],
+        ),
+        headers={"X-Api-Key": "dummy-admin-key"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("enabled_skills") == ["builtin_zebra.skill", "builtin_apple.skill"]
+    assert data.get("enabled_skills_meta") == [
+        {"id": "builtin_zebra.skill", "name": "zebra.skill", "is_mcp": False},
+        {"id": "builtin_apple.skill", "name": "apple.skill", "is_mcp": False},
+    ]
+    stored = mem_registry.get_agent("agent_kernel_e2e")
+    assert stored is not None
+    assert list(stored.enabled_skills) == ["builtin_zebra.skill", "builtin_apple.skill"]
+    # 恢复 seed，避免影响后续用例或单独挑选运行时的顺序依赖
+    restore = agents_client.put(
+        "/api/agents/agent_kernel_e2e",
+        json=_put_payload(),
+        headers={"X-Api-Key": "dummy-admin-key"},
+    )
+    assert restore.status_code == 200
+
+
 def test_put_agent_ok_when_kernel_fields_aligned(mem_registry: _MemRegistry, agents_client: TestClient):
     resp = agents_client.put(
         "/api/agents/agent_kernel_e2e",
@@ -159,6 +304,13 @@ def test_put_agent_ok_when_kernel_fields_aligned(mem_registry: _MemRegistry, age
     data = resp.json()
     assert data.get("execution_strategy") == "parallel_kernel"
     assert data.get("max_parallel_nodes") == 4
+    assert data.get("enabled_skills_meta") == [
+        {
+            "id": "builtin_stub.skill",
+            "name": "stub.skill",
+            "is_mcp": False,
+        }
+    ]
     stored = mem_registry.get_agent("agent_kernel_e2e")
     assert stored is not None
     assert stored.execution_strategy == "parallel_kernel"

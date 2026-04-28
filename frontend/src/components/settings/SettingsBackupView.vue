@@ -22,6 +22,7 @@ import {
   FolderOpen,
   FileJson,
   Zap,
+  Plug,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -414,6 +415,16 @@ onMounted(() => {
             <span v-if="!navCollapsed">{{ t('settings.asr_nav') }}</span>
             <span v-else class="flex items-center justify-center">
               <Mic class="w-4 h-4" />
+            </span>
+          </button>
+          <button
+            class="w-full text-left text-sm font-semibold px-3 py-2 rounded-lg transition-colors"
+            :class="settingsSection === 'settings-mcp' ? 'bg-muted/40 text-foreground' : 'hover:bg-muted/40'"
+            @click="router.push('/settings/mcp')"
+          >
+            <span v-if="!navCollapsed">{{ t('settings.mcp.nav') }}</span>
+            <span v-else class="flex items-center justify-center">
+              <Plug class="w-4 h-4" />
             </span>
           </button>
         </div>

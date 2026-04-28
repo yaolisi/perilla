@@ -24,6 +24,8 @@ from core.data.models.workflow import (
 )
 from api.errors import register_error_handlers
 
+pytestmark = pytest.mark.no_fallback
+
 
 def _make_session_factory(tmp_path):
     db_file = tmp_path / "workflow_approval_api.db"
@@ -494,7 +496,6 @@ def test_set_governance_invalid_strategy_returns_structured_error(tmp_path):
     assert body.get("error", {}).get("code") == "workflow_governance_invalid_backpressure_strategy"
 
 
-@pytest.mark.no_fallback
 def test_get_workflow_not_found_returns_structured_error(tmp_path, fallback_probe):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)

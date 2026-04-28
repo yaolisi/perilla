@@ -33,10 +33,19 @@ from scripts.event_bus_smoke_gh_contract_keys import GH_INPUTS_SNAPSHOT_EXPECTED
 from scripts.event_bus_smoke_json_integrity import canonical_json_sha256
 
 EXPECTED_SCHEMA_VERSION = 1
+MSG_EXPECTED_SCHEMA_VERSION_INVALID = "expected_schema_version must be a positive integer"
 
 
 def _is_non_empty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _is_int_not_bool(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_positive_int_not_bool(value: Any) -> bool:
+    return _is_int_not_bool(value) and value > 0
 
 
 def _with_code(code: str, message: str) -> str:
@@ -48,6 +57,15 @@ def validate_payload(
     expected_schema_version: int = EXPECTED_SCHEMA_VERSION,
     payload_sha256_mode: str = "strict",
 ) -> List[str]:
+    if isinstance(expected_schema_version, bool):
+        return [_with_code(ERR_GH_SNAPSHOT_SCHEMA_VERSION_INVALID, MSG_EXPECTED_SCHEMA_VERSION_INVALID)]
+    try:
+        expected_schema_version = int(expected_schema_version)
+    except (TypeError, ValueError):
+        return [_with_code(ERR_GH_SNAPSHOT_SCHEMA_VERSION_INVALID, MSG_EXPECTED_SCHEMA_VERSION_INVALID)]
+    if expected_schema_version <= 0:
+        return [_with_code(ERR_GH_SNAPSHOT_SCHEMA_VERSION_INVALID, MSG_EXPECTED_SCHEMA_VERSION_INVALID)]
+
     payload_sha256_mode = str(payload_sha256_mode).strip().lower()
     if payload_sha256_mode not in {"strict", "off"}:
         return [_with_code(ERR_GH_SNAPSHOT_PAYLOAD_SHA256_MODE_INVALID, "payload_sha256_mode must be one of: strict,off")]
@@ -61,11 +79,12 @@ def validate_payload(
         errors.append(_with_code(ERR_GH_SNAPSHOT_EXTRA_KEYS, "extra keys: " + ",".join(extra)))
     checks = [
         (
-            payload.get("schema_version") == expected_schema_version,
+            _is_positive_int_not_bool(payload.get("schema_version"))
+            and payload.get("schema_version") == expected_schema_version,
             ERR_GH_SNAPSHOT_SCHEMA_VERSION_INVALID,
             f"schema_version must be {expected_schema_version}",
         ),
-        (isinstance(payload.get("generated_at_ms"), int), ERR_GH_SNAPSHOT_GENERATED_AT_TYPE_INVALID, "generated_at_ms must be int"),
+        (_is_int_not_bool(payload.get("generated_at_ms")), ERR_GH_SNAPSHOT_GENERATED_AT_TYPE_INVALID, "generated_at_ms must be int"),
         (_is_non_empty_str(payload.get("source")), ERR_GH_SNAPSHOT_SOURCE_INVALID, "source must be non-empty string"),
         (_is_non_empty_str(payload.get("workflow")), ERR_GH_SNAPSHOT_WORKFLOW_INVALID, "workflow must be non-empty string"),
         (_is_non_empty_str(payload.get("base_url")), ERR_GH_SNAPSHOT_BASE_URL_INVALID, "base_url must be non-empty string"),
@@ -107,10 +126,10 @@ def validate_payload(
         if not ok:
             errors.append(_with_code(code, msg))
     generated_at_ms = payload.get("generated_at_ms")
-    if isinstance(generated_at_ms, int) and generated_at_ms <= 0:
+    if _is_int_not_bool(generated_at_ms) and generated_at_ms <= 0:
         errors.append(_with_code(ERR_GH_SNAPSHOT_GENERATED_AT_POSITIVE_INVALID, "generated_at_ms must be > 0"))
     schema_version = payload.get("schema_version")
-    if isinstance(schema_version, int) and schema_version <= 0:
+    if _is_int_not_bool(schema_version) and schema_version <= 0:
         errors.append(_with_code(ERR_GH_SNAPSHOT_SCHEMA_VERSION_POSITIVE_INVALID, "schema_version must be > 0"))
     if payload_sha256_mode == "strict":
         _validate_payload_sha256(payload, errors)

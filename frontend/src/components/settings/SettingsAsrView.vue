@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { Save, Check, ChevronLeft, ChevronRight, Sliders, Cpu, ScanSearch, Mic, Database, FileJson, Zap } from 'lucide-vue-next'
+import { Save, Check, ChevronLeft, ChevronRight, Sliders, Cpu, ScanSearch, Mic, Database, FileJson, Zap, Plug } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { 
@@ -18,7 +18,7 @@ import {
   listModels,
   type SystemConfig 
 } from '@/services/api'
-
+import { useDebouncedOnSystemConfigChange } from '@/composables/useDebouncedOnSystemConfigChange'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -85,6 +85,10 @@ const fetchAsrModels = async () => {
     console.error('Failed to fetch ASR models:', error)
   }
 }
+
+useDebouncedOnSystemConfigChange(() => {
+  void fetchStatus(true)
+})
 
 onMounted(() => {
   fetchAsrModels()
@@ -243,6 +247,16 @@ const handleSave = async () => {
             <span v-if="!navCollapsed">ASR</span>
             <span v-else class="flex items-center justify-center">
               <Mic class="w-4 h-4" />
+            </span>
+          </button>
+          <button
+            class="w-full text-left text-sm font-semibold px-3 py-2 rounded-lg transition-colors"
+            :class="settingsSection === 'settings-mcp' ? 'bg-muted/40 text-foreground' : 'hover:bg-muted/40'"
+            @click="router.push('/settings/mcp')"
+          >
+            <span v-if="!navCollapsed">{{ t('settings.mcp.nav') }}</span>
+            <span v-else class="flex items-center justify-center">
+              <Plug class="w-4 h-4" />
             </span>
           </button>
         </div>

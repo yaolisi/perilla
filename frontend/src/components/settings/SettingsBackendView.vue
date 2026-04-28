@@ -17,6 +17,7 @@ import {
   Zap,
   Eye,
   EyeOff,
+  Plug,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
@@ -38,7 +39,7 @@ import {
   setTenantId,
   type SystemConfig 
 } from '@/services/api'
-
+import { useDebouncedOnSystemConfigChange } from '@/composables/useDebouncedOnSystemConfigChange'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -106,6 +107,10 @@ const fetchStatus = async (syncSettings = false) => {
     console.error('Failed to fetch system config:', error)
   }
 }
+
+useDebouncedOnSystemConfigChange(() => {
+  void fetchStatus(true)
+})
 
 const loadSecurityContext = () => {
   apiKeyInput.value = getApiKey() || ''
@@ -305,6 +310,16 @@ const clearSecurityContext = () => {
             <span v-if="!navCollapsed">ASR</span>
             <span v-else class="flex items-center justify-center">
               <Mic class="w-4 h-4" />
+            </span>
+          </button>
+          <button
+            class="w-full text-left text-sm font-semibold px-3 py-2 rounded-lg transition-colors"
+            :class="settingsSection === 'settings-mcp' ? 'bg-muted/40 text-foreground' : 'hover:bg-muted/40'"
+            @click="router.push('/settings/mcp')"
+          >
+            <span v-if="!navCollapsed">{{ t('settings.mcp.nav') }}</span>
+            <span v-else class="flex items-center justify-center">
+              <Plug class="w-4 h-4" />
             </span>
           </button>
         </div>

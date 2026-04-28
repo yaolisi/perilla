@@ -356,6 +356,14 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/settings/mcp',
+    name: 'settings-mcp',
+    component: () => import('@/views/SettingsMcpView.vue'),
+    meta: {
+      title: 'MCP Servers'
+    }
+  },
+  {
     path: '/optimization',
     name: 'optimization',
     component: () => import('@/views/OptimizationDashboard.vue'),

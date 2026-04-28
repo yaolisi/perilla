@@ -12,9 +12,11 @@ import {
   Wrench,
   Trash2,
   Sparkles,
+  Plug,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
 import {
   Select,
   SelectContent,
@@ -32,6 +34,7 @@ import {
   type SkillDiscoveryItem,
   type AgentDefinition,
 } from '@/services/api'
+import { isMcpSkillRecord } from '@/utils/skillMeta'
 
 const { t } = useI18n()
 
@@ -93,6 +96,7 @@ const runSkillDiscoverySearch = async () => {
     } else {
       discoveryResults.value = raw as SkillDiscoveryItem[]
     }
+    discoveryFilterSource.value = 'all'
   } catch (e) {
     discoveryError.value = e instanceof Error ? e.message : t('skills.err_load')
   } finally {
@@ -115,6 +119,7 @@ const runSkillDiscoveryRecommend = async () => {
       limit: 12,
     })
     discoveryResults.value = (res.data || []) as SkillDiscoveryItem[]
+    discoveryFilterSource.value = 'all'
   } catch (e) {
     discoveryError.value = e instanceof Error ? e.message : t('skills.err_load')
   } finally {
@@ -126,8 +131,40 @@ const runSkillDiscoveryRecommend = async () => {
 const searchQuery = ref('')
 const filterType = ref('all')
 const filterStatus = ref('all')
+/** 来源：全部 / 仅 MCP / 非 MCP */
+const filterSource = ref<'all' | 'mcp' | 'other'>('all')
+/** 语义发现结果来源筛选（与主列表独立） */
+const discoveryFilterSource = ref<'all' | 'mcp' | 'other'>('all')
 const currentPage = ref(1)
 const pageSize = 10
+
+/** 优先使用后端 is_mcp；否则与本地列表或 definition/category 对齐 */
+function isMcpDiscoveryItem(s: SkillDiscoveryItem): boolean {
+  if (typeof s.is_mcp === 'boolean') return s.is_mcp
+  const full = allSkills.value.find((x) => x.id === s.id)
+  if (full) return isMcpSkillRecord(full)
+  if (Array.isArray(s.category)) {
+    if (s.category.some((c) => String(c).toLowerCase() === 'mcp')) return true
+  } else if (typeof s.category === 'string' && s.category.toLowerCase() === 'mcp') {
+    return true
+  }
+  const def = s.definition
+  if (def && typeof def === 'object' && (def as Record<string, unknown>).kind === 'mcp_stdio') {
+    return true
+  }
+  return false
+}
+
+const filteredDiscoveryResults = computed(() => {
+  const raw = discoveryResults.value
+  if (discoveryFilterSource.value === 'mcp') {
+    return raw.filter(isMcpDiscoveryItem)
+  }
+  if (discoveryFilterSource.value === 'other') {
+    return raw.filter((x) => !isMcpDiscoveryItem(x))
+  }
+  return raw
+})
 
 const filteredSkills = computed(() => {
   let list = allSkills.value
@@ -138,8 +175,14 @@ const filteredSkills = computed(() => {
         s.name.toLowerCase().includes(q) ||
         (s.description && s.description.toLowerCase().includes(q)) ||
         (s.category && s.category.toLowerCase().includes(q)) ||
-        (s.type && s.type.toLowerCase().includes(q))
+        (s.type && s.type.toLowerCase().includes(q)) ||
+        s.id.toLowerCase().includes(q)
     )
+  }
+  if (filterSource.value === 'mcp') {
+    list = list.filter(isMcpSkillRecord)
+  } else if (filterSource.value === 'other') {
+    list = list.filter((s) => !isMcpSkillRecord(s))
   }
   return list
 })
@@ -156,6 +199,7 @@ const rangeEnd = computed(() =>
 )
 
 const getSkillIcon = (skill: SkillRecord) => {
+  if (isMcpSkillRecord(skill)) return Plug
   if (skill.type === 'tool') return Wrench
   if (skill.type === 'composite') return Code2
   return FileText
@@ -246,6 +290,18 @@ const goNext = () => {
             <SelectItem value="all">{{ t('common.all') }}</SelectItem>
           </SelectContent>
         </Select>
+        <Select v-model="filterSource">
+          <SelectTrigger
+            class="w-[140px] h-10 bg-muted/50 border-border rounded-xl text-xs"
+          >
+            <SelectValue :placeholder="t('skills.filter_source')" />
+          </SelectTrigger>
+          <SelectContent class="bg-card border-border">
+            <SelectItem value="all">{{ t('skills.filter_source_all') }}</SelectItem>
+            <SelectItem value="mcp">{{ t('skills.filter_source_mcp') }}</SelectItem>
+            <SelectItem value="other">{{ t('skills.filter_source_other') }}</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       <div
@@ -301,21 +357,61 @@ const goNext = () => {
         </div>
         <p v-if="discoveryError" class="text-xs text-destructive break-words">{{ discoveryError }}</p>
         <div v-if="discoveryLoading" class="text-xs text-muted-foreground">{{ t('common.loading') }}</div>
-        <ul v-else-if="discoveryResults.length > 0" class="flex flex-wrap gap-2">
-          <li v-for="s in discoveryResults" :key="s.id" class="text-xs">
+        <div
+          v-else-if="discoveryResults.length > 0"
+          class="flex flex-wrap items-center gap-2"
+        >
+          <span class="text-[10px] text-muted-foreground shrink-0">{{ t('skills.filter_source') }}</span>
+          <Select v-model="discoveryFilterSource">
+            <SelectTrigger
+              class="w-[140px] h-8 bg-muted/50 border-border rounded-lg text-xs"
+            >
+              <SelectValue :placeholder="t('skills.filter_source')" />
+            </SelectTrigger>
+            <SelectContent class="bg-card border-border">
+              <SelectItem value="all">{{ t('skills.filter_source_all') }}</SelectItem>
+              <SelectItem value="mcp">{{ t('skills.filter_source_mcp') }}</SelectItem>
+              <SelectItem value="other">{{ t('skills.filter_source_other') }}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <ul v-if="!discoveryLoading && filteredDiscoveryResults.length > 0" class="flex flex-wrap gap-2 mt-2">
+          <li v-for="s in filteredDiscoveryResults" :key="s.id" class="text-xs">
             <button
               type="button"
-              class="rounded-lg border border-border bg-card px-2 py-1.5 hover:bg-muted/50 text-left max-w-[280px] truncate"
+              class="rounded-lg border border-border bg-card px-2 py-1.5 hover:bg-muted/50 text-left max-w-[min(100%,320px)] inline-flex items-center gap-1.5"
               :title="(s.description as string) || s.id"
               @click="goToSkillDetail(s.id)"
             >
-              <span class="font-mono text-primary">{{ s.id }}</span>
-              <span v-if="s.name" class="text-muted-foreground ml-1">· {{ s.name }}</span>
+              <Plug
+                v-if="isMcpDiscoveryItem(s)"
+                class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 shrink-0"
+              />
+              <span class="font-mono text-primary truncate">{{ s.id }}</span>
+              <Badge
+                v-if="isMcpDiscoveryItem(s)"
+                variant="outline"
+                class="text-[9px] font-bold border-violet-500/40 text-violet-700 dark:text-violet-300 shrink-0 py-0 px-1"
+              >
+                MCP
+              </Badge>
+              <span v-if="s.name" class="text-muted-foreground truncate">· {{ s.name }}</span>
             </button>
           </li>
         </ul>
         <p
-          v-else-if="discoveryHasSearched && !discoveryLoading && !discoveryError"
+          v-else-if="
+            discoveryHasSearched &&
+              !discoveryLoading &&
+              discoveryResults.length > 0 &&
+              filteredDiscoveryResults.length === 0
+          "
+          class="text-xs text-muted-foreground mt-2"
+        >
+          {{ t('skills.discovery_empty_filtered') }}
+        </p>
+        <p
+          v-else-if="discoveryHasSearched && !discoveryLoading && !discoveryError && discoveryResults.length === 0"
           class="text-xs text-muted-foreground"
         >
           {{ t('skills.discovery_empty') }}
@@ -387,6 +483,13 @@ const goNext = () => {
                       />
                     </div>
                     <span class="font-semibold text-foreground">{{ skill.name }}</span>
+                    <Badge
+                      v-if="isMcpSkillRecord(skill)"
+                      variant="outline"
+                      class="text-[10px] font-bold border-violet-500/40 text-violet-700 dark:text-violet-300 shrink-0"
+                    >
+                      MCP
+                    </Badge>
                   </div>
                 </td>
                 <td class="px-5 py-4 max-w-[300px]">

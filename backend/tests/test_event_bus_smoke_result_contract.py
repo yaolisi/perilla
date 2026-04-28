@@ -61,6 +61,15 @@ def test_validate_payload_rejects_non_positive_generated_at_ms() -> None:
     assert any("generated_at_ms must be > 0" in e for e in errors)
 
 
+def test_validate_payload_rejects_bool_step_numeric_fields() -> None:
+    payload = _base_payload()
+    payload["steps"][0]["status"] = True
+    payload["steps"][0]["ts_ms"] = False
+    errors = validate_payload(payload)
+    assert any("steps[0].status must be int" in e for e in errors)
+    assert any("steps[0].ts_ms must be int" in e for e in errors)
+
+
 def test_validate_payload_rejects_non_positive_step_ts() -> None:
     payload = _base_payload()
     payload["steps"][0]["ts_ms"] = 0
@@ -109,6 +118,19 @@ def test_validate_payload_rejects_missing_required_fields() -> None:
     errors = validate_payload(payload)
     assert any("schema_version must be 1" in e for e in errors)
     assert any("generated_at_ms must be int" in e for e in errors)
+
+
+def test_validate_payload_rejects_bool_numeric_top_level_fields() -> None:
+    payload = _base_payload()
+    payload["generated_at_ms"] = True
+    payload["total_steps"] = True
+    payload["ok_steps"] = True
+    payload["err_steps"] = True
+    errors = validate_payload(payload)
+    assert any("generated_at_ms must be int" in e for e in errors)
+    assert any("total_steps must be int" in e for e in errors)
+    assert any("ok_steps must be int" in e for e in errors)
+    assert any("err_steps must be int" in e for e in errors)
 
 
 def test_validate_payload_rejects_non_positive_schema_version() -> None:

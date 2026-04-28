@@ -2,7 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REQ_FILE="${ROOT_DIR}/backend/requirements/base.txt"
+cd "$ROOT_DIR"
+if [[ ! -f backend/requirements/base.txt ]]; then
+  echo >&2 "check-dependency-version-policy.sh: missing backend/requirements/base.txt (${ROOT_DIR})"
+  exit 1
+fi
 
 echo "[dep-policy] validating core dependency version policy..."
 

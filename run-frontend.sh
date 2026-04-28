@@ -1,13 +1,22 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FRONTEND_DIR="${SCRIPT_DIR}/frontend"
+cd "${FRONTEND_DIR}"
+
+if [[ ! -f package.json ]]; then
+  echo >&2 "run-frontend.sh: missing package.json (${FRONTEND_DIR})"
+  exit 1
+fi
 
 # 检查 npm 环境
 if ! command -v npm &> /dev/null; then
-    echo "错误: 未找到 npm"
+    echo "错误: 未找到 npm" >&2
     exit 1
 fi
 
 echo "正在启动前端服务 (Vite)..."
-cd frontend
 
 # 检查 node_modules 是否存在
 if [ ! -d "node_modules" ]; then

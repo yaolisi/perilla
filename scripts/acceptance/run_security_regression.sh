@@ -3,6 +3,10 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
+if [[ ! -d backend ]]; then
+  echo >&2 "run_security_regression.sh: missing backend/ (${ROOT})"
+  exit 1
+fi
 
 SUMMARY_PATH="${SECURITY_SUMMARY_PATH:-test-reports/security-regression-summary.md}"
 SLOW_THRESHOLD_SECONDS="${SECURITY_SLOW_THRESHOLD_SECONDS:-30}"

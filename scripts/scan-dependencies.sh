@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+if [[ ! -f backend/requirements/base.txt ]]; then
+  echo >&2 "scan-dependencies.sh: missing backend/requirements/base.txt (${ROOT_DIR})"
+  exit 1
+fi
 
 echo "[dep-scan] installing scanner tooling..."
 TMP_VENV_DIR=".tmp/dependency-scan-venv"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
@@ -13,13 +13,15 @@ import {
   Activity,
   Loader2,
   AlertCircle,
+  CheckCircle,
   Search,
   ChevronDown,
   ChevronUp,
   CheckSquare,
   Square,
   Clock,
-  Settings
+  Settings,
+  Plug,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -33,13 +35,23 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import { updateAgent, getAgent, listModels, listKnowledgeBases, listSkills, type CreateAgentRequest, type SkillRecord } from '@/services/api'
+import {
+  updateAgent,
+  getAgent,
+  listModels,
+  listKnowledgeBases,
+  listSkills,
+  type CreateAgentRequest,
+  type SkillRecord,
+} from '@/services/api'
 import {
   buildPlanExecutionPayload,
   defaultPlanExecutionFormState,
   loadPlanExecutionFormFromModelParams,
 } from '@/utils/planExecutionConfig'
 import { TOOL_FAILURE_REFLECTION_MAX_PER_PLAN_RUN } from '@/constants/agentRuntime'
+import { isMcpSkillRecord, mergeEnabledSkillsMetaIntoSkillList } from '@/utils/skillMeta'
+import { useSystemConfigWithDebounce } from '@/composables/useSystemConfigWithDebounce'
 
 const route = useRoute()
 const router = useRouter()
@@ -88,21 +100,29 @@ const loadingKBs = ref(true)
 const loadingSkills = ref(true)
 const isSubmitting = ref(false)
 const submitError = ref<string | null>(null)
+const saveSuccess = ref(false)
+let saveSuccessDismissTimer: ReturnType<typeof setTimeout> | null = null
 const currentAgent = ref<any>(null)  // Store loaded agent data
 const availableModels = ref<any[]>([])
 const filteredModels = ref<any[]>([])
 const availableKnowledgeBases = ref<any[]>([])
 const skillsError = ref<string | null>(null)
 const availableSkills = ref<SkillRecord[]>([])
+const { systemConfig, refreshSystemConfig } = useSystemConfigWithDebounce({
+  logPrefix: 'EditAgentView',
+})
 
 // Skills search and filter
 const skillSearchQuery = ref('')
-const expandedCategories = ref<Set<string>>(new Set(['builtin_file', 'builtin_http', 'builtin_text', 'builtin_time', 'builtin_system']))
+const expandedCategories = ref<Set<string>>(
+  new Set(['builtin_file', 'builtin_http', 'builtin_text', 'builtin_time', 'builtin_system', 'mcp']),
+)
 
 const colorByCategory = (category?: string | null) => {
   const mapping: Record<string, string> = {
     web: 'blue',
     http: 'blue',
+    mcp: 'violet',
     python: 'orange',
     sql: 'violet',
     file: 'blue',
@@ -114,6 +134,7 @@ const colorByCategory = (category?: string | null) => {
 }
 
 const skillIconKey = (s: SkillRecord) => {
+  if (isMcpSkillRecord(s)) return Plug
   if (s.id.startsWith('builtin_')) {
     const name = s.id.replace('builtin_', '').split('.')[0]
     if (name === 'file') return FileText
@@ -129,7 +150,8 @@ const skillIconKey = (s: SkillRecord) => {
 }
 
 // Group skills by category
-const skillCategoryKey = (s: { id: string; category?: string }): string => {
+const skillCategoryKey = (s: { id: string; category?: string; isMcp?: boolean }): string => {
+  if (s.isMcp) return 'mcp'
   if (s.id.startsWith('builtin_')) {
     const name = s.id.replace('builtin_', '').split('.')[0]
     return `builtin_${name}`
@@ -138,6 +160,7 @@ const skillCategoryKey = (s: { id: string; category?: string }): string => {
 }
 
 const skillCategoryLabel = (category: string): string => {
+  if (category === 'mcp') return t('agents.create.skill_category_mcp')
   if (category.startsWith('builtin_')) {
     const name = category.replace('builtin_', '')
     const labels: Record<string, string> = {
@@ -156,15 +179,22 @@ const skillCategoryLabel = (category: string): string => {
 }
 
 const uiSkills = computed(() => {
-  return availableSkills.value.map((s) => ({
-    id: s.id,
-    name: s.name,
-    description: s.description || '',
-    type: s.type,
-    category: s.category || '',
-    icon: skillIconKey(s),
-    color: colorByCategory(s.id.startsWith('builtin_') ? s.id.replace('builtin_', '').split('.')[0] : (s.category || '')),
-  }))
+  return availableSkills.value.map((s) => {
+    const mcp = isMcpSkillRecord(s)
+    const catKey = s.id.startsWith('builtin_')
+      ? s.id.replace('builtin_', '').split('.')[0]
+      : (s.category || '')
+    return {
+      id: s.id,
+      name: s.name,
+      description: s.description || '',
+      type: s.type,
+      category: s.category || '',
+      isMcp: mcp,
+      icon: skillIconKey(s),
+      color: mcp ? 'violet' : colorByCategory(catKey),
+    }
+  })
 })
 
 const groupedSkills = computed(() => {
@@ -368,6 +398,8 @@ const fetchAgentData = async () => {
     toolFailureReflection.value = Boolean(
       tfr && typeof tfr === 'object' && tfr.enabled === true,
     )
+
+    mergeEnabledSkillsMetaIntoSkillList(availableSkills.value, agent.enabled_skills_meta)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
     submitError.value = error instanceof Error ? error.message : 'Failed to load agent'
@@ -417,6 +449,8 @@ const fetchData = async () => {
   } finally {
     loadingSkills.value = false
   }
+
+  await refreshSystemConfig()
 }
 
 const handleUpdateAgent = async () => {
@@ -432,6 +466,8 @@ const handleUpdateAgent = async () => {
 
   isSubmitting.value = true
   submitError.value = null
+  saveSuccess.value = false
+  dismissSaveSuccessTimer()
 
   try {
     const data: CreateAgentRequest = {
@@ -496,8 +532,15 @@ const handleUpdateAgent = async () => {
       })(),
     }
 
-    await updateAgent(agentId, data)
-    router.push('/agents')
+    const updated = await updateAgent(agentId, data)
+    mergeEnabledSkillsMetaIntoSkillList(availableSkills.value, updated.enabled_skills_meta)
+    currentAgent.value = updated
+    saveSuccess.value = true
+    dismissSaveSuccessTimer()
+    saveSuccessDismissTimer = setTimeout(() => {
+      saveSuccess.value = false
+      saveSuccessDismissTimer = null
+    }, 5000)
   } catch (error) {
     console.error('Failed to update agent:', error)
     submitError.value = error instanceof Error ? error.message : t('agents.create.update_failed')
@@ -509,6 +552,17 @@ const handleUpdateAgent = async () => {
 const handleCancel = () => {
   router.push('/agents')
 }
+
+function dismissSaveSuccessTimer() {
+  if (saveSuccessDismissTimer !== null) {
+    clearTimeout(saveSuccessDismissTimer)
+    saveSuccessDismissTimer = null
+  }
+}
+
+onBeforeUnmount(() => {
+  dismissSaveSuccessTimer()
+})
 
 onMounted(async () => {
   // Load skills first, then agent data (so we can expand categories based on selected skills)
@@ -538,6 +592,10 @@ onMounted(async () => {
     <div v-if="submitError" class="mx-8 mt-6 bg-rose-500/10 border border-rose-500/20 rounded-lg p-4 flex items-start gap-3">
       <AlertCircle class="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
       <p class="text-sm font-bold text-rose-500/90">{{ submitError }}</p>
+    </div>
+    <div v-else-if="saveSuccess" class="mx-8 mt-6 bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-4 flex items-start gap-3">
+      <CheckCircle class="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+      <p class="text-sm font-bold text-emerald-800/90 dark:text-emerald-300/90">{{ t('agents.edit.save_success') }}</p>
     </div>
 
     <!-- Main Content -->
@@ -753,9 +811,16 @@ onMounted(async () => {
                     </div>
                     <h3 class="text-sm font-bold text-foreground mb-1 line-clamp-1">{{ skill.name }}</h3>
                     <p class="text-xs text-muted-foreground/70 leading-relaxed line-clamp-2 mb-2">{{ skill.description }}</p>
-                    <div class="flex items-center gap-2">
+                    <div class="flex flex-wrap items-center gap-2">
                       <Badge v-if="skill.type" variant="outline" class="text-[10px] px-1.5 py-0 font-mono">
                         {{ skill.type }}
+                      </Badge>
+                      <Badge
+                        v-if="skill.isMcp"
+                        variant="outline"
+                        class="text-[10px] px-1.5 py-0 border-violet-500/40 text-violet-700 dark:text-violet-300"
+                      >
+                        MCP
                       </Badge>
                       <Badge v-if="skill.id.startsWith('builtin_')" variant="outline" class="text-[10px] px-1.5 py-0 text-blue-500 border-blue-500/30">
                         {{ t('agents.create.builtin_badge') }}
@@ -1184,7 +1249,7 @@ onMounted(async () => {
       <div class="flex items-center gap-6 text-[10px] font-bold tracking-tight uppercase">
         <div class="flex items-center gap-2">
           <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
-          <span class="text-muted-foreground/60">{{ t('agents.footer.local_engine') }}: <span class="text-foreground ml-1">{{ t('agents.create.status_active') }}</span></span>
+          <span class="text-muted-foreground/60">{{ t('agents.footer.local_engine') }}: <span class="text-foreground ml-1">{{ systemConfig?.version || t('agents.not_available') }}</span></span>
         </div>
       </div>
       <div class="flex items-center gap-3">

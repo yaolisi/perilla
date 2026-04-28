@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 from api.errors import register_error_handlers
 from api import sessions as sessions_api
 
+pytestmark = pytest.mark.no_fallback
+
 
 class _FakeHistoryStore:
     def __init__(self) -> None:
@@ -47,7 +49,6 @@ def sessions_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return client
 
 
-@pytest.mark.no_fallback
 def test_list_messages_unknown_session_returns_structured_404(
     sessions_client: TestClient,
     fallback_probe,

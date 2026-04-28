@@ -32,12 +32,11 @@ import ModelConfigSidebar from './ModelConfigSidebar.vue'
 import { 
   listModels, 
   scanModels, 
-  getSystemConfig, 
   registerModel,
-  type SystemConfig 
 } from '@/services/api'
 import { useNavigation } from '@/composables/useNavigation'
-
+import { useDebouncedOnSystemConfigChange } from '@/composables/useDebouncedOnSystemConfigChange'
+import { useSystemConfigWithDebounce } from '@/composables/useSystemConfigWithDebounce'
 const { activeView } = useNavigation()
 const route = useRoute()
 const router = useRouter()
@@ -65,7 +64,10 @@ const models = ref<ModelAsset[]>([])
 const loading = ref(false)
 const scanning = ref(false)
 const searchQuery = ref('')
-const systemConfig = ref<SystemConfig | null>(null)
+const { systemConfig, refreshSystemConfig } = useSystemConfigWithDebounce({
+  subscribeToPlatformConfig: false,
+  logPrefix: 'ModelManagementView',
+})
 const selectedModelId = ref<string | null>(null)
 const expandedModelIds = ref<Set<string>>(new Set())
 const navCollapsed = ref(false)
@@ -222,13 +224,11 @@ watch(() => route.fullPath, () => {
 const fetchModels = async () => {
   loading.value = true
   try {
-    const [modelsRes, configRes] = await Promise.all([
+    const [modelsRes] = await Promise.all([
       listModels(),
-      getSystemConfig()
+      refreshSystemConfig(),
     ])
-    
-    systemConfig.value = configRes
-    
+
     // Map backend response to ModelAsset interface
     models.value = modelsRes.data.map((m: any) => ({
       ...m,
@@ -253,6 +253,10 @@ const fetchModels = async () => {
     loading.value = false
   }
 }
+
+useDebouncedOnSystemConfigChange(() => {
+  void fetchModels()
+})
 
 const handleScan = async () => {
   if (scanning.value) return

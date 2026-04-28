@@ -30,6 +30,7 @@ from core.system.runtime_settings import (
     get_inference_priority_panel_high_slo_critical_rate,
     get_inference_priority_panel_high_slo_warning_rate,
     get_inference_priority_panel_preemption_cooldown_busy_threshold,
+    get_mcp_http_emit_server_push_events,
 )
 from core.plugins import get_plugin_manager
 from core.models.registry import get_model_registry
@@ -120,6 +121,7 @@ ALLOWED_SYSTEM_CONFIG_KEYS = {
     "chaosFailRateWarn",
     "chaosP95WarnMs",
     "chaosNetErrWarn",
+    "mcpHttpEmitServerPushEvents",
 }
 
 SYSTEM_CONFIG_SCHEMA_HINTS: Dict[str, Dict[str, Any]] = {
@@ -171,6 +173,12 @@ SYSTEM_CONFIG_SCHEMA_HINTS: Dict[str, Dict[str, Any]] = {
         "default": 0.3,
         "recommended": 0.3,
         "description": "治理成熟度 Warning 阈值（覆盖比例）。超过则为 Risky。",
+    },
+    "mcpHttpEmitServerPushEvents": {
+        "type": "boolean",
+        "default": True,
+        "recommended": True,
+        "description": "MCP Streamable HTTP：是否在 GET SSE 上收到服务端 JSON-RPC 时发布到事件总线（mcp.streamable.server_rpc，仅摘要）。",
     },
 }
 
@@ -247,6 +255,7 @@ class SystemConfigUpdate(BaseModel):
     chaosFailRateWarn: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     chaosP95WarnMs: Optional[int] = Field(default=None, ge=1, le=600000)
     chaosNetErrWarn: Optional[int] = Field(default=None, ge=0, le=10000)
+    mcpHttpEmitServerPushEvents: Optional[bool] = None
 
 
 class ApiKeyRevokeBody(BaseModel):
@@ -475,7 +484,9 @@ async def get_config() -> Dict[str, Any]:
         "app_name": settings.app_name,
         "version": settings.version,
         "local_model_directory": local_model_dir,
-        "settings": db_settings
+        "settings": db_settings,
+        # MCP Streamable HTTP：合并 SystemSetting 与 .env 后的生效值（供控制台与其它客户端展示）
+        "mcp_http_emit_server_push_events_effective": get_mcp_http_emit_server_push_events(),
     }
 
 @router.post("/config")

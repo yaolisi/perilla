@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from core.agent_runtime.agent_generator import generate_agent_draft_from_nl
 from core.agent_runtime.definition import AgentDefinition, get_agent_registry
 from core.agent_runtime.session import AgentSession, get_agent_session_store
 from core.agent_runtime.collaboration import (
@@ -140,6 +141,14 @@ class CreateAgentRequest(BaseModel):
         le=64,
         description="parallel_kernel 时 Scheduler 并发上限；null 表示使用内核默认",
     )
+
+
+class GenerateAgentFromNlRequest(BaseModel):
+    """自然语言生成 Agent 草稿（不落库；确认后走 POST /api/agents）。"""
+
+    description: str = Field(..., min_length=4, max_length=8000)
+    model_id: Optional[str] = Field(default=None, description="可选；缺省使用首个可用模型")
+    top_skills: int = Field(default=12, ge=1, le=32, description="语义发现返回的技能数量上限")
 
 
 def _validate_execution_strategy_field(value: Optional[str]) -> None:
@@ -381,10 +390,38 @@ def _enforce_skill_safety(skill_ids: List[str]) -> None:
             details={"blocked_skills": sorted(blocked)},
         )
 
+
+def _enabled_skills_meta(skill_ids: List[str]) -> List[Dict[str, Any]]:
+    """与 enabled_skills 同序；供执行页等 UI 展示名称与 MCP 标记，无需再请求 /api/skills。"""
+    out: List[Dict[str, Any]] = []
+    for sid in skill_ids:
+        skill = SkillRegistry.get(sid)
+        if skill:
+            d = skill.to_dict()
+            out.append(
+                {
+                    "id": sid,
+                    "name": d.get("name") or sid,
+                    "is_mcp": bool(d.get("is_mcp")),
+                }
+            )
+        else:
+            out.append({"id": sid, "name": sid, "is_mcp": False})
+    return out
+
+
+def _agent_with_skills_meta(a: AgentDefinition) -> Dict[str, Any]:
+    """JSON 序列化 + enabled_skills_meta（与 GET/列表一致）。"""
+    payload = a.model_dump(mode="json")
+    payload["enabled_skills_meta"] = _enabled_skills_meta(list(a.enabled_skills or []))
+    return payload
+
+
 @router.get("")
 async def list_agents() -> Any:
     registry = get_agent_registry()
-    return {"object": "list", "data": registry.list_agents()}
+    data = [_agent_with_skills_meta(a) for a in registry.list_agents()]
+    return {"object": "list", "data": data}
 
 @router.post("")
 async def create_agent(req: CreateAgentRequest) -> Any:
@@ -494,8 +531,51 @@ async def create_agent(req: CreateAgentRequest) -> Any:
     
     if registry.create_agent(agent):
         logger.info(f"[Agent API] Agent created successfully: {agent_id} - {req.name}")
-        return agent
+        return _agent_with_skills_meta(agent)
     raise_api_error(status_code=500, code="agent_create_failed", message="Failed to create agent")
+
+
+@router.post("/generate-from-nl")
+async def generate_agent_from_nl(req: GenerateAgentFromNlRequest) -> Any:
+    """
+    基于本地模型与 Skill 语义发现生成 Agent 草稿；不写入数据库。
+    """
+    try:
+        mid = (req.model_id or "").strip()
+        result = await generate_agent_draft_from_nl(
+            req.description.strip(),
+            model_id=mid if mid else None,
+            top_skills=req.top_skills,
+        )
+        return result.model_dump()
+    except ValueError as e:
+        msg = str(e)
+        if msg == "description_too_short":
+            raise_api_error(
+                status_code=400,
+                code="agent_nl_description_too_short",
+                message="description must be at least 4 characters",
+            )
+        if msg == "no_models_available":
+            raise_api_error(
+                status_code=503,
+                code="agent_nl_no_models",
+                message="No models available; scan or configure a model first.",
+            )
+        if msg.startswith("model_id not found:"):
+            mid = msg.split(":", 1)[-1].strip()
+            raise_api_error(
+                status_code=400,
+                code="agent_model_not_found",
+                message=f"Model '{mid}' not found.",
+                details={"model_id": mid},
+            )
+        raise_api_error(
+            status_code=400,
+            code="agent_nl_generate_invalid",
+            message=msg,
+        )
+
 
 @router.get("/{agent_id}")
 async def get_agent(agent_id: str) -> Any:
@@ -508,7 +588,7 @@ async def get_agent(agent_id: str) -> Any:
             message=AGENT_NOT_FOUND_MESSAGE,
             details={"agent_id": agent_id},
         )
-    return agent
+    return _agent_with_skills_meta(agent)
 
 @router.put("/{agent_id}")
 async def update_agent(agent_id: str, req: CreateAgentRequest) -> Any:
@@ -605,7 +685,7 @@ async def update_agent(agent_id: str, req: CreateAgentRequest) -> Any:
         model_params=model_params,
     )
     if registry.update_agent(agent):
-        return agent
+        return _agent_with_skills_meta(agent)
     raise_api_error(status_code=500, code="agent_update_failed", message="Failed to update agent")
 
 @router.delete("/{agent_id}")

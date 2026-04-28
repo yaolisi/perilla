@@ -16,6 +16,7 @@ import {
   Zap,
   Search,
   Target,
+  Plug,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -29,6 +30,7 @@ import {
 import { metricDelta, metricDeltaClass, metricDeltaText } from '@/utils/metricsDelta'
 import { useCacheMonitor } from '@/composables/useCacheMonitor'
 import { useRuntimeSettings } from '@/composables/useRuntimeSettings'
+import { useDebouncedOnSystemConfigChange } from '@/composables/useDebouncedOnSystemConfigChange'
 import { useChatStreamPreferences } from '@/composables/useChatStreamPreferences'
 import type { ChatStreamFormat } from '@/services/api'
 
@@ -104,6 +106,7 @@ const {
   inferencePriorityPanelHighSloCriticalRate,
   inferencePriorityPanelHighSloWarningRate,
   inferencePriorityPanelPreemptionCooldownBusyThreshold,
+  mcpHttpEmitEffective,
   fillSmartRoutingTemplate,
   clearSmartRoutingPolicies,
   upsertCanaryPolicy,
@@ -168,6 +171,10 @@ const onStreamFormatSelect = (e: Event) => {
 const setChatStreamGzip = (v: boolean) => {
   chatStreamGzip.value = v
 }
+
+useDebouncedOnSystemConfigChange(() => {
+  void loadConfig()
+})
 
 onMounted(() => {
   loadSmartRoutingGroupState()
@@ -437,11 +444,31 @@ watch(
             <span v-if="!navCollapsed">{{ t('settings.asr_nav') }}</span>
             <span v-else class="flex items-center justify-center"><Mic class="w-4 h-4" /></span>
           </button>
+          <button
+            class="w-full text-left text-sm font-semibold px-3 py-2 rounded-lg transition-colors"
+            :class="settingsSection === 'settings-mcp' ? 'bg-muted/40 text-foreground' : 'hover:bg-muted/40'"
+            @click="router.push('/settings/mcp')"
+          >
+            <span v-if="!navCollapsed">{{ t('settings.mcp.nav') }}</span>
+            <span v-else class="flex items-center justify-center"><Plug class="w-4 h-4" /></span>
+          </button>
         </div>
       </aside>
 
       <main class="flex-1 overflow-y-auto custom-scrollbar pr-4">
         <div class="space-y-10">
+          <p
+            v-if="mcpHttpEmitEffective !== null"
+            class="text-xs text-muted-foreground rounded-lg border border-border/40 bg-muted/15 px-4 py-2.5"
+          >
+            {{
+              t('settings.runtime.mcp_emit_bus_readonly', {
+                state: mcpHttpEmitEffective
+                  ? t('settings.runtime.mcp_emit_state_on')
+                  : t('settings.runtime.mcp_emit_state_off'),
+              })
+            }}
+          </p>
           <section class="space-y-4">
             <h2 class="text-xl font-bold">{{ t('settings.runtime.title') }}</h2>
             <div class="p-8 rounded-2xl bg-card border border-border shadow-sm space-y-8">

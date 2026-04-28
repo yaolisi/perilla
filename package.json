@@ -1,0 +1,28 @@
+{
+  "name": "openvitamin-enhanced-docker",
+  "private": true,
+  "description": "Workspace root npm helpers (npm run npm-scripts to list; conda+Vite dev via npm run local-* or make local-all / local-backend / local-frontend; bash scripts/npm-scripts.sh from any cwd). Frontend in frontend/.",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build-frontend": "npm run check-nvmrc-align && npm --prefix frontend run build",
+    "check-nvmrc-align": "bash scripts/check-nvmrc-align.sh",
+    "ci": "bash scripts/pr-check.sh",
+    "ci-fast": "bash scripts/pr-check-fast.sh",
+    "doctor": "bash scripts/doctor.sh",
+    "help": "make help",
+    "lint": "bash scripts/lint-backend.sh",
+    "lint-backend": "bash scripts/lint-backend.sh",
+    "local-all": "bash run-all.sh",
+    "local-backend": "bash run-backend.sh",
+    "local-frontend": "bash run-frontend.sh",
+    "npm-scripts": "bash scripts/npm-scripts.sh",
+    "npm-scripts-json": "bash scripts/npm-scripts.sh --json",
+    "pr-check": "bash scripts/pr-check.sh",
+    "pr-check-fast": "bash scripts/pr-check-fast.sh",
+    "quick-check": "bash scripts/quick-check.sh",
+    "test-frontend-unit": "npm run check-nvmrc-align && npm --prefix frontend run test:unit",
+    "test-no-fallback": "bash scripts/test-no-fallback.sh"
+  }
+}

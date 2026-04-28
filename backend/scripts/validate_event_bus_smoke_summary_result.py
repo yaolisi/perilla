@@ -89,6 +89,14 @@ def _is_non_empty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _is_positive_int_not_bool(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_int_not_bool(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _with_details(message: str, details: Dict[str, Any]) -> str:
     details_json = canonical_json_dumps(details)
     return f"{message} (details={details_json})"
@@ -101,8 +109,7 @@ def _with_code(code: str, message: str) -> str:
 def _validate_top_level(payload: Dict[str, Any], errors: List[str], expected_schema_version: int, schema_mode: str) -> None:
     summary_schema_version = payload.get(KEY_SUMMARY_SCHEMA_VERSION)
     schema_version_valid = (
-        isinstance(summary_schema_version, int)
-        and summary_schema_version > 0
+        _is_positive_int_not_bool(summary_schema_version)
         and (
             summary_schema_version == expected_schema_version
             if schema_mode == "strict"
@@ -167,6 +174,8 @@ def _validate_reason_codes(payload: Dict[str, Any], errors: List[str]) -> None:
                 _with_code(ERR_HEALTH_REASON_CODES_MISMATCH, "health_reason_codes must match parsed health_reason")
             )
     for code in codes:
+        if not isinstance(code, str):
+            continue
         if not is_allowed_health_reason_code(code):
             errors.append(_with_code(ERR_HEALTH_REASON_CODES_UNSUPPORTED, f"health_reason_codes[] contains unsupported code: {code}"))
 
@@ -174,13 +183,13 @@ def _validate_reason_codes(payload: Dict[str, Any], errors: List[str]) -> None:
 def _validate_optional_result_fields(payload: Dict[str, Any], errors: List[str]) -> None:
     result_schema_version = payload.get(KEY_RESULT_SCHEMA_VERSION)
     if result_schema_version is not None:
-        if not isinstance(result_schema_version, int):
+        if not _is_int_not_bool(result_schema_version):
             errors.append(_with_code(ERR_RESULT_SCHEMA_VERSION_TYPE_INVALID, "result_schema_version must be int or null"))
         elif result_schema_version <= 0:
             errors.append(_with_code(ERR_RESULT_SCHEMA_VERSION_NON_POSITIVE, "result_schema_version must be > 0 when present"))
     result_generated_at_ms = payload.get(KEY_RESULT_GENERATED_AT_MS)
     if result_generated_at_ms is not None:
-        if not isinstance(result_generated_at_ms, int):
+        if not _is_int_not_bool(result_generated_at_ms):
             errors.append(_with_code(ERR_RESULT_GENERATED_AT_MS_TYPE_INVALID, "result_generated_at_ms must be int or null"))
         elif result_generated_at_ms <= 0:
             errors.append(_with_code(ERR_RESULT_GENERATED_AT_MS_NON_POSITIVE, "result_generated_at_ms must be > 0 when present"))

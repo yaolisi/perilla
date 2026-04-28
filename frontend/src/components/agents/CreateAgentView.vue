@@ -19,7 +19,8 @@ import {
   CheckSquare,
   Square,
   Clock,
-  Settings
+  Settings,
+  Plug,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -33,13 +34,15 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import { createAgent, listModels, listKnowledgeBases, listSkills, getSystemConfig, type CreateAgentRequest, type SkillRecord, type SystemConfig } from '@/services/api'
+import { createAgent, listModels, listKnowledgeBases, listSkills, type CreateAgentRequest, type SkillRecord } from '@/services/api'
 import {
   buildPlanExecutionPayload,
   defaultPlanExecutionFormState,
 } from '@/utils/planExecutionConfig'
 import { TOOL_FAILURE_REFLECTION_MAX_PER_PLAN_RUN } from '@/constants/agentRuntime'
 import { useSystemMetrics } from '@/composables/useSystemMetrics'
+import { isMcpSkillRecord, mergeEnabledSkillsMetaIntoSkillList } from '@/utils/skillMeta'
+import { useSystemConfigWithDebounce } from '@/composables/useSystemConfigWithDebounce'
 
 // Form State
 const agentName = ref('')
@@ -92,17 +95,22 @@ const skillsError = ref<string | null>(null)
 
 const availableSkills = ref<SkillRecord[]>([])
 const { metrics } = useSystemMetrics()
-const systemConfig = ref<SystemConfig | null>(null)
+const { systemConfig, refreshSystemConfig } = useSystemConfigWithDebounce({
+  logPrefix: 'CreateAgentView',
+})
 
 // Skills search and filter
 const skillSearchQuery = ref('')
-const expandedCategories = ref<Set<string>>(new Set(['builtin_file', 'builtin_http', 'builtin_text', 'builtin_time', 'builtin_system']))
+const expandedCategories = ref<Set<string>>(
+  new Set(['builtin_file', 'builtin_http', 'builtin_text', 'builtin_time', 'builtin_system', 'mcp']),
+)
 
 const colorByCategory = (category?: string | null) => {
   // Simple palette by category; fallback to blue
   const mapping: Record<string, string> = {
     web: 'blue',
     http: 'blue',
+    mcp: 'violet',
     python: 'orange',
     sql: 'violet',
     file: 'blue',
@@ -114,6 +122,7 @@ const colorByCategory = (category?: string | null) => {
 }
 
 const skillIconKey = (s: SkillRecord) => {
+  if (isMcpSkillRecord(s)) return Plug
   if (s.id.startsWith('builtin_')) {
     const name = s.id.replace('builtin_', '').split('.')[0]
     if (name === 'file') return FileText
@@ -129,7 +138,8 @@ const skillIconKey = (s: SkillRecord) => {
 }
 
 // Group skills by category
-const skillCategoryKey = (s: { id: string; category?: string }): string => {
+const skillCategoryKey = (s: { id: string; category?: string; isMcp?: boolean }): string => {
+  if (s.isMcp) return 'mcp'
   if (s.id.startsWith('builtin_')) {
     const name = s.id.replace('builtin_', '').split('.')[0]
     return `builtin_${name}`
@@ -138,6 +148,7 @@ const skillCategoryKey = (s: { id: string; category?: string }): string => {
 }
 
 const skillCategoryLabel = (category: string): string => {
+  if (category === 'mcp') return t('agents.create.skill_category_mcp')
   if (category.startsWith('builtin_')) {
     const name = category.replace('builtin_', '')
     const labels: Record<string, string> = {
@@ -177,15 +188,22 @@ const groupedSkills = computed(() => {
 })
 
 const uiSkills = computed(() => {
-  return availableSkills.value.map((s) => ({
-    id: s.id,
-    name: s.name,
-    description: s.description || '',
-    type: s.type,
-    category: s.category || '',
-    icon: skillIconKey(s),
-    color: colorByCategory(s.id.startsWith('builtin_') ? s.id.replace('builtin_', '').split('.')[0] : (s.category || '')),
-  }))
+  return availableSkills.value.map((s) => {
+    const mcp = isMcpSkillRecord(s)
+    const catKey = s.id.startsWith('builtin_')
+      ? s.id.replace('builtin_', '').split('.')[0]
+      : (s.category || '')
+    return {
+      id: s.id,
+      name: s.name,
+      description: s.description || '',
+      type: s.type,
+      category: s.category || '',
+      isMcp: mcp,
+      icon: skillIconKey(s),
+      color: mcp ? 'violet' : colorByCategory(catKey),
+    }
+  })
 })
 
 const selectedSkillsCount = computed(() => selectedSkills.value.length)
@@ -323,12 +341,7 @@ const fetchData = async () => {
     loadingSkills.value = false
   }
 
-  try {
-    const configData = await getSystemConfig()
-    systemConfig.value = configData
-  } catch (error) {
-    console.error('Failed to load system data:', error)
-  }
+  await refreshSystemConfig()
 }
 
 // Create agent
@@ -409,8 +422,9 @@ const handleCreateAgent = async () => {
     }
 
     const result = await createAgent(payload)
-    console.log('Agent created:', result)
-    router.push('/agents')
+    mergeEnabledSkillsMetaIntoSkillList(availableSkills.value, result.enabled_skills_meta)
+    const newId = (result.agent_id || '').trim()
+    router.push(newId ? `/agents/${newId}/edit` : '/agents')
   } catch (error) {
     console.error('Error creating agent:', error)
     submitError.value = error instanceof Error ? error.message : t('agents.create.create_failed')
@@ -702,9 +716,16 @@ onMounted(() => {
                         </div>
                         <h3 class="text-sm font-bold text-foreground mb-1 line-clamp-1">{{ skill.name }}</h3>
                         <p class="text-xs text-muted-foreground/70 leading-relaxed line-clamp-2 mb-2">{{ skill.description }}</p>
-                        <div class="flex items-center gap-2">
+                        <div class="flex flex-wrap items-center gap-2">
                           <Badge v-if="skill.type" variant="outline" class="text-[10px] px-1.5 py-0 font-mono">
                             {{ skill.type }}
+                          </Badge>
+                          <Badge
+                            v-if="skill.isMcp"
+                            variant="outline"
+                            class="text-[10px] px-1.5 py-0 border-violet-500/40 text-violet-700 dark:text-violet-300"
+                          >
+                            MCP
                           </Badge>
                           <Badge v-if="skill.id.startsWith('builtin_')" variant="outline" class="text-[10px] px-1.5 py-0 text-blue-500 border-blue-500/30">
                             {{ t('agents.create.builtin_badge') }}
@@ -1139,7 +1160,7 @@ onMounted(() => {
         <div class="flex items-center gap-6 text-[10px] font-bold tracking-tight uppercase">
           <div class="flex items-center gap-2">
             <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
-            <span class="text-muted-foreground/60">{{ t('agents.footer.local_engine') }}: <span class="text-foreground ml-1">{{ systemConfig?.version ?? 'N/A' }}</span></span>
+            <span class="text-muted-foreground/60">{{ t('agents.footer.local_engine') }}: <span class="text-foreground ml-1">{{ systemConfig?.version || t('agents.not_available') }}</span></span>
           </div>
           <div class="flex items-center gap-2">
             <Activity class="w-3.5 h-3.5 text-muted-foreground/40" />

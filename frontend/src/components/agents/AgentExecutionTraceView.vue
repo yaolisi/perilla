@@ -29,6 +29,7 @@ import {
 } from '@/services/api'
 import mermaid from 'mermaid'
 import { sanitizeHtml, sanitizeMermaidSvg } from '@/utils/security'
+import { useSystemConfigWithDebounce } from '@/composables/useSystemConfigWithDebounce'
 
 const i18n = useI18n()
 const { t, locale } = i18n
@@ -46,6 +47,9 @@ const selectedStepIndex = ref(0)
 const sessionMissing = ref(false)
 const activeTab = ref<'timeline' | 'dependencies'>('timeline')
 const dagMermaidSvg = ref<string>('')
+const { systemConfig, refreshSystemConfig } = useSystemConfigWithDebounce({
+  logPrefix: 'AgentExecutionTraceView',
+})
 
 const fetchData = async () => {
   if (!sessionId.value) return
@@ -91,6 +95,7 @@ const fetchData = async () => {
 }
 
 onMounted(async () => {
+  void refreshSystemConfig()
   await fetchData()
   // Initialize DAG after data is loaded if on dependencies tab
   if (activeTab.value === 'dependencies' && traceEvents.value.length > 0) {
@@ -853,9 +858,16 @@ const TRACE_VERSION = 'V1.0.5'
     </div>
 
     <!-- Footer -->
-    <footer class="h-12 border-t border-border bg-muted px-6 flex items-center justify-between shrink-0 text-[10px] font-bold tracking-tight uppercase">
-      <span class="text-muted-foreground">{{ t('agents.trace.version', { v: TRACE_VERSION }) }}</span>
-      <div class="flex items-center gap-2">
+    <footer class="h-12 border-t border-border bg-muted px-6 flex items-center justify-between shrink-0 text-[10px] font-bold tracking-tight uppercase gap-4">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 min-w-0">
+        <span class="text-muted-foreground shrink-0">{{ t('agents.trace.version', { v: TRACE_VERSION }) }}</span>
+        <span class="text-muted-foreground/50 shrink-0 hidden sm:inline" aria-hidden="true">·</span>
+        <span class="flex items-center gap-2 min-w-0 max-w-[min(28rem,55vw)]">
+          <span class="text-muted-foreground/60 shrink-0">{{ t('agents.footer.local_engine') }}:</span>
+          <span class="text-muted-foreground truncate" :title="systemConfig?.version || ''">{{ systemConfig?.version || t('agents.not_available') }}</span>
+        </span>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
         <Button variant="outline" size="sm" class="gap-2 h-8 text-[10px] font-bold">
           <Share2 class="w-3.5 h-3.5" />
           {{ t('agents.trace.export_trace') }}

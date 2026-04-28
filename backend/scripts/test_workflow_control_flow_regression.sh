@@ -3,6 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
+if [[ ! -d backend ]]; then
+  echo >&2 "test_workflow_control_flow_regression.sh: missing backend/ (${ROOT_DIR})"
+  exit 1
+fi
+if [[ ! -f pytest.ini ]]; then
+  echo >&2 "test_workflow_control_flow_regression.sh: missing pytest.ini (${ROOT_DIR})"
+  exit 1
+fi
 
 REPORT_DIR="backend/test-reports"
 JUNIT_PATH="${JUNIT_XML_PATH:-$REPORT_DIR/workflow-control-flow-regression.xml}"

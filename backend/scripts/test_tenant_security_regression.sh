@@ -5,6 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${BACKEND_ROOT}"
+if [[ ! -f main.py ]] || [[ ! -d tests ]]; then
+  echo >&2 "$(basename "$0"): expected backend package root with main.py and tests/ (${BACKEND_ROOT})"
+  exit 1
+fi
 
 SUMMARY_PATH="${TENANT_SECURITY_SUMMARY_PATH:-test-reports/tenant-security-summary.md}"
 SLOW_THRESHOLD_SECONDS="${TENANT_SECURITY_SLOW_THRESHOLD_SECONDS:-30}"

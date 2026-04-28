@@ -8,6 +8,8 @@ from api.errors import register_error_handlers
 from api import knowledge as knowledge_api
 from api import images as images_api
 
+pytestmark = pytest.mark.no_fallback
+
 
 @pytest.fixture()
 def knowledge_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -31,7 +33,6 @@ def images_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-@pytest.mark.no_fallback
 def test_knowledge_get_not_found_is_structured_without_fallback(
     knowledge_client: TestClient,
     fallback_probe,
@@ -45,7 +46,6 @@ def test_knowledge_get_not_found_is_structured_without_fallback(
     assert fallback_probe == []
 
 
-@pytest.mark.no_fallback
 def test_images_latest_warmup_not_found_is_structured_without_fallback(
     images_client: TestClient,
     fallback_probe,

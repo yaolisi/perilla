@@ -76,6 +76,14 @@ def _is_non_empty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _is_int_not_bool(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_positive_int_not_bool(value: Any) -> bool:
+    return _is_int_not_bool(value) and value > 0
+
+
 def _with_code(code: str, message: str) -> str:
     return f"[{code}] {message}"
 
@@ -207,7 +215,7 @@ def _build_field_checks(
 ) -> list[tuple[Any, ...]]:
     return [
         (schema_version_ok, ERR_GH_TRIGGER_SCHEMA_VERSION_INVALID, schema_version_msg),
-        (isinstance(payload.get("generated_at_ms"), int), ERR_GH_TRIGGER_GENERATED_AT_INVALID, "generated_at_ms must be int"),
+        (_is_int_not_bool(payload.get("generated_at_ms")), ERR_GH_TRIGGER_GENERATED_AT_INVALID, "generated_at_ms must be int"),
         (payload.get("source") in ALLOWED_AUDIT_SOURCES, ERR_GH_TRIGGER_SOURCE_INVALID, "source must be supported audit writer"),
         (_is_workflow_filename(payload.get("workflow")), ERR_GH_TRIGGER_WORKFLOW_INVALID, "workflow must be yml/yaml filename"),
         (payload.get("mode") in {"strict", "compatible"}, ERR_GH_TRIGGER_MODE_INVALID, "mode must be strict|compatible"),
@@ -256,8 +264,8 @@ def _build_field_checks(
             ERR_GH_TRIGGER_CONCLUSION_FIELD_INVALID,
             "conclusion must be valid GitHub run conclusion",
         ),
-        (isinstance(payload.get("completed_at_ms"), int), ERR_GH_TRIGGER_COMPLETED_AT_TYPE_INVALID, "completed_at_ms must be int"),
-        (isinstance(payload.get("duration_ms"), int), ERR_GH_TRIGGER_DURATION_TYPE_INVALID, "duration_ms must be int"),
+        (_is_int_not_bool(payload.get("completed_at_ms")), ERR_GH_TRIGGER_COMPLETED_AT_TYPE_INVALID, "completed_at_ms must be int"),
+        (_is_int_not_bool(payload.get("duration_ms")), ERR_GH_TRIGGER_DURATION_TYPE_INVALID, "duration_ms must be int"),
         (
             _is_non_empty_str(payload.get("payload_sha256")),
             ERR_GH_TRIGGER_PAYLOAD_SHA256_FIELD_INVALID,
@@ -268,22 +276,22 @@ def _build_field_checks(
 
 def _validate_time_consistency(payload: Dict[str, Any], errors: List[str]) -> None:
     generated_at_ms = payload.get("generated_at_ms")
-    if isinstance(generated_at_ms, int) and generated_at_ms <= 0:
+    if _is_int_not_bool(generated_at_ms) and generated_at_ms <= 0:
         errors.append(_with_code(ERR_GH_TRIGGER_GENERATED_AT_POSITIVE_INVALID, "generated_at_ms must be > 0"))
     completed_at_ms = payload.get("completed_at_ms")
-    if isinstance(completed_at_ms, int) and completed_at_ms <= 0:
+    if _is_int_not_bool(completed_at_ms) and completed_at_ms <= 0:
         errors.append(_with_code(ERR_GH_TRIGGER_COMPLETED_AT_POSITIVE_INVALID, "completed_at_ms must be > 0"))
     duration_ms = payload.get("duration_ms")
-    if isinstance(duration_ms, int) and duration_ms < 0:
+    if _is_int_not_bool(duration_ms) and duration_ms < 0:
         errors.append(_with_code(ERR_GH_TRIGGER_DURATION_NON_NEGATIVE_INVALID, "duration_ms must be >= 0"))
-    if isinstance(generated_at_ms, int) and isinstance(completed_at_ms, int) and completed_at_ms < generated_at_ms:
+    if _is_int_not_bool(generated_at_ms) and _is_int_not_bool(completed_at_ms) and completed_at_ms < generated_at_ms:
         errors.append(
             _with_code(ERR_GH_TRIGGER_COMPLETED_AT_ORDER_INVALID, "completed_at_ms must be >= generated_at_ms")
         )
     if (
-        isinstance(generated_at_ms, int)
-        and isinstance(completed_at_ms, int)
-        and isinstance(duration_ms, int)
+        _is_int_not_bool(generated_at_ms)
+        and _is_int_not_bool(completed_at_ms)
+        and _is_int_not_bool(duration_ms)
         and duration_ms != completed_at_ms - generated_at_ms
     ):
         errors.append(
@@ -350,8 +358,7 @@ def _build_schema_version_rule(
 ) -> tuple[bool, str]:
     schema_version = payload.get("schema_version")
     schema_version_ok = (
-        isinstance(schema_version, int)
-        and schema_version > 0
+        _is_positive_int_not_bool(schema_version)
         and (schema_version == expected_schema_version if schema_mode == "strict" else schema_version <= expected_schema_version)
     )
     schema_version_msg = (
@@ -493,13 +500,13 @@ def _validate_runtime_thresholds(
 ) -> None:
     if max_duration_ms is not None:
         duration_ms = payload.get("duration_ms")
-        if isinstance(duration_ms, int) and duration_ms > max_duration_ms:
+        if _is_int_not_bool(duration_ms) and duration_ms > max_duration_ms:
             errors.append(
                 _with_code(ERR_GH_TRIGGER_DURATION_MAX_EXCEEDED, "duration_ms in payload must be <= --max-duration-ms")
             )
     if max_age_ms is not None:
         completed_at_ms = payload.get("completed_at_ms")
-        if isinstance(completed_at_ms, int):
+        if _is_int_not_bool(completed_at_ms):
             age_ms = max(int(time.time() * 1000) - completed_at_ms, 0)
             if age_ms > max_age_ms:
                 errors.append(_with_code(ERR_GH_TRIGGER_AGE_MAX_EXCEEDED, "audit age must be <= --max-age-ms"))

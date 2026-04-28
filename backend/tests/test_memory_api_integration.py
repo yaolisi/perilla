@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 from api.errors import register_error_handlers
 from api import memory as memory_api
 
+pytestmark = pytest.mark.no_fallback
+
 
 class _FakeMemoryStore:
     def list(self, *, user_id: str, limit: int = 50, include_deprecated: bool = False):
@@ -32,7 +34,6 @@ def memory_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-@pytest.mark.no_fallback
 def test_delete_unknown_memory_returns_structured_404(
     memory_client: TestClient,
     fallback_probe,

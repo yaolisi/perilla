@@ -14,7 +14,16 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -f ".env" ]]; then
+if [[ ! -f docker-compose.yml ]]; then
+  echo >&2 "install.sh: missing docker-compose.yml at repo root (${ROOT_DIR})"
+  exit 1
+fi
+
+if [[ ! -f .env ]]; then
+  if [[ ! -f .env.example ]]; then
+    echo >&2 "install.sh: need .env.example when .env is absent (${ROOT_DIR})"
+    exit 1
+  fi
   cp .env.example .env
   echo "Created .env from .env.example"
 fi
