@@ -11,6 +11,7 @@
 | 文档 | 内容 |
 |------|------|
 | [tutorial-quickstart.md](tutorial-quickstart.md) | 约 10 分钟：依赖、启动、探针、CSRF、回归脚本 |
+| [tutorial-beginner-playbook.md](tutorial-beginner-playbook.md) | 30~60 分钟实操：功能体验、MCP 配置、完成定义 |
 | [tutorial-quickstart-en.md](tutorial-quickstart-en.md) | 英文极简版 |
 | [tutorial.md](tutorial.md) | 完整教程：环境、配置、功能验证、安全、测试、curl 附录 |
 
@@ -30,6 +31,7 @@
 
 | 文档 | 内容 |
 |------|------|
+| [tutorial-debug-playbook.md](tutorial-debug-playbook.md) | 新手调试手册：高频问题、命令、回滚触发 |
 | [tutorial-incident-runbook.md](tutorial-incident-runbook.md) | 分级、止血、定位、恢复、复盘 |
 
 ---
@@ -50,15 +52,17 @@
 ## 5. 推荐阅读顺序
 
 1. [tutorial-quickstart.md](tutorial-quickstart.md)
-2. [tutorial-quickstart-en.md](tutorial-quickstart-en.md)（如需英文）
-3. [tutorial.md](tutorial.md)
-4. [security-review-hints.md](security-review-hints.md)（公网或共享部署前）
-5. [tutorial-security-baseline.md](tutorial-security-baseline.md)
-6. [tutorial-glossary-zh-en.md](tutorial-glossary-zh-en.md)
-7. [tutorial-glossary-product.md](tutorial-glossary-product.md)
-8. [tutorial-glossary-engineering.md](tutorial-glossary-engineering.md)
-9. [tutorial-ops-checklist.md](tutorial-ops-checklist.md)
-10. [tutorial-incident-runbook.md](tutorial-incident-runbook.md)
+2. [tutorial-beginner-playbook.md](tutorial-beginner-playbook.md)
+3. [tutorial-quickstart-en.md](tutorial-quickstart-en.md)（如需英文）
+4. [tutorial.md](tutorial.md)
+5. [tutorial-debug-playbook.md](tutorial-debug-playbook.md)
+6. [security-review-hints.md](security-review-hints.md)（公网或共享部署前）
+7. [tutorial-security-baseline.md](tutorial-security-baseline.md)
+8. [tutorial-glossary-zh-en.md](tutorial-glossary-zh-en.md)
+9. [tutorial-glossary-product.md](tutorial-glossary-product.md)
+10. [tutorial-glossary-engineering.md](tutorial-glossary-engineering.md)
+11. [tutorial-ops-checklist.md](tutorial-ops-checklist.md)
+12. [tutorial-incident-runbook.md](tutorial-incident-runbook.md)
 
 ### 5.1 按角色的术语路线
 
@@ -66,9 +70,9 @@
 
 **研发**：`tutorial-glossary-engineering.md` → `tutorial-glossary-zh-en.md` → `tutorial.md`。
 
-**测试 / QA**：`tutorial-quickstart.md` → `tutorial-glossary-engineering.md` → `tutorial-ops-checklist.md`。
+**测试 / QA**：`tutorial-quickstart.md` → `tutorial-beginner-playbook.md` → `tutorial-glossary-engineering.md` → `tutorial-ops-checklist.md`。
 
-**运维 / SRE**：`tutorial-ops-checklist.md` → `tutorial-incident-runbook.md` → `tutorial-glossary-engineering.md`。
+**运维 / SRE**：`tutorial-debug-playbook.md` → `tutorial-ops-checklist.md` → `tutorial-incident-runbook.md` → `tutorial-glossary-engineering.md`。
 
 ### 5.2 角色快捷命令（Bash）
 

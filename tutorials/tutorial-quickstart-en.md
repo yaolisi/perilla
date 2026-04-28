@@ -2,7 +2,8 @@
 
 **Goal**: from zero to *running services + health checks + CSRF write path + optional security regressions* in about ten minutes.
 
-For the full narrative and troubleshooting, see **[tutorial.md](tutorial.md)** and **[tutorial-index.md](tutorial-index.md)**.
+For the full narrative and troubleshooting, see **[tutorial.md](tutorial.md)** and **[tutorial-index.md](tutorial-index.md)**.  
+For beginner onboarding and debugging playbooks, also see **[tutorial-beginner-playbook.md](tutorial-beginner-playbook.md)** and **[tutorial-debug-playbook.md](tutorial-debug-playbook.md)**.
 
 ---
 
@@ -136,6 +137,8 @@ Input: `slow_threshold_seconds` (positive integer).
 
 ## Next docs
 
+- [tutorial-beginner-playbook.md](tutorial-beginner-playbook.md) — beginner hands-on onboarding path  
+- [tutorial-debug-playbook.md](tutorial-debug-playbook.md) — practical debugging and rollback triggers  
 - [tutorial.md](tutorial.md) — full tutorial  
 - [tutorial-index.md](tutorial-index.md) — index and command cheatsheet  
 - [tutorial-security-baseline.md](tutorial-security-baseline.md) — security baseline  

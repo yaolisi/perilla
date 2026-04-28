@@ -138,6 +138,8 @@ GitHub Actions：`tenant-security-regression`、`security-regression`。
 
 ## 接下来读什么
 
+- [tutorial-beginner-playbook.md](tutorial-beginner-playbook.md) — 新手实操版（上手与使用）  
 - [tutorial.md](tutorial.md) — 全量教程  
+- [tutorial-debug-playbook.md](tutorial-debug-playbook.md) — 调试手册（定位与回滚）  
 - [tutorial-index.md](tutorial-index.md) — 索引与命令汇总  
 - [tutorial-ops-checklist.md](tutorial-ops-checklist.md) — 发版清单  
