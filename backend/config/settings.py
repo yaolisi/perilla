@@ -223,6 +223,8 @@ class Settings(BaseSettings):
     inference_cache_enabled: bool = True
     inference_cache_redis_url: str = "redis://127.0.0.1:6379/0"
     inference_cache_prefix: str = "perilla:inference"
+    # 启动时将 Redis 中旧前缀 openvitamin:* SCAN+RENAME 到当前 inference/event/kbvec 配置前缀（幂等）
+    redis_legacy_openvitamin_prefix_migrate_on_startup: bool = True
     # L1: 内存缓存（优先读）+ Redis（次级回源）
     inference_cache_memory_enabled: bool = True
     inference_cache_memory_max_entries: int = 2048
@@ -270,6 +272,8 @@ class Settings(BaseSettings):
     # 知识库向量索引 Redis 快照（用于重启后快速恢复向量表）
     kb_vector_snapshot_redis_enabled: bool = True
     kb_vector_snapshot_redis_prefix: str = "perilla:kbvec"
+    # Prometheus：并行注册旧指标名 openvitamin_*（与 perilla_* 同步更新），便于过渡期仪表盘与告警
+    metrics_legacy_openvitamin_names_enabled: bool = True
     # 文档类型分块大小覆盖（JSON），例如 {"pdf":256,"md":512}
     kb_chunk_size_overrides_json: str = "{\"pdf\":256,\"md\":512,\"txt\":256,\"docx\":384}"
     # 空闲回收阈值（秒）

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from config.settings import settings
 
 try:
     from prometheus_client import Counter, Gauge, Histogram
@@ -34,6 +35,7 @@ class PrometheusBusinessMetrics:
             self.inference_errors_total = noop
             self.agent_runs_total = noop
             self.agent_run_failures_total = noop
+            self._legacy_mirror = False
             return
 
         self.inference_latency_seconds = Histogram(
@@ -62,20 +64,67 @@ class PrometheusBusinessMetrics:
             labelnames=("mode", "engine"),
         )
 
+        self._legacy_mirror = bool(getattr(settings, "metrics_legacy_openvitamin_names_enabled", True))
+        if self._legacy_mirror:
+            self._legacy_inference_latency_seconds = Histogram(
+                "openvitamin_inference_latency_seconds",
+                "Inference latency in seconds (legacy alias; same series as perilla_*)",
+                labelnames=("operation", "provider", "model"),
+            )
+            self._legacy_inference_requests_in_flight = Gauge(
+                "openvitamin_inference_requests_in_flight",
+                "Current in-flight inference requests (legacy alias)",
+                labelnames=("operation",),
+            )
+            self._legacy_inference_errors_total = Counter(
+                "openvitamin_inference_errors_total",
+                "Total inference errors (legacy alias)",
+                labelnames=("operation", "provider"),
+            )
+            self._legacy_agent_runs_total = Counter(
+                "openvitamin_agent_runs_total",
+                "Total agent runtime runs (legacy alias)",
+                labelnames=("mode", "engine"),
+            )
+            self._legacy_agent_run_failures_total = Counter(
+                "openvitamin_agent_run_failures_total",
+                "Total failed agent runtime runs (legacy alias)",
+                labelnames=("mode", "engine"),
+            )
+        else:
+            self._legacy_inference_latency_seconds = noop
+            self._legacy_inference_requests_in_flight = noop
+            self._legacy_inference_errors_total = noop
+            self._legacy_agent_runs_total = noop
+            self._legacy_agent_run_failures_total = noop
+
     def observe_inference_started(self, operation: str) -> None:
         self.inference_requests_in_flight.labels(operation=operation).inc()
+        if self._legacy_mirror:
+            self._legacy_inference_requests_in_flight.labels(operation=operation).inc()
 
     def observe_inference_finished(self, *, operation: str, provider: str, model: str, latency_seconds: float) -> None:
         self.inference_requests_in_flight.labels(operation=operation).dec()
+        lat = max(0.0, float(latency_seconds))
         self.inference_latency_seconds.labels(
             operation=operation,
             provider=provider or "unknown",
             model=model or "unknown",
-        ).observe(max(0.0, float(latency_seconds)))
+        ).observe(lat)
+        if self._legacy_mirror:
+            self._legacy_inference_requests_in_flight.labels(operation=operation).dec()
+            self._legacy_inference_latency_seconds.labels(
+                operation=operation,
+                provider=provider or "unknown",
+                model=model or "unknown",
+            ).observe(lat)
 
     def observe_inference_failed(self, *, operation: str, provider: str) -> None:
         self.inference_requests_in_flight.labels(operation=operation).dec()
         self.inference_errors_total.labels(operation=operation, provider=provider or "unknown").inc()
+        if self._legacy_mirror:
+            self._legacy_inference_requests_in_flight.labels(operation=operation).dec()
+            self._legacy_inference_errors_total.labels(operation=operation, provider=provider or "unknown").inc()
 
     def observe_agent_run(self, *, mode: str, engine: str, success: bool) -> None:
         norm_mode = mode or "unknown"
@@ -83,6 +132,10 @@ class PrometheusBusinessMetrics:
         self.agent_runs_total.labels(mode=norm_mode, engine=norm_engine).inc()
         if not success:
             self.agent_run_failures_total.labels(mode=norm_mode, engine=norm_engine).inc()
+        if self._legacy_mirror:
+            self._legacy_agent_runs_total.labels(mode=norm_mode, engine=norm_engine).inc()
+            if not success:
+                self._legacy_agent_run_failures_total.labels(mode=norm_mode, engine=norm_engine).inc()
 
 
 _metrics: Optional[PrometheusBusinessMetrics] = None

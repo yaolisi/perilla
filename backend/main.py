@@ -130,6 +130,16 @@ def _apply_security_baseline() -> None:
         logger.warning("[SecurityBaseline] tool_net_web_enabled=True in production; verify privacy policy.")
 
 
+def _migrate_legacy_redis_prefixes_sync() -> None:
+    """将 Redis 中 openvitamin:* 键迁移到当前 perilla 前缀（可配置关闭）。"""
+    try:
+        from core.cache.redis_prefix_migration import migrate_legacy_openvitamin_keys
+
+        migrate_legacy_openvitamin_keys()
+    except Exception as e:
+        logger.warning("[Startup] Redis legacy prefix migration failed: %s", e)
+
+
 def _log_startup_banner() -> None:
     logger.info(f"Starting {settings.app_name} v{settings.version}...")
     logger.info("Log files will be kept for 30 days in logs/ directory")
@@ -459,6 +469,10 @@ async def _startup_scan_models() -> None:
 async def lifespan(app: FastAPI):
     _apply_security_baseline()
     _log_startup_banner()
+    try:
+        await asyncio.to_thread(_migrate_legacy_redis_prefixes_sync)
+    except Exception as e:
+        logger.warning("[Startup] Redis legacy prefix migration task failed: %s", e)
     _initialize_database_tables()
     _recover_stale_running_sessions()
     _recover_stale_image_jobs()

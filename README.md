@@ -104,6 +104,14 @@ curl -s http://127.0.0.1:8000/api/health/ready | jq .
 - 中文 FAQ：[`#6-故障排查-faq`](docs/GETTING_STARTED_ZH.md#6-故障排查-faq)
 - 中文发布清单：[`#7-生产发布最小清单`](docs/GETTING_STARTED_ZH.md#7-生产发布最小清单)
 
+### 命名与迁移边界（目录名 / Redis）
+
+- **仓库目录名 vs 包名**：本地克隆目录可能仍为历史路径 `openvitamin_enhanced_docker`；根目录 `package.json` 的 `name` 为 `perilla-enhanced-docker`，运行时品牌以配置与 UI（`settings.app_name` 等）为准。**不要求**仅为对齐而重命名磁盘目录；若你自行改名，请同步更新脚本、CI、文档中的路径引用。
+
+- **Redis 键 vs Pub/Sub 频道**：启动时若开启迁移（`settings` 中 `redis_legacy_openvitamin_prefix_migrate_on_startup`），仅对 Redis **键（KEY）** 执行 `SCAN`+`RENAME`，将历史前缀 `openvitamin:*` 迁到当前 `inference_cache_prefix` / `event_bus_channel_prefix` / `kb_vector_snapshot_redis_prefix` 等。**Pub/Sub 频道名不是键**，不在此次迁移范围内；事件总线频道由当前配置重新订阅/发布即可。
+
+- **Prometheus**：`metrics_legacy_openvitamin_names_enabled` 为真时，进程内除 `perilla_*` 外会并行注册旧名 `openvitamin_*`，便于过渡期仪表盘；关闭后仅导出 `perilla_*`。
+
 ---
 
 ## 6) 常见命令速查

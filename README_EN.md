@@ -104,6 +104,14 @@ Useful anchors:
 - Troubleshooting FAQ: [`#6-troubleshooting-faq`](docs/GETTING_STARTED_EN.md#6-troubleshooting-faq)
 - Production checklist: [`#7-minimal-production-checklist`](docs/GETTING_STARTED_EN.md#7-minimal-production-checklist)
 
+### Naming and migration boundaries (folder vs Redis)
+
+- **Checkout folder vs package name**: Your working copy directory may still be named `openvitamin_enhanced_docker` from history; the root `package.json` `name` is `perilla-enhanced-docker`. Runtime branding follows settings/UI (`settings.app_name`, etc.). **Renaming the folder is optional**; if you do, update scripts, CI, and docs that hard-code paths.
+
+- **Redis keys vs Pub/Sub channels**: When startup migration is enabled (`redis_legacy_openvitamin_prefix_migrate_on_startup` in settings), only Redis **keys** are scanned/renamed from legacy `openvitamin:*` to the configured prefixes (inference cache, KB snapshot, etc.). **Channel names are not keys** and are not migrated; the event bus uses the configured `event_bus_channel_prefix` for subscribe/publish going forward.
+
+- **Prometheus**: If `metrics_legacy_openvitamin_names_enabled` is true, the process registers both `perilla_*` and legacy `openvitamin_*` metric names in parallel for dashboard transition; set false to export only `perilla_*`.
+
 ---
 
 ## 6) Command quick reference
