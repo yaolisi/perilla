@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from api import system as system_api
 from api.errors import register_error_handlers
 
+_HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
+
 
 def _build_client() -> TestClient:
     app = FastAPI()
@@ -106,3 +108,33 @@ def test_openapi_includes_roadmap_kpis_quality_metrics_and_phase_status() -> Non
     m_create = schemas["RoadmapMonthlyReviewCreateResponse"]
     assert set(m_create.get("required") or []) == {"review"}
     assert m_create["properties"]["success"]["const"] is True
+
+
+def test_openapi_roadmap_paths_use_named_schema_for_json_200() -> None:
+    client = _build_client()
+    resp = client.get("/openapi.json")
+    assert resp.status_code == 200
+    spec = resp.json()
+    paths = spec.get("paths") or {}
+    schemas = (spec.get("components") or {}).get("schemas") or {}
+    roadmap_paths = sorted(p for p in paths if p.startswith("/api/system/roadmap"))
+    assert roadmap_paths
+    for path in roadmap_paths:
+        path_item = paths[path]
+        for method, op in path_item.items():
+            if method not in _HTTP_METHODS:
+                continue
+            ok = (op.get("responses") or {}).get("200")
+            if not ok:
+                continue
+            app_json = (ok.get("content") or {}).get("application/json")
+            if not app_json:
+                continue
+            schema = app_json.get("schema")
+            assert isinstance(schema, dict) and "$ref" in schema, (
+                f"{method.upper()} {path}: expected 200 application/json schema $ref, got {schema!r}"
+            )
+            ref = schema["$ref"]
+            assert ref.startswith("#/components/schemas/")
+            key = ref.rsplit("/", 1)[-1]
+            assert key in schemas, f"{method.upper()} {path}: missing components.schemas.{key}"
