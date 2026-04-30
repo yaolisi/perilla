@@ -33,6 +33,7 @@ from core.system.runtime_settings import (
     get_inference_priority_panel_high_slo_warning_rate,
     get_inference_priority_panel_preemption_cooldown_busy_threshold,
     get_mcp_http_emit_server_push_events,
+    get_runtime_max_cached_local_runtimes,
 )
 from core.system.roadmap import (
     build_blocking_capabilities,
@@ -46,6 +47,7 @@ from core.system.roadmap import (
     save_manual_quality_metrics,
     save_phase_gates,
     save_roadmap_kpis,
+    describe_roadmap_quality_metrics,
     evaluate_north_star,
     evaluate_phase_gates,
 )
@@ -1626,26 +1628,60 @@ def _build_anomaly_detection_detail(enabled: bool) -> Dict[str, Any]:
 
 
 def _detect_cluster_scaling_capability() -> bool:
+    """Phase 3 scale: multi-slot local runtime cache + queue summary wiring (scale-out readiness signal)."""
+    try:
+        multi_slot = int(get_runtime_max_cached_local_runtimes()) >= 2
+    except Exception:
+        multi_slot = False
     return (
         "runtimeMaxCachedLocalRuntimes" in ALLOWED_SYSTEM_CONFIG_KEYS
         and callable(build_unified_queue_summary)
+        and multi_slot
     )
 
 
 def _detect_model_version_governance_capability() -> bool:
-    return callable(get_model_registry) and callable(build_plugin_compatibility_matrix)
+    """Phase 3: registry populated + compatibility matrix builds + at least one explicit model version."""
+    if not (callable(get_model_registry) and callable(build_plugin_compatibility_matrix)):
+        return False
+    try:
+        build_plugin_compatibility_matrix()
+    except Exception:
+        return False
+    try:
+        models = get_model_registry().list_models()
+    except Exception:
+        return False
+    if len(models) < 2:
+        return False
+    return any(str(getattr(m, "version", "") or "").strip() for m in models)
 
 
 def _detect_sso_integration_capability() -> bool:
-    return callable(require_authenticated_platform_admin) and (Path(__file__).resolve().parent.parent / "middleware" / "rbac_enforcement.py").exists()
+    """Phase 3: enterprise identity boundary — enforced RBAC and/or tenant isolation (beyond API-key-only dev)."""
+    if not callable(require_authenticated_platform_admin):
+        return False
+    rbac_stack = bool(getattr(settings, "rbac_enabled", False)) and bool(getattr(settings, "rbac_enforcement", False))
+    tenant_stack = bool(getattr(settings, "tenant_enforcement_enabled", False))
+    return rbac_stack or tenant_stack
 
 
 def _detect_multimodal_pilot_capability() -> bool:
-    return (
+    """Phase 3: multimodal routes exist and at least one ASR or image-generation default is configured."""
+    if not (
         "asrModelId" in ALLOWED_SYSTEM_CONFIG_KEYS
         and "imageGenerationDefaultModelId" in ALLOWED_SYSTEM_CONFIG_KEYS
-        and (Path(__file__).resolve().parent / "vlm.py").exists()
-    )
+    ):
+        return False
+    if not (Path(__file__).resolve().parent / "vlm.py").exists():
+        return False
+    try:
+        store = get_system_settings_store()
+        asr = str(store.get_setting("asrModelId") or "").strip()
+        img = str(store.get_setting("imageGenerationDefaultModelId") or "").strip()
+    except Exception:
+        return False
+    return bool(asr or img)
 
 
 def _build_hybrid_retrieval_detail(enabled: bool) -> Dict[str, Any]:
@@ -1723,6 +1759,39 @@ def _detect_roadmap_capability_details() -> Dict[str, Dict[str, Any]]:
     function_calling_enabled = bool(plan_based_agents)
     collaboration_enabled = len(plan_based_agents) >= 2
     multi_hop_enabled = _detect_multi_hop_retrieval_capability()
+
+    cluster_cs_runtime_max = 1
+    try:
+        cluster_cs_runtime_max = int(get_runtime_max_cached_local_runtimes())
+    except Exception:
+        cluster_cs_runtime_max = 1
+
+    gov_models_count = 0
+    gov_versioned_models = 0
+    gov_matrix_ok = False
+    try:
+        build_plugin_compatibility_matrix()
+        gov_matrix_ok = True
+    except Exception:
+        gov_matrix_ok = False
+    try:
+        gov_models = get_model_registry().list_models()
+        gov_models_count = len(gov_models)
+        gov_versioned_models = sum(1 for m in gov_models if str(getattr(m, "version", "") or "").strip())
+    except Exception:
+        gov_models_count = 0
+        gov_versioned_models = 0
+
+    mm_asr = ""
+    mm_img = ""
+    try:
+        mm_store = get_system_settings_store()
+        mm_asr = str(mm_store.get_setting("asrModelId") or "").strip()
+        mm_img = str(mm_store.get_setting("imageGenerationDefaultModelId") or "").strip()
+    except Exception:
+        mm_asr = ""
+        mm_img = ""
+
     return {
         "dynamic_batching": _build_dynamic_batching_detail(_detect_dynamic_batching_capability()),
         "hybrid_retrieval": _build_hybrid_retrieval_detail(_detect_hybrid_retrieval_capability()),
@@ -1767,6 +1836,8 @@ def _detect_roadmap_capability_details() -> Dict[str, Dict[str, Any]]:
             "signals": {
                 "runtime_cache_controls_present": "runtimeMaxCachedLocalRuntimes" in ALLOWED_SYSTEM_CONFIG_KEYS,
                 "queue_summary_available": callable(build_unified_queue_summary),
+                "runtime_max_cached_local_runtimes": cluster_cs_runtime_max,
+                "multi_runtime_cache_enabled": cluster_cs_runtime_max >= 2,
             },
         },
         "model_version_governance": {
@@ -1774,7 +1845,9 @@ def _detect_roadmap_capability_details() -> Dict[str, Dict[str, Any]]:
             "enabled": _detect_model_version_governance_capability(),
             "signals": {
                 "model_registry_available": callable(get_model_registry),
-                "plugin_compatibility_matrix_available": callable(build_plugin_compatibility_matrix),
+                "plugin_compatibility_matrix_build_ok": gov_matrix_ok,
+                "registered_models_count": gov_models_count,
+                "models_with_explicit_version_count": gov_versioned_models,
             },
         },
         "sso_integration": {
@@ -1782,9 +1855,9 @@ def _detect_roadmap_capability_details() -> Dict[str, Dict[str, Any]]:
             "enabled": _detect_sso_integration_capability(),
             "signals": {
                 "auth_guard_available": callable(require_authenticated_platform_admin),
-                "rbac_enforcement_module_present": (
-                    Path(__file__).resolve().parent.parent / "middleware" / "rbac_enforcement.py"
-                ).exists(),
+                "rbac_enabled": bool(getattr(settings, "rbac_enabled", False)),
+                "rbac_enforcement": bool(getattr(settings, "rbac_enforcement", False)),
+                "tenant_enforcement_enabled": bool(getattr(settings, "tenant_enforcement_enabled", False)),
             },
         },
         "multimodal_pilot": {
@@ -1794,6 +1867,8 @@ def _detect_roadmap_capability_details() -> Dict[str, Dict[str, Any]]:
                 "asr_setting_present": "asrModelId" in ALLOWED_SYSTEM_CONFIG_KEYS,
                 "image_generation_setting_present": "imageGenerationDefaultModelId" in ALLOWED_SYSTEM_CONFIG_KEYS,
                 "vlm_api_present": (Path(__file__).resolve().parent / "vlm.py").exists(),
+                "asr_model_configured": bool(mm_asr),
+                "image_generation_model_configured": bool(mm_img),
             },
         },
         "function_calling_orchestration": {
@@ -1836,6 +1911,11 @@ async def update_roadmap_kpis_api(
     payload = body.model_dump(exclude_none=True)
     merged = save_roadmap_kpis(payload)
     return {"success": True, "kpis": merged}
+
+
+@router.get("/roadmap/quality-metrics")
+async def get_roadmap_quality_metrics_api(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
+    return describe_roadmap_quality_metrics()
 
 
 @router.post("/roadmap/quality-metrics")

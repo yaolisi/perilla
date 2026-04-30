@@ -1149,6 +1149,7 @@ def test_roadmap_end_to_end_with_real_store_and_snapshot():
         "roadmap_kpis",
         "roadmap_kpis_meta",
         "roadmap_quality_metrics",
+        "roadmap_quality_metrics_explicit_keys",
         "roadmap_monthly_reviews",
         "roadmapCapabilitiesJson",
     ]
@@ -1240,6 +1241,7 @@ def test_roadmap_end_to_end_no_go_when_capabilities_and_kpis_missing():
         "roadmap_kpis",
         "roadmap_kpis_meta",
         "roadmap_quality_metrics",
+        "roadmap_quality_metrics_explicit_keys",
         "roadmap_monthly_reviews",
         "roadmapCapabilitiesJson",
     ]
@@ -1426,6 +1428,23 @@ def test_roadmap_kpis_and_quality_metrics_response_contract():
     assert update_body["success"] is True
     assert isinstance(update_body["quality_metrics"], dict)
     assert isinstance(update_body["quality_metrics"].get("rag_top5_recall"), (int, float))
+
+    get_qm = client.get("/api/system/roadmap/quality-metrics")
+    assert get_qm.status_code == 200
+    qm_body = get_qm.json()
+    assert set(qm_body.keys()) >= {
+        "quality_metrics",
+        "explicit_metric_keys",
+        "explicit_metric_keys_tracked",
+        "phase3_kpi_inference_probe",
+    }
+    assert isinstance(qm_body["quality_metrics"], dict)
+    assert qm_body["quality_metrics"].get("rag_top5_recall") == pytest.approx(0.88)
+    assert isinstance(qm_body.get("explicit_metric_keys"), list)
+    assert "rag_top5_recall" in (qm_body.get("explicit_metric_keys") or [])
+    assert "answer_usefulness" in (qm_body.get("explicit_metric_keys") or [])
+    assert qm_body.get("explicit_metric_keys_tracked") is True
+    assert isinstance(qm_body.get("phase3_kpi_inference_probe"), dict)
 
 
 def test_roadmap_monthly_review_list_limit_and_order():

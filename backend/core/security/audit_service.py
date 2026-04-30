@@ -8,10 +8,33 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import desc, select, func
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from core.data.models.audit import AuditLogORM
+
+
+def count_audit_events_matching(
+    db: Session,
+    *,
+    since: Optional[datetime] = None,
+    method: Optional[str] = None,
+    path_contains_any: Optional[Tuple[str, ...]] = None,
+    max_status_code: Optional[int] = None,
+) -> int:
+    """Cheap COUNT for roadmap / governance probes (substring match on path)."""
+    q = select(func.count()).select_from(AuditLogORM)
+    if since is not None:
+        q = q.where(AuditLogORM.created_at >= since)
+    if method:
+        q = q.where(AuditLogORM.method == method.upper())
+    if max_status_code is not None:
+        q = q.where(AuditLogORM.status_code <= int(max_status_code))
+    if path_contains_any:
+        fragments = tuple(str(s) for s in path_contains_any if str(s).strip())
+        if fragments:
+            q = q.where(or_(*[AuditLogORM.path.contains(fragment) for fragment in fragments]))
+    return int(db.execute(q).scalar() or 0)
 
 
 def append_audit_log(

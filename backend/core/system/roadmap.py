@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from typing import Any, Dict, List, Tuple
 
-from core.security.audit_service import query_audit_logs
+from core.security.audit_service import count_audit_events_matching, query_audit_logs
 from core.system.settings_store import SystemSettingsStore, get_system_settings_store
 from core.data.base import db_session
 
@@ -25,6 +25,25 @@ DEFAULT_ANOMALY_THRESHOLDS: Dict[str, float] = {
     "chaosFailRateWarn": 0.02,
     "chaosP95WarnMs": 3000.0,
     "chaosNetErrWarn": 50.0,
+}
+
+ROADMAP_QUALITY_METRICS_EXPLICIT_KEYS_SETTING = "roadmap_quality_metrics_explicit_keys"
+
+PHASE3_QUALITY_METRIC_KEYS: frozenset[str] = frozenset(
+    ("auto_scaling_trigger_success_rate", "rollback_time_seconds"),
+)
+
+DEFAULT_MANUAL_QUALITY_METRICS: Dict[str, Any] = {
+    "rag_top5_recall": 0.0,
+    "answer_usefulness": 0.0,
+    "unit_cost_reduction": 0.0,
+    "observability_coverage": 0.0,
+    "critical_security_incidents": 0,
+    "throughput_gain": 1.0,
+    "multi_hop_accuracy_gain": 0.0,
+    "hallucination_reduction": 0.0,
+    "auto_scaling_trigger_success_rate": 0.0,
+    "rollback_time_seconds": 999999,
 }
 
 DEFAULT_PHASE_GATES: Dict[str, Dict[str, Any]] = {
@@ -173,29 +192,140 @@ def collect_operational_baseline() -> Dict[str, Any]:
     }
 
 
+def _infer_auto_scaling_trigger_success_rate_from_runtime() -> float | None:
+    """Infer Phase 3 KPI from inference-queue SLO attainment (needs slo_target_ms > 0 and traffic)."""
+    try:
+        from core.runtime import get_runtime_metrics
+
+        metrics = get_runtime_metrics().get_metrics()
+        prio = metrics.get("by_priority_summary") or {}
+    except Exception:
+        return None
+    met = 0
+    req = 0
+    for label in ("high", "medium", "low"):
+        block = prio.get(label) or {}
+        r = int(block.get("requests") or 0)
+        slo_t = int(block.get("slo_target_ms") or 0)
+        if r <= 0 or slo_t <= 0:
+            continue
+        met += int(block.get("slo_met_count") or 0)
+        req += r
+    if req <= 0:
+        return None
+    return round(float(met) / float(req), 6)
+
+
+def _infer_rollback_time_seconds_from_audit() -> float | None:
+    """
+    When audit shows successful rollback/restore drill activity, proxy rollback responsiveness using
+    runtime idle-release TTL (release path latency knob). No audit activity → no inference.
+    """
+    try:
+        from core.system.runtime_settings import get_runtime_release_idle_ttl_seconds
+
+        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=90)
+        with db_session() as db:
+            n = count_audit_events_matching(
+                db,
+                since=since,
+                method="POST",
+                path_contains_any=("rollback", "/restore"),
+                max_status_code=399,
+            )
+    except Exception:
+        return None
+    if n <= 0:
+        return None
+    try:
+        return float(get_runtime_release_idle_ttl_seconds())
+    except Exception:
+        return 300.0
+
+
+def collect_phase3_kpi_inference() -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    rate = _infer_auto_scaling_trigger_success_rate_from_runtime()
+    if rate is not None:
+        out["auto_scaling_trigger_success_rate"] = rate
+    rollback_s = _infer_rollback_time_seconds_from_audit()
+    if rollback_s is not None:
+        out["rollback_time_seconds"] = rollback_s
+    return out
+
+
+def _explicit_roadmap_quality_metric_keys(store: SystemSettingsStore) -> frozenset[str] | None:
+    raw = store.get_setting(ROADMAP_QUALITY_METRICS_EXPLICIT_KEYS_SETTING, None)
+    if isinstance(raw, list):
+        return frozenset(str(k) for k in raw)
+    return None
+
+
+def _apply_phase3_kpi_inference_legacy(manual: Dict[str, Any], inferred: Dict[str, Any], *, has_persisted_blob: bool) -> None:
+    if not has_persisted_blob:
+        for key, value in inferred.items():
+            if value is not None:
+                manual[key] = value
+        return
+    for key in PHASE3_QUALITY_METRIC_KEYS:
+        val = inferred.get(key)
+        if val is None:
+            continue
+        if manual.get(key) == DEFAULT_MANUAL_QUALITY_METRICS.get(key):
+            manual[key] = val
+
+
+def _apply_phase3_kpi_inference_explicit(
+    manual: Dict[str, Any],
+    inferred: Dict[str, Any],
+    explicit: frozenset[str],
+) -> None:
+    for key in PHASE3_QUALITY_METRIC_KEYS:
+        if key not in explicit and inferred.get(key) is not None:
+            manual[key] = inferred[key]
+
+
+def _apply_phase3_kpi_inference_to_manual(store: SystemSettingsStore, manual: Dict[str, Any]) -> None:
+    inferred = collect_phase3_kpi_inference()
+    explicit = _explicit_roadmap_quality_metric_keys(store)
+    if explicit is None:
+        has_blob = isinstance(store.get_setting("roadmap_quality_metrics", None), dict)
+        _apply_phase3_kpi_inference_legacy(manual, inferred, has_persisted_blob=has_blob)
+        return
+    _apply_phase3_kpi_inference_explicit(manual, inferred, explicit)
+
+
 def _load_manual_quality_metrics(store: SystemSettingsStore) -> Dict[str, Any]:
     raw = store.get_setting("roadmap_quality_metrics", None)
     if isinstance(raw, dict):
-        return raw
-    return {
-        "rag_top5_recall": 0.0,
-        "answer_usefulness": 0.0,
-        "unit_cost_reduction": 0.0,
-        "observability_coverage": 0.0,
-        "critical_security_incidents": 0,
-        "throughput_gain": 1.0,
-        "multi_hop_accuracy_gain": 0.0,
-        "hallucination_reduction": 0.0,
-        "auto_scaling_trigger_success_rate": 0.0,
-        "rollback_time_seconds": 999999,
-    }
+        return {**DEFAULT_MANUAL_QUALITY_METRICS, **raw}
+    return dict(DEFAULT_MANUAL_QUALITY_METRICS)
 
 
 def save_manual_quality_metrics(payload: Dict[str, Any], store: SystemSettingsStore | None = None) -> Dict[str, Any]:
     settings_store = store or get_system_settings_store()
     merged = {**_load_manual_quality_metrics(settings_store), **payload}
     settings_store.set_setting("roadmap_quality_metrics", merged)
+    prev = settings_store.get_setting(ROADMAP_QUALITY_METRICS_EXPLICIT_KEYS_SETTING, None)
+    incoming = frozenset(str(k) for k in payload.keys())
+    if isinstance(prev, list):
+        explicit = frozenset(str(k) for k in prev) | incoming
+    else:
+        explicit = incoming
+    settings_store.set_setting(ROADMAP_QUALITY_METRICS_EXPLICIT_KEYS_SETTING, sorted(explicit))
     return merged
+
+
+def describe_roadmap_quality_metrics(store: SystemSettingsStore | None = None) -> Dict[str, Any]:
+    """Admin read-model: stored merged metrics, explicit-key tracking, and Phase 3 inference probes (no operational baseline)."""
+    settings_store = store or get_system_settings_store()
+    explicit = _explicit_roadmap_quality_metric_keys(settings_store)
+    return {
+        "quality_metrics": _load_manual_quality_metrics(settings_store),
+        "explicit_metric_keys": sorted(explicit) if explicit is not None else None,
+        "explicit_metric_keys_tracked": explicit is not None,
+        "phase3_kpi_inference_probe": collect_phase3_kpi_inference(),
+    }
 
 
 def collect_anomaly_signals(snapshot: Dict[str, Any], store: SystemSettingsStore) -> Dict[str, Any]:
@@ -244,6 +374,7 @@ def build_roadmap_snapshot(store: SystemSettingsStore | None = None) -> Dict[str
     settings_store = store or get_system_settings_store()
     automatic = collect_operational_baseline()
     manual = _load_manual_quality_metrics(settings_store)
+    _apply_phase3_kpi_inference_to_manual(settings_store, manual)
     merged = {
         **automatic,
         **manual,
