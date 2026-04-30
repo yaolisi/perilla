@@ -27,17 +27,21 @@ from core.cache import get_redis_cache_client
 from core.security.deps import require_authenticated_platform_admin, require_platform_admin
 from middleware.api_key_scope import get_revoked_api_keys, revoke_api_key, unrevoke_api_key
 from core.system.runtime_settings import (
+    get_continuous_batch_enabled,
+    get_continuous_batch_max_size,
     get_inference_priority_panel_high_slo_critical_rate,
     get_inference_priority_panel_high_slo_warning_rate,
     get_inference_priority_panel_preemption_cooldown_busy_threshold,
     get_mcp_http_emit_server_push_events,
 )
 from core.system.roadmap import (
+    build_blocking_capabilities,
+    build_go_no_go_summary,
     build_roadmap_snapshot,
     create_monthly_review,
     get_phase_gates,
     get_roadmap_kpis,
-    list_monthly_reviews,
+    list_monthly_reviews_page,
     save_manual_quality_metrics,
     save_phase_gates,
     save_roadmap_kpis,
@@ -48,6 +52,7 @@ from core.plugins import get_plugin_manager
 from core.plugins.market import PluginMarketValidationError, get_plugin_market_service
 from core.plugins.compatibility import build_plugin_compatibility_matrix
 from core.models.registry import get_model_registry
+from core.agent_runtime.definition import get_agent_registry
 from core.data.base import SessionLocal
 from core.idempotency.service import (
     IDEMPOTENCY_STATUS_FAILED,
@@ -312,6 +317,65 @@ class RoadmapGateUpdateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     phase_gates: Dict[str, Dict[str, Any]]
+
+
+class RoadmapMonthlyReviewListAppliedFilters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int
+    offset: int
+    top_blocker_capability: Optional[str] = None
+    go_no_go: Optional[Literal["go", "no_go"]] = None
+
+
+class RoadmapMonthlyReviewListMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    applied_filters: RoadmapMonthlyReviewListAppliedFilters
+    total_before_limit: int
+    has_more: bool
+    next_offset: Optional[int] = None
+    prev_offset: Optional[int] = None
+    returned_order: Literal["newest_first"] = "newest_first"
+    page_window: Dict[str, int]
+
+
+class RoadmapMonthlyReviewListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    items: List[Dict[str, Any]]
+    meta: RoadmapMonthlyReviewListMeta
+
+
+class RoadmapNorthStarStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    score: float
+    passed: bool
+    reasons: List[str]
+
+
+class RoadmapPhaseGateStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    passed_count: int
+    total_count: int
+    score: float
+    phases: Dict[str, Dict[str, Any]]
+    blocking_capabilities: List[Dict[str, Any]]
+    top_blocker_capability: Optional[str] = None
+
+
+class RoadmapPhaseStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot: Dict[str, Any]
+    north_star: RoadmapNorthStarStatus
+    go_no_go: Literal["go", "no_go"]
+    go_no_go_reasons: List[Dict[str, Any]]
+    top_blocker_capability: Optional[str] = None
+    phase_gate: RoadmapPhaseGateStatus
 
 
 class ApiKeyRevokeBody(BaseModel):
@@ -1428,7 +1492,10 @@ async def update_feature_flags_api(
     return {"success": True, "tenant_id": tenant_id, "flags": saved}
 
 
-def _read_roadmap_capabilities() -> Dict[str, bool]:
+_RAG_PLUGIN_MANIFEST_PATH = Path(__file__).resolve().parent.parent / "core" / "plugins" / "builtin" / "rag" / "plugin.json"
+
+
+def _read_manual_roadmap_capabilities() -> Dict[str, bool]:
     try:
         store = get_system_settings_store()
         raw = store.get_setting("roadmapCapabilitiesJson", "{}")
@@ -1448,6 +1515,138 @@ def _read_roadmap_capabilities() -> Dict[str, bool]:
     except Exception:
         return {}
     return {}
+
+
+def _detect_dynamic_batching_capability() -> bool:
+    try:
+        return bool(get_continuous_batch_enabled()) and int(get_continuous_batch_max_size()) > 1
+    except Exception:
+        return False
+
+
+def _build_dynamic_batching_detail(enabled: bool) -> Dict[str, Any]:
+    try:
+        batch_enabled = bool(get_continuous_batch_enabled())
+        batch_max_size = int(get_continuous_batch_max_size())
+    except Exception:
+        batch_enabled = False
+        batch_max_size = 0
+    return {
+        "source": "runtime_settings",
+        "enabled": enabled,
+        "signals": {
+            "continuous_batch_enabled": batch_enabled,
+            "continuous_batch_max_size": batch_max_size,
+        },
+    }
+
+
+def _detect_hybrid_retrieval_capability() -> bool:
+    try:
+        if not _RAG_PLUGIN_MANIFEST_PATH.exists():
+            return False
+        raw = _RAG_PLUGIN_MANIFEST_PATH.read_text(encoding="utf-8")
+        manifest = json.loads(raw)
+        retrieval_schema = (((manifest.get("input_schema") or {}).get("properties") or {}).get("retrieval_mode") or {})
+        retrieval_enum = retrieval_schema.get("enum")
+        if isinstance(retrieval_enum, list) and "hybrid" in retrieval_enum:
+            return True
+        return str(retrieval_schema.get("default") or "").strip().lower() == "hybrid"
+    except Exception:
+        return False
+
+
+def _build_hybrid_retrieval_detail(enabled: bool) -> Dict[str, Any]:
+    detail: Dict[str, Any] = {
+        "source": "rag_plugin_manifest",
+        "enabled": enabled,
+        "signals": {
+            "manifest_exists": bool(_RAG_PLUGIN_MANIFEST_PATH.exists()),
+            "retrieval_mode_default": "",
+            "retrieval_mode_enum": [],
+        },
+    }
+    try:
+        if not _RAG_PLUGIN_MANIFEST_PATH.exists():
+            return detail
+        raw = _RAG_PLUGIN_MANIFEST_PATH.read_text(encoding="utf-8")
+        manifest = json.loads(raw)
+        retrieval_schema = (((manifest.get("input_schema") or {}).get("properties") or {}).get("retrieval_mode") or {})
+        retrieval_enum = retrieval_schema.get("enum")
+        detail["signals"]["retrieval_mode_default"] = str(retrieval_schema.get("default") or "")
+        detail["signals"]["retrieval_mode_enum"] = retrieval_enum if isinstance(retrieval_enum, list) else []
+    except Exception:
+        return detail
+    return detail
+
+
+def _list_agents_for_capability_detection() -> List[Any]:
+    try:
+        return get_agent_registry().list_agents()
+    except Exception:
+        return []
+
+
+def _iter_plan_based_agents_with_skills(agents: List[Any]) -> List[Any]:
+    matched: List[Any] = []
+    for agent in agents:
+        execution_mode = str(getattr(agent, "execution_mode", "") or "").strip().lower()
+        enabled_skills = getattr(agent, "enabled_skills", None) or []
+        if execution_mode == "plan_based" and bool(enabled_skills):
+            matched.append(agent)
+    return matched
+
+
+def _detect_function_calling_orchestration_capability(agents: List[Any]) -> bool:
+    return bool(_iter_plan_based_agents_with_skills(agents))
+
+
+def _detect_agent_role_collaboration_capability(agents: List[Any]) -> bool:
+    return len(_iter_plan_based_agents_with_skills(agents)) >= 2
+
+
+def _detect_roadmap_capabilities() -> Dict[str, bool]:
+    agents = _list_agents_for_capability_detection()
+    return {
+        "dynamic_batching": _detect_dynamic_batching_capability(),
+        "hybrid_retrieval": _detect_hybrid_retrieval_capability(),
+        "function_calling_orchestration": _detect_function_calling_orchestration_capability(agents),
+        "agent_role_collaboration": _detect_agent_role_collaboration_capability(agents),
+    }
+
+
+def _detect_roadmap_capability_details() -> Dict[str, Dict[str, Any]]:
+    agents = _list_agents_for_capability_detection()
+    plan_based_agents = _iter_plan_based_agents_with_skills(agents)
+    function_calling_enabled = bool(plan_based_agents)
+    collaboration_enabled = len(plan_based_agents) >= 2
+    return {
+        "dynamic_batching": _build_dynamic_batching_detail(_detect_dynamic_batching_capability()),
+        "hybrid_retrieval": _build_hybrid_retrieval_detail(_detect_hybrid_retrieval_capability()),
+        "function_calling_orchestration": {
+            "source": "agent_registry",
+            "enabled": function_calling_enabled,
+            "signals": {
+                "plan_based_agents_with_skills": [str(getattr(agent, "agent_id", "")) for agent in plan_based_agents],
+                "count": len(plan_based_agents),
+            },
+        },
+        "agent_role_collaboration": {
+            "source": "agent_registry",
+            "enabled": collaboration_enabled,
+            "signals": {
+                "plan_based_agents_with_skills": [str(getattr(agent, "agent_id", "")) for agent in plan_based_agents],
+                "count": len(plan_based_agents),
+                "required_min_agents": 2,
+            },
+        },
+    }
+
+
+def _read_roadmap_capabilities() -> Dict[str, bool]:
+    detected = _detect_roadmap_capabilities()
+    manual = _read_manual_roadmap_capabilities()
+    return {**detected, **manual}
 
 
 @router.get("/roadmap/kpis")
@@ -1478,28 +1677,49 @@ async def update_roadmap_quality_metrics_api(
 
 
 @router.get("/roadmap/phases/status")
-async def get_roadmap_phase_status_api(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
+async def get_roadmap_phase_status_api(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> RoadmapPhaseStatusResponse:
     snapshot = build_roadmap_snapshot()
     snapshot["capabilities"] = _read_roadmap_capabilities()
+    snapshot["capability_details"] = _detect_roadmap_capability_details()
+    return _build_phase_status_payload(snapshot=snapshot)
+
+
+def _build_phase_status_payload(snapshot: Dict[str, Any]) -> RoadmapPhaseStatusResponse:
     gates = get_phase_gates()
     phase_status = evaluate_phase_gates(snapshot, gates)
     north_star = evaluate_north_star(snapshot, get_roadmap_kpis())
     passed_count = sum(1 for item in phase_status.values() if item.get("passed"))
     total_count = len(phase_status)
-    return {
+    gate_score = (passed_count / total_count) if total_count else 0.0
+    blocking_capabilities = build_blocking_capabilities(phase_status)
+    go_no_go_summary = build_go_no_go_summary(
+        north_star=north_star,
+        gate_score=gate_score,
+        blocking_capabilities=blocking_capabilities,
+    )
+    go_no_go = str(go_no_go_summary.get("go_no_go") or "no_go")
+    go_no_go_reasons = list(go_no_go_summary.get("go_no_go_reasons") or [])
+    top_blocker_capability = go_no_go_summary.get("top_blocker_capability")
+    payload = {
         "snapshot": snapshot,
         "north_star": {
             "score": round(north_star.score, 4),
             "passed": north_star.passed,
             "reasons": north_star.reasons,
         },
+        "go_no_go": go_no_go,
+        "go_no_go_reasons": go_no_go_reasons,
+        "top_blocker_capability": top_blocker_capability,
         "phase_gate": {
             "passed_count": passed_count,
             "total_count": total_count,
-            "score": round((passed_count / total_count), 4) if total_count else 0.0,
+            "score": round(gate_score, 4),
             "phases": phase_status,
+            "blocking_capabilities": blocking_capabilities,
+            "top_blocker_capability": top_blocker_capability,
         },
     }
+    return RoadmapPhaseStatusResponse.model_validate(payload)
 
 
 @router.post("/roadmap/phase-gates")
@@ -1517,18 +1737,69 @@ async def create_roadmap_monthly_review_api(
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
 ) -> Dict[str, Any]:
-    review = create_monthly_review()
+    capabilities = _read_roadmap_capabilities()
+    capability_details = _detect_roadmap_capability_details()
+    review = create_monthly_review(capabilities=capabilities, capability_details=capability_details)
     return {"success": True, "review": review}
+
+
+def _build_monthly_review_list_payload(
+    *,
+    limit: int,
+    offset: int,
+    top_blocker_capability: Optional[str],
+    go_no_go: Optional[Literal["go", "no_go"]],
+) -> RoadmapMonthlyReviewListResponse:
+    items, total_before_limit = list_monthly_reviews_page(
+        limit=limit,
+        offset=offset,
+        top_blocker_capability=top_blocker_capability,
+        go_no_go=go_no_go,
+    )
+    has_more = (offset + len(items)) < total_before_limit
+    next_offset = (offset + len(items)) if has_more else None
+    prev_offset = max(0, offset - limit) if offset > 0 else None
+    page_start = offset
+    page_end_exclusive = offset + len(items)
+    payload = {
+        "count": len(items),
+        "items": items,
+        "meta": {
+            "applied_filters": {
+                "limit": limit,
+                "offset": offset,
+                "top_blocker_capability": top_blocker_capability,
+                "go_no_go": go_no_go,
+            },
+            "total_before_limit": total_before_limit,
+            "has_more": has_more,
+            "next_offset": next_offset,
+            "prev_offset": prev_offset,
+            "page_window": {
+                "start": page_start,
+                "end_exclusive": page_end_exclusive,
+            },
+            "returned_order": "newest_first",
+        },
+    }
+    return RoadmapMonthlyReviewListResponse.model_validate(payload)
 
 
 @router.get("/roadmap/monthly-review")
 async def list_roadmap_monthly_review_api(
     limit: Annotated[int, Query(ge=1, le=36)] = 12,
+    offset: Annotated[int, Query(ge=0, le=1000)] = 0,
+    top_blocker_capability: Annotated[Optional[str], Query(max_length=128)] = None,
+    go_no_go: Annotated[Optional[Literal["go", "no_go"]], Query()] = None,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
-    items = list_monthly_reviews(limit=limit)
-    return {"count": len(items), "items": items}
+) -> RoadmapMonthlyReviewListResponse:
+    return _build_monthly_review_list_payload(
+        limit=limit,
+        offset=offset,
+        top_blocker_capability=top_blocker_capability,
+        go_no_go=go_no_go,
+    )
 
 
 @router.get("/metrics")

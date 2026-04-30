@@ -18,9 +18,32 @@ def test_run_smoke_happy_path(monkeypatch):
         _FakeResponse(200, {"kpis": {"availability_min": 0.99}}),
         _FakeResponse(200, {"success": True, "kpis": {"availability_min": 0.99}}),
         _FakeResponse(200, {"success": True, "quality_metrics": {"rag_top5_recall": 0.88}}),
-        _FakeResponse(200, {"snapshot": {}, "north_star": {"score": 1.0}, "phase_gate": {"score": 1.0}}),
+        _FakeResponse(
+            200,
+            {
+                "snapshot": {},
+                "north_star": {"score": 1.0},
+                "phase_gate": {"score": 1.0},
+                "go_no_go": "go",
+                "go_no_go_reasons": [],
+            },
+        ),
         _FakeResponse(200, {"review": {"go_no_go": "go"}}),
-        _FakeResponse(200, {"items": [{"go_no_go": "go"}]}),
+        _FakeResponse(
+            200,
+            {
+                "items": [{"go_no_go": "go"}],
+                "meta": {
+                    "applied_filters": {"limit": 3, "offset": 0, "top_blocker_capability": None, "go_no_go": None},
+                    "total_before_limit": 1,
+                    "has_more": False,
+                    "next_offset": None,
+                    "prev_offset": None,
+                    "page_window": {"start": 0, "end_exclusive": 1},
+                    "returned_order": "newest_first",
+                },
+            },
+        ),
     ]
 
     def _fake_request(method, url, headers=None, json=None, timeout=20):  # noqa: ANN001

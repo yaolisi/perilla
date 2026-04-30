@@ -918,20 +918,153 @@ def test_roadmap_phase_status_endpoint_returns_gate_summary(monkeypatch):
     body = resp.json()
     assert body.get("north_star", {}).get("passed") is True
     assert body.get("phase_gate", {}).get("passed_count") == 1
+    assert body.get("go_no_go") in {"go", "no_go"}
+    assert isinstance(body.get("go_no_go_reasons"), list)
+    assert "top_blocker_capability" in body
+
+
+def test_roadmap_phase_status_blocking_capabilities_sorted(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(system_api, "build_roadmap_snapshot", lambda: {"online_error_rate": 0.001})
+    monkeypatch.setattr(system_api, "get_roadmap_kpis", lambda: {"availability_min": 0.999})
+    monkeypatch.setattr(
+        system_api,
+        "get_phase_gates",
+        lambda: {
+            "phase1_core": {"required_capabilities": [], "required_kpis": {}},
+            "phase2_advanced": {"required_capabilities": [], "required_kpis": {}},
+        },
+    )
+    monkeypatch.setattr(
+        system_api,
+        "evaluate_north_star",
+        lambda snapshot, kpis: type("Eval", (), {"score": 1.0, "passed": True, "reasons": ["ok"]})(),
+    )
+    monkeypatch.setattr(
+        system_api,
+        "evaluate_phase_gates",
+        lambda snapshot, gates: {
+            "phase1_core": {
+                "passed": False,
+                "missing_capabilities": ["hybrid_retrieval", "dynamic_batching"],
+                "missing_capability_details": {
+                    "hybrid_retrieval": {"enabled": False, "source": "rag_plugin_manifest", "signals": {}},
+                    "dynamic_batching": {"enabled": False, "source": "runtime_settings", "signals": {}},
+                },
+                "kpi_results": {},
+            },
+            "phase2_advanced": {
+                "passed": False,
+                "missing_capabilities": ["hybrid_retrieval"],
+                "missing_capability_details": {
+                    "hybrid_retrieval": {"enabled": False, "source": "rag_plugin_manifest", "signals": {}},
+                },
+                "kpi_results": {},
+            },
+        },
+    )
+
+    resp = client.get("/api/system/roadmap/phases/status")
+    assert resp.status_code == 200
+    blocking = resp.json().get("phase_gate", {}).get("blocking_capabilities", [])
+    assert isinstance(blocking, list)
+    assert blocking[0]["capability"] == "hybrid_retrieval"
+    assert blocking[0]["phase_count"] == 2
+    assert set(blocking[0]["blocked_phases"]) == {"phase1_core", "phase2_advanced"}
+
+
+def test_roadmap_capabilities_merge_auto_and_manual(monkeypatch):
+    monkeypatch.setattr(
+        system_api,
+        "_detect_roadmap_capabilities",
+        lambda: {"dynamic_batching": True, "hybrid_retrieval": False},
+    )
+    monkeypatch.setattr(
+        system_api,
+        "_read_manual_roadmap_capabilities",
+        lambda: {"hybrid_retrieval": True, "function_calling_orchestration": True},
+    )
+    merged = system_api._read_roadmap_capabilities()
+    assert merged["dynamic_batching"] is True
+    # 手工开关优先级更高，覆盖自动探测结果
+    assert merged["hybrid_retrieval"] is True
+    assert merged["function_calling_orchestration"] is True
+
+
+def test_roadmap_phase_status_includes_auto_detected_capabilities(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(system_api, "build_roadmap_snapshot", lambda: {"online_error_rate": 0.001})
+    monkeypatch.setattr(
+        system_api,
+        "_read_roadmap_capabilities",
+        lambda: {
+            "dynamic_batching": True,
+            "hybrid_retrieval": True,
+            "function_calling_orchestration": False,
+            "agent_role_collaboration": False,
+        },
+    )
+    monkeypatch.setattr(
+        system_api,
+        "_detect_roadmap_capability_details",
+        lambda: {
+            "dynamic_batching": {"source": "runtime_settings", "enabled": True, "signals": {"continuous_batch_enabled": True}},
+            "hybrid_retrieval": {"source": "rag_plugin_manifest", "enabled": True, "signals": {"manifest_exists": True}},
+        },
+    )
+    resp = client.get("/api/system/roadmap/phases/status")
+    assert resp.status_code == 200
+    snapshot = resp.json().get("snapshot", {})
+    capabilities = snapshot.get("capabilities", {})
+    assert capabilities.get("dynamic_batching") is True
+    assert capabilities.get("hybrid_retrieval") is True
+    capability_details = snapshot.get("capability_details", {})
+    assert capability_details.get("dynamic_batching", {}).get("source") == "runtime_settings"
+    assert capability_details.get("hybrid_retrieval", {}).get("signals", {}).get("manifest_exists") is True
 
 
 def test_roadmap_monthly_review_create_and_list(monkeypatch):
     client = _build_client()
+    captured = {}
+
+    def _fake_create_monthly_review(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return {
+            "go_no_go": "go",
+            "go_no_go_reasons": [{"type": "summary", "message": "north_star_and_phase_gates_passed"}],
+            "top_blocker_capability": None,
+            "north_star": {"passed": True},
+            "phase_gate": {"passed": True, "blocking_capabilities": []},
+        }
+
     monkeypatch.setattr(
         system_api,
         "create_monthly_review",
-        lambda: {"go_no_go": "go", "north_star": {"passed": True}, "phase_gate": {"passed": True}},
+        _fake_create_monthly_review,
     )
-    monkeypatch.setattr(system_api, "list_monthly_reviews", lambda limit=12: [{"go_no_go": "go"}][:limit])
+    monkeypatch.setattr(
+        system_api,
+        "list_monthly_reviews_page",
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: (
+            [{"go_no_go": "go"}][offset : offset + limit],
+            1,
+        ),
+    )
+    monkeypatch.setattr(system_api, "_read_roadmap_capabilities", lambda: {"dynamic_batching": True})
+    monkeypatch.setattr(
+        system_api,
+        "_detect_roadmap_capability_details",
+        lambda: {"dynamic_batching": {"enabled": True, "source": "runtime_settings", "signals": {}}},
+    )
 
     create_resp = client.post("/api/system/roadmap/monthly-review")
     assert create_resp.status_code == 200
     assert create_resp.json().get("review", {}).get("go_no_go") == "go"
+    assert isinstance(create_resp.json().get("review", {}).get("go_no_go_reasons"), list)
+    assert "top_blocker_capability" in create_resp.json().get("review", {})
+    assert "blocking_capabilities" in create_resp.json().get("review", {}).get("phase_gate", {})
+    assert captured.get("kwargs", {}).get("capabilities", {}).get("dynamic_batching") is True
+    assert captured.get("kwargs", {}).get("capability_details", {}).get("dynamic_batching", {}).get("enabled") is True
 
     list_resp = client.get("/api/system/roadmap/monthly-review", params={"limit": 5})
     assert list_resp.status_code == 200
@@ -1015,6 +1148,7 @@ def test_roadmap_end_to_end_with_real_store_and_snapshot():
         assert create_resp.status_code == 200
         review = create_resp.json().get("review", {})
         assert review.get("go_no_go") in {"go", "no_go"}
+        assert "top_blocker_capability" in review
         assert "north_star" in review
         assert "phase_gate" in review
 
@@ -1105,10 +1239,13 @@ def test_roadmap_phase_status_response_contract():
     body = resp.json()
 
     # 顶层 contract
-    assert set(body.keys()) >= {"snapshot", "north_star", "phase_gate"}
+    assert set(body.keys()) >= {"snapshot", "north_star", "phase_gate", "go_no_go", "go_no_go_reasons", "top_blocker_capability"}
     assert isinstance(body["snapshot"], dict)
     assert isinstance(body["north_star"], dict)
     assert isinstance(body["phase_gate"], dict)
+    assert body["go_no_go"] in {"go", "no_go"}
+    assert isinstance(body["go_no_go_reasons"], list)
+    assert body["top_blocker_capability"] is None or isinstance(body["top_blocker_capability"], str)
 
     # north_star contract
     north = body["north_star"]
@@ -1119,18 +1256,21 @@ def test_roadmap_phase_status_response_contract():
 
     # phase_gate contract
     gate = body["phase_gate"]
-    assert set(gate.keys()) >= {"passed_count", "total_count", "score", "phases"}
+    assert set(gate.keys()) >= {"passed_count", "total_count", "score", "phases", "blocking_capabilities", "top_blocker_capability"}
     assert isinstance(gate["passed_count"], int)
     assert isinstance(gate["total_count"], int)
     assert isinstance(gate["score"], (int, float))
     assert isinstance(gate["phases"], dict)
+    assert isinstance(gate["blocking_capabilities"], list)
+    assert gate["top_blocker_capability"] is None or isinstance(gate["top_blocker_capability"], str)
 
     # 每个 phase 的 contract
     for _, phase_info in gate["phases"].items():
         assert isinstance(phase_info, dict)
-        assert set(phase_info.keys()) >= {"passed", "missing_capabilities", "kpi_results"}
+        assert set(phase_info.keys()) >= {"passed", "missing_capabilities", "missing_capability_details", "kpi_results"}
         assert isinstance(phase_info["passed"], bool)
         assert isinstance(phase_info["missing_capabilities"], list)
+        assert isinstance(phase_info["missing_capability_details"], dict)
         assert isinstance(phase_info["kpi_results"], dict)
 
 
@@ -1206,6 +1346,19 @@ def test_roadmap_monthly_review_list_limit_and_order():
         assert list_resp.status_code == 200
         body = list_resp.json()
         assert body.get("count") == 1
+        assert body.get("meta", {}).get("applied_filters", {}).get("limit") == 1
+        assert body.get("meta", {}).get("applied_filters", {}).get("offset") == 0
+        assert body.get("meta", {}).get("has_more") in {True, False}
+        assert (
+            body.get("meta", {}).get("next_offset") is None
+            or isinstance(body.get("meta", {}).get("next_offset"), int)
+        )
+        assert (
+            body.get("meta", {}).get("prev_offset") is None
+            or isinstance(body.get("meta", {}).get("prev_offset"), int)
+        )
+        assert isinstance(body.get("meta", {}).get("page_window"), dict)
+        assert body.get("meta", {}).get("returned_order") == "newest_first"
         items = body.get("items", [])
         assert isinstance(items, list)
         assert len(items) == 1
@@ -1213,3 +1366,147 @@ def test_roadmap_monthly_review_list_limit_and_order():
         assert "created_at" in items[0]
     finally:
         store.set_setting("roadmap_monthly_reviews", backup)
+
+
+def test_roadmap_monthly_review_list_supports_top_blocker_filter(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(
+        system_api,
+        "list_monthly_reviews_page",
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: (
+            (
+                [{"top_blocker_capability": "hybrid_retrieval"}, {"top_blocker_capability": "hybrid_retrieval"}]
+                if top_blocker_capability == "hybrid_retrieval"
+                else []
+            )[offset : offset + limit],
+            2 if top_blocker_capability == "hybrid_retrieval" else 0,
+        ),
+    )
+    resp = client.get(
+        "/api/system/roadmap/monthly-review",
+        params={"top_blocker_capability": "hybrid_retrieval", "limit": 1},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["items"][0]["top_blocker_capability"] == "hybrid_retrieval"
+    assert body["meta"]["applied_filters"]["top_blocker_capability"] == "hybrid_retrieval"
+    assert body["meta"]["applied_filters"]["offset"] == 0
+    assert body["meta"]["total_before_limit"] == 2
+    assert body["meta"]["has_more"] is True
+    assert body["meta"]["next_offset"] == 1
+    assert body["meta"]["prev_offset"] is None
+    assert body["meta"]["page_window"]["start"] == 0
+    assert body["meta"]["page_window"]["end_exclusive"] == 1
+    assert body["meta"]["returned_order"] == "newest_first"
+
+
+def test_roadmap_monthly_review_list_supports_go_no_go_filter(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(
+        system_api,
+        "list_monthly_reviews_page",
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: (
+            (
+                [
+                    {"go_no_go": "no_go", "top_blocker_capability": "dynamic_batching"},
+                    {"go_no_go": "no_go", "top_blocker_capability": "hybrid_retrieval"},
+                ]
+                if go_no_go == "no_go"
+                else []
+            )[offset : offset + limit],
+            2 if go_no_go == "no_go" else 0,
+        ),
+    )
+    resp = client.get("/api/system/roadmap/monthly-review", params={"go_no_go": "no_go", "limit": 1})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["items"][0]["go_no_go"] == "no_go"
+    assert body["meta"]["applied_filters"]["go_no_go"] == "no_go"
+    assert body["meta"]["applied_filters"]["offset"] == 0
+    assert body["meta"]["total_before_limit"] == 2
+    assert body["meta"]["has_more"] is True
+    assert body["meta"]["next_offset"] == 1
+    assert body["meta"]["prev_offset"] is None
+    assert body["meta"]["page_window"]["start"] == 0
+    assert body["meta"]["page_window"]["end_exclusive"] == 1
+    assert body["meta"]["returned_order"] == "newest_first"
+
+
+def test_roadmap_monthly_review_list_supports_offset_param(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(
+        system_api,
+        "list_monthly_reviews_page",
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: (
+            [
+                {"created_at": "2026-01-03T00:00:00Z"},
+                {"created_at": "2026-01-02T00:00:00Z"},
+                {"created_at": "2026-01-01T00:00:00Z"},
+            ][offset : offset + limit],
+            3,
+        ),
+    )
+    resp = client.get("/api/system/roadmap/monthly-review", params={"limit": 1, "offset": 1})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["items"][0]["created_at"] == "2026-01-02T00:00:00Z"
+    assert body["meta"]["applied_filters"]["offset"] == 1
+    assert body["meta"]["has_more"] is True
+    assert body["meta"]["next_offset"] == 2
+    assert body["meta"]["prev_offset"] == 0
+    assert body["meta"]["page_window"]["start"] == 1
+    assert body["meta"]["page_window"]["end_exclusive"] == 2
+    assert body["meta"]["returned_order"] == "newest_first"
+
+
+def test_roadmap_monthly_review_list_supports_combined_filters(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(
+        system_api,
+        "list_monthly_reviews_page",
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: (
+            (
+                [{"go_no_go": "no_go", "top_blocker_capability": "hybrid_retrieval"}]
+                if (top_blocker_capability == "hybrid_retrieval" and go_no_go == "no_go")
+                else []
+            )[offset : offset + limit],
+            1 if (top_blocker_capability == "hybrid_retrieval" and go_no_go == "no_go") else 0,
+        ),
+    )
+    resp = client.get(
+        "/api/system/roadmap/monthly-review",
+        params={"top_blocker_capability": "hybrid_retrieval", "go_no_go": "no_go", "limit": 5, "offset": 0},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["items"][0]["go_no_go"] == "no_go"
+    assert body["items"][0]["top_blocker_capability"] == "hybrid_retrieval"
+    assert body["meta"]["applied_filters"]["top_blocker_capability"] == "hybrid_retrieval"
+    assert body["meta"]["applied_filters"]["go_no_go"] == "no_go"
+    assert body["meta"]["total_before_limit"] == 1
+    assert body["meta"]["has_more"] is False
+    assert body["meta"]["next_offset"] is None
+
+
+def test_roadmap_monthly_review_list_empty_result_meta_contract(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(
+        system_api,
+        "list_monthly_reviews_page",
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: ([], 0),
+    )
+    resp = client.get("/api/system/roadmap/monthly-review", params={"limit": 10, "offset": 0})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 0
+    assert body["items"] == []
+    assert body["meta"]["total_before_limit"] == 0
+    assert body["meta"]["has_more"] is False
+    assert body["meta"]["next_offset"] is None
+    assert body["meta"]["prev_offset"] is None
+    assert body["meta"]["page_window"]["start"] == 0
+    assert body["meta"]["page_window"]["end_exclusive"] == 0

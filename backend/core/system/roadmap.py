@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import json
 from typing import Any, Dict, List, Tuple
 
 from core.security.audit_service import query_audit_logs
@@ -196,6 +197,24 @@ def build_roadmap_snapshot(store: SystemSettingsStore | None = None) -> Dict[str
     }
 
 
+def _load_capabilities_from_settings(store: SystemSettingsStore) -> Dict[str, bool]:
+    raw = store.get_setting("roadmapCapabilitiesJson", "{}")
+    if isinstance(raw, dict):
+        return {str(k): bool(v) for k, v in raw.items()}
+    if not isinstance(raw, str):
+        return {}
+    text = raw.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(k): bool(v) for k, v in parsed.items()}
+
+
 def _check_kpi_threshold(metric_name: str, current_value: float, threshold_value: float) -> Tuple[bool, str]:
     if metric_name.endswith("_max"):
         ok = current_value <= threshold_value
@@ -253,20 +272,117 @@ def _evaluate_gate_kpis(snapshot: Dict[str, Any], required_kpis: Dict[str, Any])
 def evaluate_phase_gates(snapshot: Dict[str, Any], gates: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     capabilities_raw = snapshot.get("capabilities") or {}
     capabilities = capabilities_raw if isinstance(capabilities_raw, dict) else {}
+    capability_details_raw = snapshot.get("capability_details") or {}
+    capability_details = capability_details_raw if isinstance(capability_details_raw, dict) else {}
     phase_status: Dict[str, Dict[str, Any]] = {}
 
     for phase, gate in gates.items():
         required_capabilities = list(gate.get("required_capabilities") or [])
         required_kpis = gate.get("required_kpis") or {}
         missing_capabilities = [name for name in required_capabilities if not bool(capabilities.get(name))]
+        missing_capability_details = {
+            name: capability_details.get(name)
+            for name in missing_capabilities
+            if name in capability_details
+        }
         kpi_ok_count, kpi_results = _evaluate_gate_kpis(snapshot, required_kpis)
         gate_passed = (not missing_capabilities) and (kpi_ok_count == len(required_kpis))
         phase_status[phase] = {
             "passed": gate_passed,
             "missing_capabilities": missing_capabilities,
+            "missing_capability_details": missing_capability_details,
             "kpi_results": kpi_results,
         }
     return phase_status
+
+
+def build_blocking_capabilities(phase_status: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rank: Dict[str, Dict[str, Any]] = {}
+    for phase_name, info in (phase_status or {}).items():
+        missing = info.get("missing_capabilities") or []
+        detail_map = info.get("missing_capability_details") or {}
+        for capability in missing:
+            key = str(capability)
+            item = rank.setdefault(
+                key,
+                {
+                    "capability": key,
+                    "blocked_phases": [],
+                    "phase_count": 0,
+                    "detail": detail_map.get(key),
+                },
+            )
+            item["blocked_phases"].append(phase_name)
+            item["phase_count"] = int(item.get("phase_count") or 0) + 1
+            if item.get("detail") is None and key in detail_map:
+                item["detail"] = detail_map.get(key)
+    return sorted(
+        rank.values(),
+        key=lambda x: (-int(x.get("phase_count") or 0), str(x.get("capability") or "")),
+    )
+
+
+def build_go_no_go_reasons(
+    *,
+    go_no_go: str,
+    north_star: RoadmapEvaluation,
+    blocking_capabilities: List[Dict[str, Any]],
+    max_items: int = 3,
+) -> List[Dict[str, Any]]:
+    limit = max(1, int(max_items))
+    if str(go_no_go).lower() == "go":
+        return [
+            {
+                "type": "summary",
+                "message": "north_star_and_phase_gates_passed",
+            }
+        ]
+
+    reasons: List[Dict[str, Any]] = []
+    for item in blocking_capabilities[:limit]:
+        reasons.append(
+            {
+                "type": "capability_blocker",
+                "capability": str(item.get("capability") or ""),
+                "phase_count": int(item.get("phase_count") or 0),
+                "blocked_phases": list(item.get("blocked_phases") or []),
+            }
+        )
+
+    if (not north_star.passed) and len(reasons) < limit:
+        reasons.append(
+            {
+                "type": "north_star",
+                "message": "north_star_kpis_not_fully_met",
+                "score": round(float(north_star.score), 4),
+            }
+        )
+
+    return reasons[:limit]
+
+
+def build_go_no_go_summary(
+    *,
+    north_star: RoadmapEvaluation,
+    gate_score: float,
+    blocking_capabilities: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    go_no_go = "go" if north_star.passed and float(gate_score) >= 0.75 else "no_go"
+    go_no_go_reasons = build_go_no_go_reasons(
+        go_no_go=go_no_go,
+        north_star=north_star,
+        blocking_capabilities=blocking_capabilities,
+    )
+    top_blocker_capability = (
+        str(blocking_capabilities[0].get("capability") or "")
+        if blocking_capabilities
+        else None
+    )
+    return {
+        "go_no_go": go_no_go,
+        "go_no_go_reasons": go_no_go_reasons,
+        "top_blocker_capability": top_blocker_capability,
+    }
 
 
 def _count_recent_audit_entries(hours: int = 720) -> int:
@@ -276,9 +392,20 @@ def _count_recent_audit_entries(hours: int = 720) -> int:
         return total if isinstance(total, int) else len(rows)
 
 
-def create_monthly_review() -> Dict[str, Any]:
+def create_monthly_review(
+    capabilities: Dict[str, bool] | None = None,
+    capability_details: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     store = get_system_settings_store()
     snapshot = build_roadmap_snapshot(store)
+    merged_capabilities = (
+        {str(k): bool(v) for k, v in capabilities.items()}
+        if isinstance(capabilities, dict)
+        else _load_capabilities_from_settings(store)
+    )
+    snapshot["capabilities"] = merged_capabilities
+    if isinstance(capability_details, dict) and capability_details:
+        snapshot["capability_details"] = capability_details
     kpis = get_roadmap_kpis(store)
     gates = get_phase_gates(store)
 
@@ -286,6 +413,12 @@ def create_monthly_review() -> Dict[str, Any]:
     phase_status = evaluate_phase_gates(snapshot, gates)
     phase_passed_count = sum(1 for item in phase_status.values() if item.get("passed"))
     gate_score = phase_passed_count / len(phase_status) if phase_status else 0.0
+    blocking_capabilities = build_blocking_capabilities(phase_status)
+    go_no_go_summary = build_go_no_go_summary(
+        north_star=north_star,
+        gate_score=gate_score,
+        blocking_capabilities=blocking_capabilities,
+    )
     audit_total = _count_recent_audit_entries()
 
     review = {
@@ -300,8 +433,11 @@ def create_monthly_review() -> Dict[str, Any]:
             "score": round(gate_score, 4),
             "passed": gate_score >= 0.75,
             "phases": phase_status,
+            "blocking_capabilities": blocking_capabilities,
         },
-        "go_no_go": "go" if north_star.passed and gate_score >= 0.75 else "no_go",
+        "go_no_go": go_no_go_summary["go_no_go"],
+        "go_no_go_reasons": go_no_go_summary["go_no_go_reasons"],
+        "top_blocker_capability": go_no_go_summary["top_blocker_capability"],
         "audit_entry_count": audit_total,
     }
 
@@ -313,10 +449,48 @@ def create_monthly_review() -> Dict[str, Any]:
     return review
 
 
-def list_monthly_reviews(limit: int = 12) -> List[Dict[str, Any]]:
+def list_monthly_reviews_page(
+    limit: int = 12,
+    top_blocker_capability: str | None = None,
+    go_no_go: str | None = None,
+    offset: int = 0,
+) -> Tuple[List[Dict[str, Any]], int]:
     store = get_system_settings_store()
     reviews = store.get_setting("roadmap_monthly_reviews", [])
     if not isinstance(reviews, list):
-        return []
+        return [], 0
     size = max(1, min(36, int(limit)))
-    return list(reviews)[-size:][::-1]
+    filtered = list(reviews)
+    blocker = (top_blocker_capability or "").strip()
+    if blocker:
+        filtered = [
+            item
+            for item in filtered
+            if isinstance(item, dict) and str(item.get("top_blocker_capability") or "") == blocker
+        ]
+    go_no_go_filter = (go_no_go or "").strip().lower()
+    if go_no_go_filter in {"go", "no_go"}:
+        filtered = [
+            item
+            for item in filtered
+            if isinstance(item, dict) and str(item.get("go_no_go") or "").strip().lower() == go_no_go_filter
+        ]
+    total = len(filtered)
+    ordered = filtered[::-1]
+    start = max(0, int(offset))
+    return ordered[start : start + size], total
+
+
+def list_monthly_reviews(
+    limit: int = 12,
+    top_blocker_capability: str | None = None,
+    go_no_go: str | None = None,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    items, _ = list_monthly_reviews_page(
+        limit=limit,
+        top_blocker_capability=top_blocker_capability,
+        go_no_go=go_no_go,
+        offset=offset,
+    )
+    return items

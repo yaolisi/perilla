@@ -58,6 +58,8 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
     _assert(isinstance(body.get("snapshot"), dict), "phase status missing snapshot")
     _assert(isinstance(body.get("north_star"), dict), "phase status missing north_star")
     _assert(isinstance(body.get("phase_gate"), dict), "phase status missing phase_gate")
+    _assert(body.get("go_no_go") in {"go", "no_go"}, "phase status go_no_go invalid")
+    _assert(isinstance(body.get("go_no_go_reasons"), list), "phase status go_no_go_reasons must be list")
 
     # 5) 创建月度复盘
     review_create = _request("POST", base_url, "/api/system/roadmap/monthly-review", api_key)
@@ -68,7 +70,22 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
     # 6) 查询月度复盘列表
     review_list = _request("GET", base_url, "/api/system/roadmap/monthly-review?limit=3", api_key)
     _assert(review_list["status_code"] == 200, "monthly review list should be 200")
-    _assert(isinstance(review_list["body"].get("items"), list), "monthly review list items must be list")
+    list_body = review_list["body"]
+    _assert(isinstance(list_body.get("items"), list), "monthly review list items must be list")
+    _assert(isinstance(list_body.get("meta"), dict), "monthly review list meta must be object")
+    meta = list_body.get("meta", {})
+    _assert(isinstance(meta.get("applied_filters"), dict), "monthly review list filters invalid")
+    _assert(meta.get("returned_order") == "newest_first", "monthly review list order invalid")
+    _assert(isinstance(meta.get("total_before_limit"), int), "monthly review list total_before_limit invalid")
+    _assert(isinstance(meta.get("has_more"), bool), "monthly review list has_more invalid")
+    _assert(meta.get("next_offset") is None or isinstance(meta.get("next_offset"), int), "monthly review list next_offset invalid")
+    _assert(meta.get("prev_offset") is None or isinstance(meta.get("prev_offset"), int), "monthly review list prev_offset invalid")
+    _assert(isinstance(meta.get("page_window"), dict), "monthly review list page_window invalid")
+    _assert(isinstance(meta.get("page_window", {}).get("start"), int), "monthly review list page_window.start invalid")
+    _assert(
+        isinstance(meta.get("page_window", {}).get("end_exclusive"), int),
+        "monthly review list page_window.end_exclusive invalid",
+    )
 
     print(
         json.dumps(

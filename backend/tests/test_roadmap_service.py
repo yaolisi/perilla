@@ -51,6 +51,13 @@ def test_evaluate_north_star_pass_and_fail() -> None:
 def test_evaluate_phase_gates_detects_missing_capabilities_and_kpi() -> None:
     snapshot = {
         "capabilities": {"fine_grained_permissions": True},
+        "capability_details": {
+            "audit_traceability": {
+                "source": "manual",
+                "enabled": False,
+                "signals": {"reason": "not configured"},
+            }
+        },
         "observability_coverage": 0.8,
         "critical_security_incidents": 0,
     }
@@ -64,6 +71,7 @@ def test_evaluate_phase_gates_detects_missing_capabilities_and_kpi() -> None:
     phase = result["phase0_foundation"]
     assert phase["passed"] is False
     assert "audit_traceability" in phase["missing_capabilities"]
+    assert phase["missing_capability_details"]["audit_traceability"]["enabled"] is False
     assert phase["kpi_results"]["observability_coverage"]["passed"] is False
 
 
@@ -111,10 +119,239 @@ def test_create_monthly_review_persists_history(monkeypatch) -> None:
     )
     monkeypatch.setattr(roadmap, "_count_recent_audit_entries", lambda hours=720: 42)
 
-    review = roadmap.create_monthly_review()
+    capabilities = dict.fromkeys(
+        [
+            "fine_grained_permissions",
+            "audit_traceability",
+            "observability_dashboard",
+            "rag_eval_baseline",
+            "dynamic_batching",
+            "hybrid_retrieval",
+            "function_calling_orchestration",
+            "agent_role_collaboration",
+            "multi_hop_retrieval",
+            "kg_augmented_rag",
+            "active_learning_reviewed_update",
+            "anomaly_detection",
+            "cluster_scaling",
+            "model_version_governance",
+            "sso_integration",
+            "multimodal_pilot",
+        ],
+        True,
+    )
+    review = roadmap.create_monthly_review(
+        capabilities=capabilities,
+        capability_details={"dynamic_batching": {"enabled": True, "source": "runtime_settings", "signals": {}}},
+    )
     assert review["go_no_go"] == "go"
     assert review["audit_entry_count"] == 42
+    assert review["snapshot"]["capabilities"]["dynamic_batching"] is True
+    assert review["snapshot"]["capability_details"]["dynamic_batching"]["enabled"] is True
+    assert isinstance(review["phase_gate"]["blocking_capabilities"], list)
+    assert review["phase_gate"]["blocking_capabilities"] == []
+    assert review["go_no_go_reasons"][0]["type"] == "summary"
+    assert review["top_blocker_capability"] is None
 
     history = roadmap.list_monthly_reviews(limit=5)
     assert len(history) == 1
     assert history[0]["go_no_go"] == "go"
+
+
+def test_build_blocking_capabilities_aggregates_and_sorts() -> None:
+    phase_status = {
+        "phase1_core": {
+            "passed": False,
+            "missing_capabilities": ["hybrid_retrieval", "dynamic_batching"],
+            "missing_capability_details": {
+                "hybrid_retrieval": {"enabled": False, "source": "rag_plugin_manifest", "signals": {}},
+                "dynamic_batching": {"enabled": False, "source": "runtime_settings", "signals": {}},
+            },
+            "kpi_results": {},
+        },
+        "phase2_advanced": {
+            "passed": False,
+            "missing_capabilities": ["hybrid_retrieval"],
+            "missing_capability_details": {
+                "hybrid_retrieval": {"enabled": False, "source": "rag_plugin_manifest", "signals": {}},
+            },
+            "kpi_results": {},
+        },
+    }
+    items = roadmap.build_blocking_capabilities(phase_status)
+    assert len(items) == 2
+    assert items[0]["capability"] == "hybrid_retrieval"
+    assert items[0]["phase_count"] == 2
+    assert set(items[0]["blocked_phases"]) == {"phase1_core", "phase2_advanced"}
+
+
+def test_build_go_no_go_reasons_for_no_go_prefers_blockers() -> None:
+    reasons = roadmap.build_go_no_go_reasons(
+        go_no_go="no_go",
+        north_star=roadmap.RoadmapEvaluation(score=0.6, passed=False, reasons=["kpi gap"]),
+        blocking_capabilities=[
+            {"capability": "hybrid_retrieval", "phase_count": 2, "blocked_phases": ["phase1_core", "phase2_advanced"]},
+            {"capability": "dynamic_batching", "phase_count": 1, "blocked_phases": ["phase1_core"]},
+        ],
+        max_items=3,
+    )
+    assert reasons[0]["type"] == "capability_blocker"
+    assert reasons[0]["capability"] == "hybrid_retrieval"
+    assert any(item.get("type") == "north_star" for item in reasons)
+
+
+def test_build_go_no_go_summary_for_go_and_no_go() -> None:
+    go_summary = roadmap.build_go_no_go_summary(
+        north_star=roadmap.RoadmapEvaluation(score=1.0, passed=True, reasons=[]),
+        gate_score=0.8,
+        blocking_capabilities=[],
+    )
+    assert go_summary["go_no_go"] == "go"
+    assert go_summary["top_blocker_capability"] is None
+    assert go_summary["go_no_go_reasons"][0]["type"] == "summary"
+
+    no_go_summary = roadmap.build_go_no_go_summary(
+        north_star=roadmap.RoadmapEvaluation(score=0.5, passed=False, reasons=["kpi gap"]),
+        gate_score=0.5,
+        blocking_capabilities=[{"capability": "hybrid_retrieval", "phase_count": 2, "blocked_phases": ["phase1_core"]}],
+    )
+    assert no_go_summary["go_no_go"] == "no_go"
+    assert no_go_summary["top_blocker_capability"] == "hybrid_retrieval"
+    assert no_go_summary["go_no_go_reasons"][0]["type"] == "capability_blocker"
+
+
+def test_create_monthly_review_sets_top_blocker_capability(monkeypatch) -> None:
+    store = _FakeStore()
+    monkeypatch.setattr(roadmap, "get_system_settings_store", lambda: store)
+    monkeypatch.setattr(
+        roadmap,
+        "build_roadmap_snapshot",
+        lambda _store=None: {
+            "online_error_rate": 0.2,
+            "p99_latency_ms": 9000,
+            "rag_top5_recall": 0.3,
+            "answer_usefulness": 0.3,
+            "unit_cost_reduction": 0.0,
+            "critical_security_incidents": 2,
+            "observability_coverage": 0.1,
+            "throughput_gain": 1.0,
+        },
+    )
+    monkeypatch.setattr(roadmap, "_count_recent_audit_entries", lambda hours=720: 1)
+    monkeypatch.setattr(
+        roadmap,
+        "get_phase_gates",
+        lambda _store=None: {
+            "phase1_core": {
+                "required_capabilities": ["hybrid_retrieval", "dynamic_batching"],
+                "required_kpis": {"throughput_gain": 2.5},
+            }
+        },
+    )
+    review = roadmap.create_monthly_review(
+        capabilities={"dynamic_batching": False, "hybrid_retrieval": False},
+        capability_details={
+            "dynamic_batching": {"enabled": False, "source": "runtime_settings", "signals": {}},
+            "hybrid_retrieval": {"enabled": False, "source": "rag_plugin_manifest", "signals": {}},
+        },
+    )
+    assert review["go_no_go"] == "no_go"
+    assert review["top_blocker_capability"] in {"dynamic_batching", "hybrid_retrieval"}
+
+
+def test_list_monthly_reviews_filter_by_top_blocker(monkeypatch) -> None:
+    store = _FakeStore()
+    store.set_setting(
+        "roadmap_monthly_reviews",
+        [
+            {"created_at": "2026-01-01T00:00:00Z", "top_blocker_capability": "hybrid_retrieval"},
+            {"created_at": "2026-01-02T00:00:00Z", "top_blocker_capability": "dynamic_batching"},
+            {"created_at": "2026-01-03T00:00:00Z", "top_blocker_capability": "hybrid_retrieval"},
+        ],
+    )
+    monkeypatch.setattr(roadmap, "get_system_settings_store", lambda: store)
+
+    items = roadmap.list_monthly_reviews(limit=10, top_blocker_capability="hybrid_retrieval")
+    assert len(items) == 2
+    assert items[0]["created_at"] == "2026-01-03T00:00:00Z"
+    assert items[1]["created_at"] == "2026-01-01T00:00:00Z"
+
+
+def test_list_monthly_reviews_filter_by_go_no_go(monkeypatch) -> None:
+    store = _FakeStore()
+    store.set_setting(
+        "roadmap_monthly_reviews",
+        [
+            {"created_at": "2026-01-01T00:00:00Z", "go_no_go": "go", "top_blocker_capability": None},
+            {"created_at": "2026-01-02T00:00:00Z", "go_no_go": "no_go", "top_blocker_capability": "dynamic_batching"},
+            {"created_at": "2026-01-03T00:00:00Z", "go_no_go": "no_go", "top_blocker_capability": "hybrid_retrieval"},
+        ],
+    )
+    monkeypatch.setattr(roadmap, "get_system_settings_store", lambda: store)
+
+    items = roadmap.list_monthly_reviews(limit=10, go_no_go="no_go")
+    assert len(items) == 2
+    assert items[0]["created_at"] == "2026-01-03T00:00:00Z"
+    assert items[1]["created_at"] == "2026-01-02T00:00:00Z"
+
+
+def test_list_monthly_reviews_supports_offset_pagination(monkeypatch) -> None:
+    store = _FakeStore()
+    store.set_setting(
+        "roadmap_monthly_reviews",
+        [
+            {"created_at": "2026-01-01T00:00:00Z", "go_no_go": "go"},
+            {"created_at": "2026-01-02T00:00:00Z", "go_no_go": "go"},
+            {"created_at": "2026-01-03T00:00:00Z", "go_no_go": "go"},
+        ],
+    )
+    monkeypatch.setattr(roadmap, "get_system_settings_store", lambda: store)
+
+    page1 = roadmap.list_monthly_reviews(limit=1, offset=0)
+    page2 = roadmap.list_monthly_reviews(limit=1, offset=1)
+    assert page1[0]["created_at"] == "2026-01-03T00:00:00Z"
+    assert page2[0]["created_at"] == "2026-01-02T00:00:00Z"
+
+
+def test_list_monthly_reviews_page_returns_items_and_total(monkeypatch) -> None:
+    store = _FakeStore()
+    store.set_setting(
+        "roadmap_monthly_reviews",
+        [
+            {"created_at": "2026-01-01T00:00:00Z", "go_no_go": "go", "top_blocker_capability": None},
+            {"created_at": "2026-01-02T00:00:00Z", "go_no_go": "no_go", "top_blocker_capability": "dynamic_batching"},
+            {"created_at": "2026-01-03T00:00:00Z", "go_no_go": "no_go", "top_blocker_capability": "hybrid_retrieval"},
+        ],
+    )
+    monkeypatch.setattr(roadmap, "get_system_settings_store", lambda: store)
+
+    items, total = roadmap.list_monthly_reviews_page(limit=1, offset=0, go_no_go="no_go")
+    assert total == 2
+    assert len(items) == 1
+    assert items[0]["created_at"] == "2026-01-03T00:00:00Z"
+
+
+def test_list_monthly_reviews_page_supports_combined_filters(monkeypatch) -> None:
+    store = _FakeStore()
+    store.set_setting(
+        "roadmap_monthly_reviews",
+        [
+            {"created_at": "2026-01-01T00:00:00Z", "go_no_go": "no_go", "top_blocker_capability": "hybrid_retrieval"},
+            {"created_at": "2026-01-02T00:00:00Z", "go_no_go": "go", "top_blocker_capability": None},
+            {"created_at": "2026-01-03T00:00:00Z", "go_no_go": "no_go", "top_blocker_capability": "dynamic_batching"},
+            {"created_at": "2026-01-04T00:00:00Z", "go_no_go": "no_go", "top_blocker_capability": "hybrid_retrieval"},
+        ],
+    )
+    monkeypatch.setattr(roadmap, "get_system_settings_store", lambda: store)
+
+    items, total = roadmap.list_monthly_reviews_page(
+        limit=10,
+        offset=0,
+        go_no_go="no_go",
+        top_blocker_capability="hybrid_retrieval",
+    )
+    assert total == 2
+    assert [item["created_at"] for item in items] == [
+        "2026-01-04T00:00:00Z",
+        "2026-01-01T00:00:00Z",
+    ]
