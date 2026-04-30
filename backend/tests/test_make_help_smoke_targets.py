@@ -114,6 +114,14 @@ def test_make_help_mentions_roadmap_quality_metrics_read_api() -> None:
     )
 
 
+def test_make_help_mentions_roadmap_kpis_api() -> None:
+    output = _make_help_output()
+    assert (
+        "API GET/POST /api/system/roadmap/kpis (platform admin): merged north-star KPI thresholds"
+        in output
+    )
+
+
 def test_make_help_mentions_roadmap_log_prefix_semantics() -> None:
     output = _make_help_output()
     assert "Logs prefixed with [roadmap-gate] for CI grep/filter" in output
