@@ -99,6 +99,24 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
         isinstance(meta.get("page_window", {}).get("end_exclusive"), int),
         "monthly review list page_window.end_exclusive invalid",
     )
+    # 7) 查询月度复盘列表（就绪度过滤）
+    readiness_filter_list = _request(
+        "GET",
+        base_url,
+        "/api/system/roadmap/monthly-review?limit=3&lowest_readiness_phase=phase2_advanced&readiness_below_threshold=true",
+        api_key,
+    )
+    _assert(readiness_filter_list["status_code"] == 200, "monthly review readiness filter list should be 200")
+    readiness_meta = (readiness_filter_list["body"] or {}).get("meta", {})
+    readiness_filters = readiness_meta.get("applied_filters", {})
+    _assert(
+        readiness_filters.get("lowest_readiness_phase") == "phase2_advanced",
+        "monthly review readiness filter lowest_readiness_phase invalid",
+    )
+    _assert(
+        readiness_filters.get("readiness_below_threshold") is True,
+        "monthly review readiness filter readiness_below_threshold invalid",
+    )
 
     print(
         json.dumps(

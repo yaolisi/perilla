@@ -60,6 +60,28 @@ def test_run_smoke_happy_path(monkeypatch):
                 },
             },
         ),
+        _FakeResponse(
+            200,
+            {
+                "items": [],
+                "meta": {
+                    "applied_filters": {
+                        "limit": 3,
+                        "offset": 0,
+                        "top_blocker_capability": None,
+                        "go_no_go": None,
+                        "lowest_readiness_phase": "phase2_advanced",
+                        "readiness_below_threshold": True,
+                    },
+                    "total_before_limit": 0,
+                    "has_more": False,
+                    "next_offset": None,
+                    "prev_offset": None,
+                    "page_window": {"start": 0, "end_exclusive": 0},
+                    "returned_order": "newest_first",
+                },
+            },
+        ),
     ]
 
     def _fake_request(method, url, headers=None, json=None, timeout=20):  # noqa: ANN001
