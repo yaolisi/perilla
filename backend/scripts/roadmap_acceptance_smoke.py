@@ -23,7 +23,47 @@ def _request(method: str, base_url: str, path: str, api_key: str | None, payload
     return {"status_code": resp.status_code, "body": resp.json()}
 
 
-def run_smoke(base_url: str, api_key: str | None) -> None:
+def _validate_go_no_go_reasons(items: Any, error_prefix: str) -> None:
+    _assert(isinstance(items, list), f"{error_prefix} go_no_go_reasons must be list")
+    for reason in items or []:
+        _assert(isinstance(reason, dict), f"{error_prefix} go_no_go_reasons item must be object")
+        _assert(
+            str(reason.get("type") or "") in {"summary", "capability_blocker", "north_star", "anomaly_risk", "readiness_risk"},
+            f"{error_prefix} go_no_go_reason.type invalid",
+        )
+
+
+def _apply_release_gate(
+    *,
+    review: Dict[str, Any],
+    require_go: bool,
+    min_readiness_avg: float | None,
+    max_lowest_readiness_score: float | None,
+) -> None:
+    if require_go:
+        _assert(review.get("go_no_go") == "go", "release gate failed: latest_go_no_go is not go")
+    readiness_summary = (review.get("phase_gate") or {}).get("readiness_summary") or {}
+    avg_score = readiness_summary.get("average_score")
+    lowest_score = readiness_summary.get("lowest_score")
+    if min_readiness_avg is not None:
+        _assert(isinstance(avg_score, (int, float)), "release gate failed: readiness average score missing")
+        _assert(float(avg_score) >= float(min_readiness_avg), "release gate failed: readiness average score below threshold")
+    if max_lowest_readiness_score is not None:
+        _assert(isinstance(lowest_score, (int, float)), "release gate failed: readiness lowest score missing")
+        _assert(
+            float(lowest_score) <= float(max_lowest_readiness_score),
+            "release gate failed: readiness lowest score exceeds threshold",
+        )
+
+
+def run_smoke(
+    base_url: str,
+    api_key: str | None,
+    *,
+    require_go: bool = False,
+    min_readiness_avg: float | None = None,
+    max_lowest_readiness_score: float | None = None,
+) -> None:
     # 1) 读取 KPI
     kpi_get = _request("GET", base_url, "/api/system/roadmap/kpis", api_key)
     _assert(kpi_get["status_code"] == 200, "roadmap kpis read should be 200")
@@ -63,13 +103,7 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
         "phase status missing readiness_summary",
     )
     _assert(body.get("go_no_go") in {"go", "no_go"}, "phase status go_no_go invalid")
-    _assert(isinstance(body.get("go_no_go_reasons"), list), "phase status go_no_go_reasons must be list")
-    for reason in body.get("go_no_go_reasons") or []:
-        _assert(isinstance(reason, dict), "phase status go_no_go_reasons item must be object")
-        _assert(
-            str(reason.get("type") or "") in {"summary", "capability_blocker", "north_star", "anomaly_risk", "readiness_risk"},
-            "phase status go_no_go_reason.type invalid",
-        )
+    _validate_go_no_go_reasons(body.get("go_no_go_reasons"), "phase status")
 
     # 5) 创建月度复盘
     review_create = _request("POST", base_url, "/api/system/roadmap/monthly-review", api_key)
@@ -80,13 +114,13 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
         isinstance((review.get("phase_gate") or {}).get("readiness_summary"), dict),
         "monthly review missing readiness_summary",
     )
-    _assert(isinstance(review.get("go_no_go_reasons"), list), "monthly review go_no_go_reasons must be list")
-    for reason in review.get("go_no_go_reasons") or []:
-        _assert(isinstance(reason, dict), "monthly review go_no_go_reasons item must be object")
-        _assert(
-            str(reason.get("type") or "") in {"summary", "capability_blocker", "north_star", "anomaly_risk", "readiness_risk"},
-            "monthly review go_no_go_reason.type invalid",
-        )
+    _validate_go_no_go_reasons(review.get("go_no_go_reasons"), "monthly review")
+    _apply_release_gate(
+        review=review,
+        require_go=require_go,
+        min_readiness_avg=min_readiness_avg,
+        max_lowest_readiness_score=max_lowest_readiness_score,
+    )
 
     # 6) 查询月度复盘列表
     review_list = _request("GET", base_url, "/api/system/roadmap/monthly-review?limit=3", api_key)
@@ -145,10 +179,29 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Roadmap API acceptance smoke script")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Backend base URL")
     parser.add_argument("--api-key", default=None, help="Optional X-Api-Key value")
+    parser.add_argument("--require-go", action="store_true", help="Fail if latest monthly review go_no_go != go")
+    parser.add_argument(
+        "--min-readiness-avg",
+        type=float,
+        default=None,
+        help="Optional minimum readiness_summary.average_score gate (0~1).",
+    )
+    parser.add_argument(
+        "--max-lowest-readiness-score",
+        type=float,
+        default=None,
+        help="Optional maximum readiness_summary.lowest_score gate (0~1).",
+    )
     args = parser.parse_args()
 
     try:
-        run_smoke(args.base_url, args.api_key)
+        run_smoke(
+            args.base_url,
+            args.api_key,
+            require_go=bool(args.require_go),
+            min_readiness_avg=args.min_readiness_avg,
+            max_lowest_readiness_score=args.max_lowest_readiness_score,
+        )
         return 0
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)

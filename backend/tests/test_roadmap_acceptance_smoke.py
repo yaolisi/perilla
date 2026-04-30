@@ -104,3 +104,64 @@ def test_run_smoke_raises_on_server_error(monkeypatch):
         assert False, "expected run_smoke to raise"
     except AssertionError as exc:
         assert "failed with 500" in str(exc)
+
+
+def test_run_smoke_strict_gate_fails_when_no_go(monkeypatch):
+    seq = [
+        _FakeResponse(200, {"kpis": {"availability_min": 0.99}}),
+        _FakeResponse(200, {"success": True, "kpis": {"availability_min": 0.99}}),
+        _FakeResponse(200, {"success": True, "quality_metrics": {"rag_top5_recall": 0.88}}),
+        _FakeResponse(
+            200,
+            {
+                "snapshot": {},
+                "north_star": {"score": 1.0},
+                "phase_gate": {"score": 1.0, "readiness_summary": {"average_score": 0.91, "lowest_phase": "phase2_advanced"}},
+                "go_no_go": "go",
+                "go_no_go_reasons": [{"type": "summary", "message": "north_star_and_phase_gates_passed"}],
+            },
+        ),
+        _FakeResponse(
+            200,
+            {
+                "review": {
+                    "go_no_go": "no_go",
+                    "phase_gate": {"readiness_summary": {"average_score": 0.68, "lowest_phase": "phase2_advanced", "lowest_score": 0.62}},
+                    "go_no_go_reasons": [{"type": "readiness_risk", "message": "phase_readiness_below_threshold"}],
+                }
+            },
+        ),
+        _FakeResponse(
+            200,
+            {
+                "items": [],
+                "meta": {
+                    "applied_filters": {
+                        "limit": 3,
+                        "offset": 0,
+                        "top_blocker_capability": None,
+                        "go_no_go": None,
+                        "lowest_readiness_phase": "phase2_advanced",
+                        "readiness_below_threshold": True,
+                    },
+                    "total_before_limit": 0,
+                    "has_more": False,
+                    "next_offset": None,
+                    "prev_offset": None,
+                    "page_window": {"start": 0, "end_exclusive": 0},
+                    "returned_order": "newest_first",
+                },
+            },
+        ),
+    ]
+
+    def _fake_request(method, url, headers=None, json=None, timeout=20):  # noqa: ANN001
+        _ = (method, url, headers, json, timeout)
+        return seq.pop(0)
+
+    monkeypatch.setattr(smoke.requests, "request", _fake_request)
+    try:
+        smoke.run_smoke("http://127.0.0.1:8000", api_key=None, require_go=True, min_readiness_avg=0.8)
+        assert False, "expected strict gate to fail"
+    except AssertionError as exc:
+        assert "release gate failed" in str(exc)
