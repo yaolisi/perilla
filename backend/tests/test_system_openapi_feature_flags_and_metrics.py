@@ -76,6 +76,27 @@ def test_observability_summary_and_runtime_metrics_http_smoke() -> None:
     assert "summary" in data and "by_model" in data and "priority_slo_panel" in data
 
 
+def test_openapi_engine_browse_and_inference_cache_named_schemas() -> None:
+    client = _build_client()
+    spec = client.get("/openapi.json").json()
+    paths = spec.get("paths") or {}
+
+    eng = paths["/api/system/engine/reload"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert eng == "#/components/schemas/EngineReloadResponse"
+
+    br = paths["/api/system/browse-directory"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert br == "#/components/schemas/BrowseDirectoryResponse"
+
+    stats_ref = paths["/api/system/inference/cache/stats"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert stats_ref == "#/components/schemas/InferenceCacheStatsResponse"
+
+    ch_ref = paths["/api/system/inference/cache/clear/challenge"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert ch_ref == "#/components/schemas/InferenceCacheClearChallengeResponse"
+
+    clr_ref = paths["/api/system/inference/cache/clear"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert clr_ref == "#/components/schemas/InferenceCacheClearResultResponse"
+
+
 def test_openapi_storage_readiness_and_queue_summary() -> None:
     client = _build_client()
     spec = client.get("/openapi.json").json()

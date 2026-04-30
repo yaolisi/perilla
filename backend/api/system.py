@@ -692,6 +692,67 @@ class QueueSummaryResponse(BaseModel):
     total_load: int
 
 
+class EngineReloadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+
+
+class BrowseDirectoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Optional[str] = None
+
+
+class InferenceCacheChallengeMetricsBlock(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    issued_total: int = 0
+    validate_success_total: int = 0
+    validate_failed_total: int = 0
+    validate_failed_missing_total: int = 0
+    validate_failed_actor_mismatch_total: int = 0
+    validate_failed_code_mismatch_total: int = 0
+    rate_limited_total: int = 0
+
+
+class InferenceCacheStatsResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    inference_speed: Optional[float] = None
+    average_speed: Optional[float] = None
+    total_tokens: int = 0
+    total_inferences: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_hit_rate: float = 0.0
+    cache_saved_latency_ms: float = 0.0
+    last_timestamp: Optional[float] = None
+    window_size: int = 0
+    challenge_metrics: InferenceCacheChallengeMetricsBlock
+
+
+class InferenceCacheClearChallengeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_id: str
+    challenge_code: str
+    expires_in_seconds: int
+
+
+class InferenceCacheClearResultResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    cache_kind: str
+    prefix: str
+    model_alias: Optional[str] = None
+    resolved_model: Optional[str] = None
+    memory_deleted: int
+    redis_deleted: int
+    total_deleted: int
+
+
 class ApiKeyRevokeBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1428,12 +1489,12 @@ async def event_bus_dlq_replay(
     return {"success": True, **result}
 
 @router.post("/engine/reload")
-async def reload_engine(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
+async def reload_engine(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> EngineReloadResponse:
     """重载推理引擎"""
     logger.info("[System] Reloading inference engine...")
     # 这里可以添加实际的重载逻辑，比如重启 Ollama 服务或重置 llama.cpp 实例
     await asyncio.sleep(1.5)
-    return {"success": True}
+    return EngineReloadResponse(success=True)
 
 
 @router.get("/security/api-keys/revoked")
@@ -1467,7 +1528,7 @@ async def get_inference_cache_stats(
     request: Request,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> InferenceCacheStatsResponse:
     gateway = get_inference_gateway()
     stats = gateway.get_cache_stats()
     stats = {
@@ -1483,7 +1544,7 @@ async def get_inference_cache_stats(
         cache_misses=stats.get("cache_misses"),
         cache_hit_rate=stats.get("cache_hit_rate"),
     )
-    return stats
+    return InferenceCacheStatsResponse.model_validate(stats)
 
 
 @router.post("/inference/cache/clear/challenge")
@@ -1491,7 +1552,7 @@ async def create_inference_cache_clear_challenge(
     request: Request,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> InferenceCacheClearChallengeResponse:
     actor = getattr(request.state, "user_id", None)
     allowed, retry_after = await _consume_cache_clear_challenge_rate(actor)
     if not allowed:
@@ -1505,11 +1566,11 @@ async def create_inference_cache_clear_challenge(
     _INFERENCE_CACHE_CHALLENGE_METRICS["issued_total"] += 1
     log_structured("System", "inference_cache_clear_challenge_issued", actor=actor, challenge_id=challenge_id)
     ttl_seconds = max(30, int(getattr(settings, "inference_cache_clear_challenge_ttl_seconds", 120)))
-    return {
-        "challenge_id": challenge_id,
-        "challenge_code": challenge_code,
-        "expires_in_seconds": ttl_seconds,
-    }
+    return InferenceCacheClearChallengeResponse(
+        challenge_id=challenge_id,
+        challenge_code=challenge_code,
+        expires_in_seconds=ttl_seconds,
+    )
 
 
 @router.post("/inference/cache/clear")
@@ -1518,7 +1579,7 @@ async def clear_inference_cache(
     request: Request,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> InferenceCacheClearResultResponse:
     actor = getattr(request.state, "user_id", None)
     has_scope = bool(
         (body.user_id and body.user_id.strip())
@@ -1558,10 +1619,11 @@ async def clear_inference_cache(
         resolved_model=result.get("resolved_model"),
         total_deleted=result.get("total_deleted"),
     )
-    return {"success": True, **result}
+    return InferenceCacheClearResultResponse(success=True, **result)
+
 
 @router.get("/browse-directory")
-async def browse_directory() -> Dict[str, Optional[str]]:
+async def browse_directory() -> BrowseDirectoryResponse:
     """打开本地目录选择器 (目前仅支持 MacOS)"""
     import platform
     import subprocess
@@ -1578,7 +1640,7 @@ async def browse_directory() -> Dict[str, Optional[str]]:
             )
             stdout, _ = await proc.communicate()
             if proc.returncode == 0:
-                return {"path": stdout.decode().strip()}
+                return BrowseDirectoryResponse(path=stdout.decode().strip())
         elif system == "Windows":
             # Windows powershell snippet for folder picker
             cmd = 'powershell.exe -NoProfile -Command "& { $app = New-Object -ComObject Shell.Application; $folder = $app.BrowseForFolder(0, \'Select Local Model Directory\', 0); if ($folder) { $folder.Self.Path } }"'
@@ -1589,11 +1651,11 @@ async def browse_directory() -> Dict[str, Optional[str]]:
             )
             stdout, _ = await proc.communicate()
             if proc.returncode == 0:
-                return {"path": stdout.decode().strip()}
+                return BrowseDirectoryResponse(path=stdout.decode().strip())
     except Exception as e:
         logger.error(f"[System] Browse directory failed: {e}")
-        
-    return {"path": None}
+
+    return BrowseDirectoryResponse(path=None)
 
 # 获取启动时间
 BOOT_TIME = time.time()
