@@ -576,6 +576,7 @@ roadmap-acceptance-unit:
 		backend/tests/test_roadmap_service.py \
 		backend/tests/test_system_api_integration.py \
 		backend/tests/test_roadmap_acceptance_smoke.py \
+		backend/tests/test_roadmap_openapi_contract.py \
 		-q -k roadmap
 	@echo "$(ROADMAP_GATE_LOG_PREFIX) roadmap acceptance unit done"
 
