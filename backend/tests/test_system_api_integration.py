@@ -1311,6 +1311,15 @@ def test_roadmap_phase_status_response_contract():
     assert body["go_no_go"] in {"go", "no_go"}
     assert isinstance(body["go_no_go_reasons"], list)
     assert body["top_blocker_capability"] is None or isinstance(body["top_blocker_capability"], str)
+    for reason in body["go_no_go_reasons"]:
+        assert isinstance(reason, dict)
+        assert str(reason.get("type") or "") in {
+            "summary",
+            "capability_blocker",
+            "anomaly_risk",
+            "readiness_risk",
+            "north_star",
+        }
 
     # north_star contract
     north = body["north_star"]
@@ -1383,6 +1392,15 @@ def test_roadmap_api_degrades_gracefully_when_settings_store_unavailable(monkeyp
     payload = review_resp.json()
     if review_resp.status_code == 200:
         assert isinstance(payload.get("review"), dict)
+        for reason in payload.get("review", {}).get("go_no_go_reasons", []) or []:
+            assert isinstance(reason, dict)
+            assert str(reason.get("type") or "") in {
+                "summary",
+                "capability_blocker",
+                "anomaly_risk",
+                "readiness_risk",
+                "north_star",
+            }
     else:
         assert isinstance(payload.get("error", {}), dict)
 
