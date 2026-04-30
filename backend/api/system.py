@@ -12,7 +12,7 @@ from pathlib import Path
 from log import logger, log_structured
 
 import subprocess
-from typing import Annotated, Any, Literal, Optional, Dict, AsyncIterator, cast, List
+from typing import Annotated, Any, AsyncIterator, Dict, List, Literal, Optional, Union, cast
 from pydantic import BaseModel, Field, ConfigDict
 
 from api.errors import raise_api_error
@@ -457,6 +457,33 @@ class KernelStatsResetResponse(BaseModel):
 
     success: Literal[True] = True
     message: str
+
+
+class KernelToggleBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: Optional[bool] = None
+
+
+class KernelToggleSuccessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    enabled: bool
+    note: str
+
+
+class KernelToggleErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[False] = False
+    error: str
+
+
+KernelToggleResponse = Annotated[
+    Union[KernelToggleSuccessResponse, KernelToggleErrorResponse],
+    Field(discriminator="success"),
+]
 
 
 class ApiKeyRevokeBody(BaseModel):
@@ -2371,10 +2398,10 @@ async def get_kernel_status() -> KernelStatusResponse:
 
 @router.post("/kernel/toggle")
 async def toggle_kernel(
-    data: Dict[str, Any],
+    body: KernelToggleBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> KernelToggleResponse:
     """
     运行时切换 Execution Kernel 开关
     
@@ -2385,22 +2412,21 @@ async def toggle_kernel(
     """
     from core.agent_runtime.v2.runtime import USE_EXECUTION_KERNEL
     import core.agent_runtime.v2.runtime as runtime_module
-    
-    enabled = data.get("enabled", None)
-    if enabled is None:
-        return {"success": False, "error": "Missing 'enabled' field"}
-    
-    # 运行时修改模块级变量
+
+    if body.enabled is None:
+        return KernelToggleErrorResponse(success=False, error="Missing 'enabled' field")
+
+    enabled = body.enabled
     runtime_module.USE_EXECUTION_KERNEL = bool(enabled)
-    
+
     log_structured("System", "kernel_toggled", enabled=bool(enabled), previous=USE_EXECUTION_KERNEL)
     logger.info(f"[System] Execution Kernel toggled to: {enabled}")
-    
-    return {
-        "success": True,
-        "enabled": bool(enabled),
-        "note": "Runtime toggle. Will reset to default on restart."
-    }
+
+    return KernelToggleSuccessResponse(
+        success=True,
+        enabled=bool(enabled),
+        note="Runtime toggle. Will reset to default on restart.",
+    )
 
 
 @router.post("/kernel/stats/reset")

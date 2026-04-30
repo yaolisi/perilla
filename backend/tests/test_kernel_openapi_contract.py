@@ -52,6 +52,20 @@ def test_openapi_kernel_status_stats_reset_use_named_schemas() -> None:
         "avg_duration_ms",
     }
 
+    toggle_post = paths["/api/system/kernel/toggle"]["post"]
+    assert toggle_post["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/KernelToggleBody"
+    toggle_200 = toggle_post["responses"]["200"]["content"]["application/json"]["schema"]
+    assert toggle_200.get("oneOf")
+    toggle_refs = {entry["$ref"] for entry in toggle_200["oneOf"]}
+    assert toggle_refs == {
+        "#/components/schemas/KernelToggleSuccessResponse",
+        "#/components/schemas/KernelToggleErrorResponse",
+    }
+    assert set(schemas["KernelToggleSuccessResponse"].get("required") or []) == {"enabled", "note"}
+    assert schemas["KernelToggleSuccessResponse"]["properties"]["success"]["const"] is True
+    assert set(schemas["KernelToggleErrorResponse"].get("required") or []) == {"error"}
+    assert schemas["KernelToggleErrorResponse"]["properties"]["success"]["const"] is False
+
 
 def test_kernel_stats_response_matches_observability_get_stats() -> None:
     from core.agent_runtime.v2.observability import get_kernel_stats as obs_get_kernel_stats
@@ -59,3 +73,30 @@ def test_kernel_stats_response_matches_observability_get_stats() -> None:
     raw = obs_get_kernel_stats().get_stats()
     model = system_api.KernelStatsResponse.model_validate(raw)
     assert model.total_runs == raw["total_runs"]
+
+
+def test_kernel_toggle_response_models_validate() -> None:
+    ok = system_api.KernelToggleSuccessResponse.model_validate(
+        {"success": True, "enabled": True, "note": "n"},
+    )
+    assert ok.enabled is True
+    bad = system_api.KernelToggleErrorResponse.model_validate({"success": False, "error": "e"})
+    assert bad.error == "e"
+
+
+def test_kernel_toggle_http_success_and_missing_enabled(monkeypatch):
+    import core.agent_runtime.v2.runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "USE_EXECUTION_KERNEL", False)
+    client = _build_client()
+
+    missing = client.post("/api/system/kernel/toggle", json={})
+    assert missing.status_code == 200
+    assert missing.json() == {"success": False, "error": "Missing 'enabled' field"}
+
+    applied = client.post("/api/system/kernel/toggle", json={"enabled": True})
+    assert applied.status_code == 200
+    body = applied.json()
+    assert body["success"] is True
+    assert body["enabled"] is True
+    assert body["note"]
