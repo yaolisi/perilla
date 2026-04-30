@@ -202,6 +202,8 @@ help:
 	@echo "                   - Run live roadmap API smoke against running backend"
 	@echo "  make roadmap-acceptance-all ROADMAP_RUN_LIVE_SMOKE=1 [ROADMAP_API_KEY=...]"
 	@echo "                   - Run roadmap pytest suite + optional live smoke"
+	@echo "  make roadmap-acceptance-smoke ROADMAP_REQUIRE_GO=1 ROADMAP_MIN_READINESS_AVG=0.8 ROADMAP_MAX_LOWEST_READINESS_SCORE=0.7"
+	@echo "                   - Run roadmap smoke with strict release-gate thresholds"
 	@echo "  make smart-routing-smoke"
 	@echo "                   - Run smart routing script/unit smoke tests"
 	@echo "  make smart-routing-all-checks"
@@ -557,12 +559,18 @@ roadmap-acceptance-unit:
 roadmap-acceptance-smoke:
 	@python backend/scripts/roadmap_acceptance_smoke.py \
 		--base-url "$(ROADMAP_BASE_URL)" \
-		$(if $(ROADMAP_API_KEY),--api-key "$(ROADMAP_API_KEY)",)
+		$(if $(ROADMAP_API_KEY),--api-key "$(ROADMAP_API_KEY)",) \
+		$(if $(filter 1,$(ROADMAP_REQUIRE_GO)),--require-go,) \
+		$(if $(ROADMAP_MIN_READINESS_AVG),--min-readiness-avg "$(ROADMAP_MIN_READINESS_AVG)",) \
+		$(if $(ROADMAP_MAX_LOWEST_READINESS_SCORE),--max-lowest-readiness-score "$(ROADMAP_MAX_LOWEST_READINESS_SCORE)",)
 
 roadmap-acceptance-all:
 	@ROADMAP_BASE_URL="$(ROADMAP_BASE_URL)" \
 		ROADMAP_API_KEY="$(ROADMAP_API_KEY)" \
 		ROADMAP_RUN_LIVE_SMOKE="$(ROADMAP_RUN_LIVE_SMOKE)" \
+		ROADMAP_REQUIRE_GO="$(ROADMAP_REQUIRE_GO)" \
+		ROADMAP_MIN_READINESS_AVG="$(ROADMAP_MIN_READINESS_AVG)" \
+		ROADMAP_MAX_LOWEST_READINESS_SCORE="$(ROADMAP_MAX_LOWEST_READINESS_SCORE)" \
 		bash scripts/acceptance/run_roadmap_acceptance.sh
 
 smart-routing-smoke:
