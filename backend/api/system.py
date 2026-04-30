@@ -326,6 +326,13 @@ class RoadmapQualityMetricsReadResponse(BaseModel):
     phase3_kpi_inference_probe: Dict[str, Any] = Field(default_factory=dict)
 
 
+class RoadmapQualityMetricsUpdateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    quality_metrics: Dict[str, Any]
+
+
 class RoadmapGateUpdateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1934,10 +1941,10 @@ async def update_roadmap_quality_metrics_api(
     body: RoadmapQualityMetricsUpdateBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> RoadmapQualityMetricsUpdateResponse:
     payload = body.model_dump(exclude_none=True)
     merged = save_manual_quality_metrics(payload)
-    return {"success": True, "quality_metrics": merged}
+    return RoadmapQualityMetricsUpdateResponse(success=True, quality_metrics=merged)
 
 
 @router.get("/roadmap/phases/status")
