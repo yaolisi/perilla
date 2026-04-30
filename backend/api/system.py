@@ -606,6 +606,37 @@ class OptimizationImpactOkResponse(BaseModel):
 OptimizationImpactReportResponse = OptimizationImpactErrorResponse | OptimizationImpactOkResponse
 
 
+class FeatureFlagsReadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: Optional[Union[str, int]] = None
+    flags: Dict[str, bool]
+
+
+class FeatureFlagsUpdateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    tenant_id: Optional[Union[str, int]] = None
+    flags: Dict[str, bool]
+
+
+class HardwareMetricsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cpu_load: float
+    ram_used: float
+    ram_total: float
+    gpu_usage: int
+    vram_used: float
+    vram_total: float
+    inference_speed: Optional[float] = None
+    uptime: str
+    node_version: str
+    cuda_version: str
+    active_workers: int
+
+
 class ApiKeyRevokeBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1696,9 +1727,9 @@ async def queue_summary_api() -> Dict[str, Any]:
 
 
 @router.get("/feature-flags")
-async def get_feature_flags_api(request: Request) -> Dict[str, Any]:
+async def get_feature_flags_api(request: Request) -> FeatureFlagsReadResponse:
     tenant_id = getattr(request.state, "tenant_id", None)
-    return {"tenant_id": tenant_id, "flags": get_feature_flags(tenant_id)}
+    return FeatureFlagsReadResponse(tenant_id=tenant_id, flags=get_feature_flags(tenant_id))
 
 
 @router.post("/feature-flags")
@@ -1707,7 +1738,7 @@ async def update_feature_flags_api(
     request: Request,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> FeatureFlagsUpdateResponse:
     flags = payload.get("flags", payload)
     if not isinstance(flags, dict):
         raise_api_error(
@@ -1717,7 +1748,7 @@ async def update_feature_flags_api(
         )
     tenant_id = getattr(request.state, "tenant_id", None)
     saved = set_feature_flags(flags, tenant_id=tenant_id)
-    return {"success": True, "tenant_id": tenant_id, "flags": saved}
+    return FeatureFlagsUpdateResponse(success=True, tenant_id=tenant_id, flags=saved)
 
 
 _RAG_PLUGIN_MANIFEST_PATH = Path(__file__).resolve().parent.parent / "core" / "plugins" / "builtin" / "rag" / "plugin.json"
@@ -2297,33 +2328,34 @@ async def list_roadmap_monthly_review_api(
 
 
 @router.get("/metrics")
-async def get_metrics() -> Dict[str, Any]:
+async def get_metrics() -> HardwareMetricsResponse:
     """获取硬件指标"""
     from core.inference.stats.tracker import get_inference_stats
-    
+
     cpu_usage = psutil.cpu_percent(interval=None)
     memory = psutil.virtual_memory()
-    
+
     gpu_info = get_gpu_metrics()
     uptime_seconds = int(time.time() - BOOT_TIME)
-    
-    # Get inference speed from stats tracker
+
     inference_stats = get_inference_stats().get_stats()
-    inference_speed = inference_stats.get("inference_speed")  # tokens/s or None
-    
-    return {
-        "cpu_load": cpu_usage,
+    raw_speed = inference_stats.get("inference_speed")
+    inference_speed = float(raw_speed) if isinstance(raw_speed, (int, float)) else None
+
+    payload = {
+        "cpu_load": float(cpu_usage),
         "ram_used": round(memory.used / (1024**3), 1),
         "ram_total": round(memory.total / (1024**3), 1),
-        "gpu_usage": gpu_info["gpu_usage"],
-        "vram_used": gpu_info["vram_used"],
-        "vram_total": gpu_info["vram_total"],
-        "inference_speed": inference_speed,  # tokens/s or null
+        "gpu_usage": int(gpu_info["gpu_usage"]),
+        "vram_used": float(gpu_info["vram_used"]),
+        "vram_total": float(gpu_info["vram_total"]),
+        "inference_speed": inference_speed,
         "uptime": format_uptime(uptime_seconds),
         "node_version": get_node_version(),
-        "cuda_version": gpu_info["cuda_version"],
-        "active_workers": psutil.cpu_count(logical=False) or 4
+        "cuda_version": str(gpu_info["cuda_version"]),
+        "active_workers": int(psutil.cpu_count(logical=False) or 4),
     }
+    return HardwareMetricsResponse.model_validate(payload)
 
 def format_uptime(seconds: int) -> str:
     hours, remainder = divmod(seconds, 3600)
