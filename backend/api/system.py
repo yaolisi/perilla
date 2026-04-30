@@ -1429,8 +1429,11 @@ async def update_feature_flags_api(
 
 
 def _read_roadmap_capabilities() -> Dict[str, bool]:
-    store = get_system_settings_store()
-    raw = store.get_setting("roadmapCapabilitiesJson", "{}")
+    try:
+        store = get_system_settings_store()
+        raw = store.get_setting("roadmapCapabilitiesJson", "{}")
+    except Exception:
+        return {}
     if isinstance(raw, dict):
         return {str(k): bool(v) for k, v in raw.items()}
     if not isinstance(raw, str):

@@ -1,4 +1,4 @@
-.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend check-nvmrc-align test-frontend-unit build-frontend pr-check pr-check-fast ci ci-fast quick-check dependency-policy dependency-scan test-no-fallback test-workflow-control-flow smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
+.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend check-nvmrc-align test-frontend-unit build-frontend pr-check pr-check-fast ci ci-fast quick-check dependency-policy dependency-scan test-no-fallback test-workflow-control-flow roadmap-acceptance-unit roadmap-acceptance-smoke roadmap-acceptance-all smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
 
 CB_BASE_URL ?= http://127.0.0.1:8000
 CB_MODEL ?= ollama:deepseek-r1:32b
@@ -55,6 +55,9 @@ ALERT_DRILL_ALERTS ?= perillaInferenceErrorRateHigh,perillaAgentFailureRateHigh,
 MONITORING_PROMETHEUS_URL ?= http://127.0.0.1:9090
 MONITORING_ALERTMANAGER_URL ?= http://127.0.0.1:9093
 MONITORING_GRAFANA_URL ?= http://127.0.0.1:3000
+ROADMAP_BASE_URL ?= http://127.0.0.1:8000
+ROADMAP_RUN_LIVE_SMOKE ?= 0
+ROADMAP_ACCEPTANCE_IN_PR_CHECK ?= 0
 
 .PHONY: event-bus-smoke-validate-summary-schema-mode
 .PHONY: event-bus-smoke-validate-payload-sha256-mode
@@ -169,10 +172,14 @@ help:
 	@echo "                   - check-nvmrc-align, then lint + no-fallback + vitest + build"
 	@echo "  make ci"
 	@echo "                   - Alias for make pr-check"
+	@echo "  ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 make pr-check"
+	@echo "                   - Append roadmap-acceptance-unit to pr-check gate (optional)"
 	@echo "  make pr-check-fast"
 	@echo "                   - Same as pr-check but skips build-frontend (faster local loop)"
 	@echo "  make ci-fast"
 	@echo "                   - Alias for make pr-check-fast"
+	@echo "  ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 make pr-check-fast"
+	@echo "                   - Append roadmap-acceptance-unit to pr-check-fast gate (optional)"
 	@echo "  bash scripts/pr-check.sh / scripts/pr-check-fast.sh"
 	@echo "                   - Same as make pr-check / pr-check-fast (any cwd; optional pytest args)"
 	@echo "  npm run ci / npm run ci-fast"
@@ -189,6 +196,12 @@ help:
 	@echo "                   - Treat warnings as failures"
 	@echo "  make test-workflow-control-flow"
 	@echo "                   - Run workflow control-flow regression suite"
+	@echo "  make roadmap-acceptance-unit"
+	@echo "                   - Run roadmap-focused pytest suite"
+	@echo "  make roadmap-acceptance-smoke ROADMAP_BASE_URL=http://127.0.0.1:8000 [ROADMAP_API_KEY=...]"
+	@echo "                   - Run live roadmap API smoke against running backend"
+	@echo "  make roadmap-acceptance-all ROADMAP_RUN_LIVE_SMOKE=1 [ROADMAP_API_KEY=...]"
+	@echo "                   - Run roadmap pytest suite + optional live smoke"
 	@echo "  make smart-routing-smoke"
 	@echo "                   - Run smart routing script/unit smoke tests"
 	@echo "  make smart-routing-all-checks"
@@ -500,9 +513,19 @@ build-frontend: check-nvmrc-align
 	@cd frontend && npm run build
 
 pr-check: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-frontend-unit build-frontend
+	@if [ "$(ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
+		$(MAKE) roadmap-acceptance-unit; \
+	else \
+		echo "pr-check: skip roadmap-acceptance-unit (set ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 to enable)"; \
+	fi
 	@echo "pr-check: OK"
 
 pr-check-fast: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-frontend-unit
+	@if [ "$(ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
+		$(MAKE) roadmap-acceptance-unit; \
+	else \
+		echo "pr-check-fast: skip roadmap-acceptance-unit (set ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 to enable)"; \
+	fi
 	@echo "pr-check-fast: OK (no build-frontend)"
 
 ci: pr-check
@@ -523,6 +546,24 @@ test-no-fallback:
 
 test-workflow-control-flow:
 	@bash backend/scripts/test_workflow_control_flow_regression.sh
+
+roadmap-acceptance-unit:
+	@PYTHONPATH=backend pytest \
+		backend/tests/test_roadmap_service.py \
+		backend/tests/test_system_api_integration.py \
+		backend/tests/test_roadmap_acceptance_smoke.py \
+		-q -k roadmap
+
+roadmap-acceptance-smoke:
+	@python backend/scripts/roadmap_acceptance_smoke.py \
+		--base-url "$(ROADMAP_BASE_URL)" \
+		$(if $(ROADMAP_API_KEY),--api-key "$(ROADMAP_API_KEY)",)
+
+roadmap-acceptance-all:
+	@ROADMAP_BASE_URL="$(ROADMAP_BASE_URL)" \
+		ROADMAP_API_KEY="$(ROADMAP_API_KEY)" \
+		ROADMAP_RUN_LIVE_SMOKE="$(ROADMAP_RUN_LIVE_SMOKE)" \
+		bash scripts/acceptance/run_roadmap_acceptance.sh
 
 smart-routing-smoke:
 	@PYTHONPATH=backend pytest backend/tests/test_smart_routing_script_utils.py backend/tests/test_model_router_smart_routing.py backend/tests/test_smart_routing_validation.py

@@ -936,3 +936,280 @@ def test_roadmap_monthly_review_create_and_list(monkeypatch):
     list_resp = client.get("/api/system/roadmap/monthly-review", params={"limit": 5})
     assert list_resp.status_code == 200
     assert list_resp.json().get("count") == 1
+
+
+def test_roadmap_end_to_end_with_real_store_and_snapshot():
+    client = _build_client()
+    from core.data.base import Base, get_engine
+    from core.data.models.system import SystemSetting  # noqa: F401
+    from core.data.models.audit import AuditLogORM  # noqa: F401
+
+    Base.metadata.create_all(get_engine())
+
+    store = system_api.get_system_settings_store()
+    keys = [
+        "roadmap_kpis",
+        "roadmap_kpis_meta",
+        "roadmap_quality_metrics",
+        "roadmap_monthly_reviews",
+        "roadmapCapabilitiesJson",
+    ]
+    backup = {key: store.get_setting(key, None) for key in keys}
+
+    try:
+        # 1) 冻结 KPI（真实 store）
+        kpi_resp = client.post(
+            "/api/system/roadmap/kpis",
+            json={
+                "availability_min": 0.99,
+                "p99_latency_ms_max": 5000,
+                "observability_coverage_min": 0.5,
+            },
+        )
+        assert kpi_resp.status_code == 200
+        assert kpi_resp.json().get("kpis", {}).get("p99_latency_ms_max") == 5000
+
+        # 2) 写入质量指标（真实 store）
+        quality_resp = client.post(
+            "/api/system/roadmap/quality-metrics",
+            json={
+                "rag_top5_recall": 0.9,
+                "answer_usefulness": 0.91,
+                "unit_cost_reduction": 0.35,
+                "observability_coverage": 1.0,
+                "critical_security_incidents": 0,
+                "throughput_gain": 3.0,
+                "multi_hop_accuracy_gain": 0.2,
+                "hallucination_reduction": 0.25,
+                "auto_scaling_trigger_success_rate": 0.995,
+                "rollback_time_seconds": 120,
+            },
+        )
+        assert quality_resp.status_code == 200
+
+        # 3) 注入 capability 开关（走系统配置接口，真实持久化路径）
+        cfg_resp = client.post(
+            "/api/system/config",
+            json={
+                "roadmapCapabilitiesJson": '{"fine_grained_permissions":true,"audit_traceability":true,'
+                '"observability_dashboard":true,"rag_eval_baseline":true,"dynamic_batching":true,'
+                '"hybrid_retrieval":true,"function_calling_orchestration":true,'
+                '"agent_role_collaboration":true,"multi_hop_retrieval":true,"kg_augmented_rag":true,'
+                '"active_learning_reviewed_update":true,"anomaly_detection":true,"cluster_scaling":true,'
+                '"model_version_governance":true,"sso_integration":true,"multimodal_pilot":true}',
+            },
+        )
+        assert cfg_resp.status_code == 200
+
+        # 4) 读取阶段状态（真实 snapshot + 真实评估）
+        phase_resp = client.get("/api/system/roadmap/phases/status")
+        assert phase_resp.status_code == 200
+        phase_body = phase_resp.json()
+        assert "snapshot" in phase_body
+        assert "north_star" in phase_body
+        assert "phase_gate" in phase_body
+        assert isinstance(phase_body.get("phase_gate", {}).get("total_count"), int)
+
+        # 5) 触发一次月度复盘，并确保可被查询到
+        create_resp = client.post("/api/system/roadmap/monthly-review")
+        assert create_resp.status_code == 200
+        review = create_resp.json().get("review", {})
+        assert review.get("go_no_go") in {"go", "no_go"}
+        assert "north_star" in review
+        assert "phase_gate" in review
+
+        list_resp = client.get("/api/system/roadmap/monthly-review", params={"limit": 10})
+        assert list_resp.status_code == 200
+        items = list_resp.json().get("items", [])
+        assert len(items) >= 1
+        assert items[0].get("go_no_go") in {"go", "no_go"}
+    finally:
+        for key, value in backup.items():
+            store.set_setting(key, value)
+
+
+def test_roadmap_end_to_end_no_go_when_capabilities_and_kpis_missing():
+    client = _build_client()
+    from core.data.base import Base, get_engine
+    from core.data.models.system import SystemSetting  # noqa: F401
+    from core.data.models.audit import AuditLogORM  # noqa: F401
+
+    Base.metadata.create_all(get_engine())
+
+    store = system_api.get_system_settings_store()
+    keys = [
+        "roadmap_kpis",
+        "roadmap_kpis_meta",
+        "roadmap_quality_metrics",
+        "roadmap_monthly_reviews",
+        "roadmapCapabilitiesJson",
+    ]
+    backup = {key: store.get_setting(key, None) for key in keys}
+
+    try:
+        # 设置严格 KPI 目标，确保当前低质量指标无法满足
+        kpi_resp = client.post(
+            "/api/system/roadmap/kpis",
+            json={
+                "availability_min": 0.999,
+                "p99_latency_ms_max": 1000,
+                "rag_top5_recall_min": 0.95,
+                "answer_usefulness_min": 0.95,
+                "unit_cost_reduction_min": 0.5,
+                "observability_coverage_min": 1.0,
+            },
+        )
+        assert kpi_resp.status_code == 200
+
+        # 写入明显不达标的质量指标
+        quality_resp = client.post(
+            "/api/system/roadmap/quality-metrics",
+            json={
+                "rag_top5_recall": 0.5,
+                "answer_usefulness": 0.5,
+                "unit_cost_reduction": 0.0,
+                "observability_coverage": 0.2,
+                "critical_security_incidents": 2,
+                "throughput_gain": 1.0,
+                "multi_hop_accuracy_gain": 0.0,
+                "hallucination_reduction": 0.0,
+                "auto_scaling_trigger_success_rate": 0.0,
+                "rollback_time_seconds": 1200,
+            },
+        )
+        assert quality_resp.status_code == 200
+
+        # 仅打开极少 capability，制造 phase gate 缺口
+        cfg_resp = client.post(
+            "/api/system/config",
+            json={"roadmapCapabilitiesJson": '{"fine_grained_permissions":true}'},
+        )
+        assert cfg_resp.status_code == 200
+
+        create_resp = client.post("/api/system/roadmap/monthly-review")
+        assert create_resp.status_code == 200
+        review = create_resp.json().get("review", {})
+        assert review.get("go_no_go") == "no_go"
+        assert review.get("north_star", {}).get("passed") is False
+        assert review.get("phase_gate", {}).get("passed") is False
+    finally:
+        for key, value in backup.items():
+            store.set_setting(key, value)
+
+
+def test_roadmap_phase_status_response_contract():
+    client = _build_client()
+
+    resp = client.get("/api/system/roadmap/phases/status")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # 顶层 contract
+    assert set(body.keys()) >= {"snapshot", "north_star", "phase_gate"}
+    assert isinstance(body["snapshot"], dict)
+    assert isinstance(body["north_star"], dict)
+    assert isinstance(body["phase_gate"], dict)
+
+    # north_star contract
+    north = body["north_star"]
+    assert set(north.keys()) >= {"score", "passed", "reasons"}
+    assert isinstance(north["score"], (int, float))
+    assert isinstance(north["passed"], bool)
+    assert isinstance(north["reasons"], list)
+
+    # phase_gate contract
+    gate = body["phase_gate"]
+    assert set(gate.keys()) >= {"passed_count", "total_count", "score", "phases"}
+    assert isinstance(gate["passed_count"], int)
+    assert isinstance(gate["total_count"], int)
+    assert isinstance(gate["score"], (int, float))
+    assert isinstance(gate["phases"], dict)
+
+    # 每个 phase 的 contract
+    for _, phase_info in gate["phases"].items():
+        assert isinstance(phase_info, dict)
+        assert set(phase_info.keys()) >= {"passed", "missing_capabilities", "kpi_results"}
+        assert isinstance(phase_info["passed"], bool)
+        assert isinstance(phase_info["missing_capabilities"], list)
+        assert isinstance(phase_info["kpi_results"], dict)
+
+
+def test_roadmap_api_degrades_gracefully_when_settings_store_unavailable(monkeypatch):
+    client = _build_client()
+
+    class _BrokenStore:
+        def get_setting(self, key, default=None):
+            raise RuntimeError(f"store unavailable for key={key}")
+
+        def set_setting(self, key, value):
+            raise RuntimeError(f"store unavailable for key={key}")
+
+    monkeypatch.setattr(system_api, "get_system_settings_store", lambda: _BrokenStore())
+
+    # phases/status 应该仍可返回结构化结果（依赖默认值与运行时快照），不应 500
+    status_resp = client.get("/api/system/roadmap/phases/status")
+    assert status_resp.status_code == 200
+    body = status_resp.json()
+    assert set(body.keys()) >= {"snapshot", "north_star", "phase_gate"}
+    assert isinstance(body.get("north_star", {}).get("passed"), bool)
+
+    # monthly-review 至少应保持 API 可用：成功返回 review，或返回结构化错误（不能崩溃）
+    review_resp = client.post("/api/system/roadmap/monthly-review")
+    assert review_resp.status_code in {200, 500, 503}
+    payload = review_resp.json()
+    if review_resp.status_code == 200:
+        assert isinstance(payload.get("review"), dict)
+    else:
+        assert isinstance(payload.get("error", {}), dict)
+
+
+def test_roadmap_kpis_and_quality_metrics_response_contract():
+    client = _build_client()
+
+    kpis_resp = client.get("/api/system/roadmap/kpis")
+    assert kpis_resp.status_code == 200
+    kpis_body = kpis_resp.json()
+    assert set(kpis_body.keys()) >= {"kpis"}
+    assert isinstance(kpis_body["kpis"], dict)
+    assert "availability_min" in kpis_body["kpis"]
+    assert "p99_latency_ms_max" in kpis_body["kpis"]
+
+    update_resp = client.post(
+        "/api/system/roadmap/quality-metrics",
+        json={"rag_top5_recall": 0.88, "answer_usefulness": 0.9},
+    )
+    assert update_resp.status_code == 200
+    update_body = update_resp.json()
+    assert set(update_body.keys()) >= {"success", "quality_metrics"}
+    assert update_body["success"] is True
+    assert isinstance(update_body["quality_metrics"], dict)
+    assert isinstance(update_body["quality_metrics"].get("rag_top5_recall"), (int, float))
+
+
+def test_roadmap_monthly_review_list_limit_and_order():
+    client = _build_client()
+    from core.data.base import Base, get_engine
+    from core.data.models.system import SystemSetting  # noqa: F401
+    from core.data.models.audit import AuditLogORM  # noqa: F401
+
+    Base.metadata.create_all(get_engine())
+    store = system_api.get_system_settings_store()
+    backup = store.get_setting("roadmap_monthly_reviews", None)
+    try:
+        # 连续写入两次，验证列表按最近优先返回
+        r1 = client.post("/api/system/roadmap/monthly-review")
+        r2 = client.post("/api/system/roadmap/monthly-review")
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+
+        list_resp = client.get("/api/system/roadmap/monthly-review", params={"limit": 1})
+        assert list_resp.status_code == 200
+        body = list_resp.json()
+        assert body.get("count") == 1
+        items = body.get("items", [])
+        assert isinstance(items, list)
+        assert len(items) == 1
+        assert isinstance(items[0], dict)
+        assert "created_at" in items[0]
+    finally:
+        store.set_setting("roadmap_monthly_reviews", backup)

@@ -48,6 +48,16 @@ HELP_TARGET_GROUP_CONFIG: Dict[str, HelpTargetGroupConfig] = {
         ],
         "min_count": 6,
     },
+    "roadmap_acceptance": {
+        "targets": [
+            "roadmap-acceptance-unit",
+            "roadmap-acceptance-smoke",
+            "roadmap-acceptance-all",
+            "ROADMAP_ACCEPTANCE_IN_PR_CHECK=1",
+            "pr-check-fast",
+        ],
+        "min_count": 3,
+    },
 }
 
 
