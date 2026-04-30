@@ -24,6 +24,7 @@ def test_npm_scripts_help_prints_hints_to_stderr() -> None:
     assert "GET/POST /api/system/roadmap/kpis" in result.stderr
     assert "GET /api/system/roadmap/quality-metrics" in result.stderr
     assert "GET /api/system/roadmap/phases/status" in result.stderr
+    assert "POST /api/system/roadmap/phase-gates" in result.stderr
 
 
 def test_npm_scripts_unknown_flag_prints_followups_to_stderr() -> None:
@@ -59,6 +60,7 @@ def test_npm_scripts_json_prints_hint_to_stderr_and_stdout_is_json() -> None:
     assert "GET/POST /api/system/roadmap/kpis" in result.stderr
     assert "GET /api/system/roadmap/quality-metrics" in result.stderr
     assert "GET /api/system/roadmap/phases/status" in result.stderr
+    assert "POST /api/system/roadmap/phase-gates" in result.stderr
     payload = json.loads(result.stdout)
     assert isinstance(payload, dict)
 

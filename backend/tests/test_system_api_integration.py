@@ -897,6 +897,39 @@ def test_roadmap_kpi_update_and_fetch_roundtrip(monkeypatch):
     assert get_resp.json().get("kpis", {}).get("availability_min") == pytest.approx(0.999)
 
 
+def test_roadmap_phase_gates_post_returns_success_and_merged(monkeypatch):
+    client = _build_client()
+    store: dict = {}
+
+    def _fake_get():
+        return store.get(
+            "gates",
+            {"phase0_foundation": {"required_capabilities": [], "required_kpis": {}}},
+        )
+
+    def _fake_save(payload):
+        merged = {**_fake_get(), **payload}
+        store["gates"] = merged
+        return merged
+
+    monkeypatch.setattr(system_api, "save_phase_gates", _fake_save)
+
+    post_resp = client.post(
+        "/api/system/roadmap/phase-gates",
+        json={
+            "phase_gates": {
+                "phase1_core": {"required_capabilities": ["throughput"], "required_kpis": {"throughput_gain": 2.0}},
+            },
+        },
+    )
+    assert post_resp.status_code == 200
+    body = post_resp.json()
+    assert body.get("success") is True
+    gates = body.get("phase_gates") or {}
+    assert "phase0_foundation" in gates
+    assert gates.get("phase1_core", {}).get("required_capabilities") == ["throughput"]
+
+
 def test_roadmap_phase_status_endpoint_returns_gate_summary(monkeypatch):
     client = _build_client()
     monkeypatch.setattr(system_api, "build_roadmap_snapshot", lambda: {"online_error_rate": 0.001, "capabilities": {}})

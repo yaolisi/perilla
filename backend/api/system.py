@@ -352,6 +352,13 @@ class RoadmapGateUpdateBody(BaseModel):
     phase_gates: Dict[str, Dict[str, Any]]
 
 
+class RoadmapPhaseGatesUpdateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    phase_gates: Dict[str, Any]
+
+
 class RoadmapMonthlyReviewListAppliedFilters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2015,9 +2022,9 @@ async def update_roadmap_phase_gates_api(
     body: RoadmapGateUpdateBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> RoadmapPhaseGatesUpdateResponse:
     merged = save_phase_gates(body.phase_gates)
-    return {"success": True, "phase_gates": merged}
+    return RoadmapPhaseGatesUpdateResponse(success=True, phase_gates=merged)
 
 
 @router.post("/roadmap/monthly-review")

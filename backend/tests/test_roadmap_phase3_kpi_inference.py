@@ -7,6 +7,7 @@ import pytest
 from api.system import (
     RoadmapKpisReadResponse,
     RoadmapKpisUpdateResponse,
+    RoadmapPhaseGatesUpdateResponse,
     RoadmapQualityMetricsReadResponse,
     RoadmapQualityMetricsUpdateResponse,
 )
@@ -42,6 +43,17 @@ def test_roadmap_kpis_read_response_validates() -> None:
 def test_roadmap_kpis_update_response_validates() -> None:
     RoadmapKpisUpdateResponse.model_validate(
         {"success": True, "kpis": {"availability_min": 0.99, "p99_latency_ms_max": 2500.0}},
+    )
+
+
+def test_roadmap_phase_gates_update_response_validates() -> None:
+    RoadmapPhaseGatesUpdateResponse.model_validate(
+        {
+            "success": True,
+            "phase_gates": {
+                "phase0_foundation": {"required_capabilities": [], "required_kpis": {}},
+            },
+        },
     )
 
 

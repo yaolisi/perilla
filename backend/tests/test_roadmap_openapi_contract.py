@@ -84,3 +84,13 @@ def test_openapi_includes_roadmap_kpis_quality_metrics_and_phase_status() -> Non
         "blocking_capabilities",
         "readiness_summary",
     }
+
+    gates_item = paths["/api/system/roadmap/phase-gates"]
+    assert set(gates_item.keys()) == {"post"}
+    gates_post = gates_item["post"]
+    assert gates_post["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/RoadmapGateUpdateBody"
+    gates_ref = gates_post["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert gates_ref == "#/components/schemas/RoadmapPhaseGatesUpdateResponse"
+    pg_resp = schemas["RoadmapPhaseGatesUpdateResponse"]
+    assert set(pg_resp.get("required") or []) == {"phase_gates"}
+    assert pg_resp["properties"]["success"]["const"] is True

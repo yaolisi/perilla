@@ -130,6 +130,14 @@ def test_make_help_mentions_roadmap_phase_status_api() -> None:
     )
 
 
+def test_make_help_mentions_roadmap_phase_gates_post_api() -> None:
+    output = _make_help_output()
+    assert (
+        "API POST /api/system/roadmap/phase-gates (platform admin): merge persisted phase gate overrides"
+        in output
+    )
+
+
 def test_make_help_mentions_roadmap_log_prefix_semantics() -> None:
     output = _make_help_output()
     assert "Logs prefixed with [roadmap-gate] for CI grep/filter" in output
