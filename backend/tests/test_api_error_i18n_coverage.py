@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from collections import Counter
 
 from api.error_i18n import _ERROR_MESSAGES
+import api.error_i18n as error_i18n
 
 
 def test_error_i18n_covers_core_api_error_codes() -> None:
@@ -31,4 +33,22 @@ def test_error_i18n_covers_core_api_error_codes() -> None:
 
     missing = sorted(code for code in found_codes if code not in _ERROR_MESSAGES)
     assert missing == []
+
+
+def test_grouped_error_maps_do_not_have_duplicate_keys() -> None:
+    group_maps = []
+    for name, value in vars(error_i18n).items():
+        if not name.endswith("_ERROR_MESSAGES"):
+            continue
+        if name in {"_ERROR_MESSAGES", "MISC_ERROR_MESSAGES"}:
+            continue
+        if isinstance(value, dict):
+            group_maps.append(value)
+
+    counter: Counter[str] = Counter()
+    for group in group_maps:
+        counter.update(group.keys())
+
+    duplicates = sorted([key for key, count in counter.items() if count > 1])
+    assert duplicates == []
 
