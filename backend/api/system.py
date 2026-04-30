@@ -1922,7 +1922,7 @@ async def update_roadmap_kpis_api(
     return {"success": True, "kpis": merged}
 
 
-@router.get("/roadmap/quality-metrics", response_model=RoadmapQualityMetricsReadResponse)
+@router.get("/roadmap/quality-metrics")
 async def get_roadmap_quality_metrics_api(
     *, _role: Annotated[Any, Depends(require_platform_admin)],
 ) -> RoadmapQualityMetricsReadResponse:
