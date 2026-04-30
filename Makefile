@@ -227,6 +227,8 @@ help:
 	@echo "                   - API GET /api/system/roadmap/quality-metrics (platform admin): merged metrics, explicit_metric_keys, phase3_kpi_inference_probe"
 	@echo "                   - API GET /api/system/roadmap/phases/status (platform admin): snapshot, north_star, phase_gate, go_no_go"
 	@echo "                   - API POST /api/system/roadmap/phase-gates (platform admin): merge persisted phase gate overrides"
+	@echo "                   - API GET /api/system/roadmap/monthly-review (platform admin): paginated reviews, filters + meta"
+	@echo "                   - API POST /api/system/roadmap/monthly-review (platform admin): append gated snapshot review"
 	@echo "  make smart-routing-smoke"
 	@echo "                   - Run smart routing script/unit smoke tests"
 	@echo "  make smart-routing-all-checks"

@@ -7,6 +7,7 @@ import pytest
 from api.system import (
     RoadmapKpisReadResponse,
     RoadmapKpisUpdateResponse,
+    RoadmapMonthlyReviewCreateResponse,
     RoadmapPhaseGatesUpdateResponse,
     RoadmapQualityMetricsReadResponse,
     RoadmapQualityMetricsUpdateResponse,
@@ -52,6 +53,30 @@ def test_roadmap_phase_gates_update_response_validates() -> None:
             "success": True,
             "phase_gates": {
                 "phase0_foundation": {"required_capabilities": [], "required_kpis": {}},
+            },
+        },
+    )
+
+
+def test_roadmap_monthly_review_create_response_validates() -> None:
+    RoadmapMonthlyReviewCreateResponse.model_validate(
+        {
+            "success": True,
+            "review": {
+                "created_at": "2026-05-01T00:00:00+00:00",
+                "snapshot": {},
+                "north_star": {"score": 1.0, "passed": True, "reasons": []},
+                "phase_gate": {
+                    "score": 1.0,
+                    "passed": True,
+                    "phases": {},
+                    "blocking_capabilities": [],
+                    "readiness_summary": {},
+                },
+                "go_no_go": "go",
+                "go_no_go_reasons": [],
+                "top_blocker_capability": None,
+                "audit_entry_count": 0,
             },
         },
     )

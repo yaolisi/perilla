@@ -94,3 +94,15 @@ def test_openapi_includes_roadmap_kpis_quality_metrics_and_phase_status() -> Non
     pg_resp = schemas["RoadmapPhaseGatesUpdateResponse"]
     assert set(pg_resp.get("required") or []) == {"phase_gates"}
     assert pg_resp["properties"]["success"]["const"] is True
+
+    monthly = paths["/api/system/roadmap/monthly-review"]
+    assert set(monthly.keys()) == {"get", "post"}
+    monthly_get_ref = monthly["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert monthly_get_ref == "#/components/schemas/RoadmapMonthlyReviewListResponse"
+    assert set(schemas["RoadmapMonthlyReviewListResponse"].get("required") or []) == {"count", "items", "meta"}
+
+    monthly_post_ref = monthly["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert monthly_post_ref == "#/components/schemas/RoadmapMonthlyReviewCreateResponse"
+    m_create = schemas["RoadmapMonthlyReviewCreateResponse"]
+    assert set(m_create.get("required") or []) == {"review"}
+    assert m_create["properties"]["success"]["const"] is True

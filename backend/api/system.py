@@ -391,6 +391,13 @@ class RoadmapMonthlyReviewListResponse(BaseModel):
     meta: RoadmapMonthlyReviewListMeta
 
 
+class RoadmapMonthlyReviewCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    review: Dict[str, Any]
+
+
 class RoadmapNorthStarStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2031,11 +2038,11 @@ async def update_roadmap_phase_gates_api(
 async def create_roadmap_monthly_review_api(
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> RoadmapMonthlyReviewCreateResponse:
     capabilities = _read_roadmap_capabilities()
     capability_details = _detect_roadmap_capability_details()
     review = create_monthly_review(capabilities=capabilities, capability_details=capability_details)
-    return {"success": True, "review": review}
+    return RoadmapMonthlyReviewCreateResponse(success=True, review=review)
 
 
 def _build_monthly_review_list_payload(

@@ -138,6 +138,18 @@ def test_make_help_mentions_roadmap_phase_gates_post_api() -> None:
     )
 
 
+def test_make_help_mentions_roadmap_monthly_review_apis() -> None:
+    output = _make_help_output()
+    assert (
+        "API GET /api/system/roadmap/monthly-review (platform admin): paginated reviews, filters + meta"
+        in output
+    )
+    assert (
+        "API POST /api/system/roadmap/monthly-review (platform admin): append gated snapshot review"
+        in output
+    )
+
+
 def test_make_help_mentions_roadmap_log_prefix_semantics() -> None:
     output = _make_help_output()
     assert "Logs prefixed with [roadmap-gate] for CI grep/filter" in output

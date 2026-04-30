@@ -19,7 +19,7 @@ MAX_LOWEST_READINESS_SCORE="${ROADMAP_MAX_LOWEST_READINESS_SCORE:-}"
 OUTPUT_JSON="${ROADMAP_OUTPUT_JSON:-}"
 OUTPUT_SCHEMA_VERSION="${ROADMAP_OUTPUT_SCHEMA_VERSION:-1}"
 
-echo >&2 "${ROADMAP_GATE_LOG_PREFIX} hint: live smoke exercises GET/POST /api/system/roadmap/kpis, POST /api/system/roadmap/quality-metrics, GET /api/system/roadmap/phases/status (platform admin; see make help)"
+echo >&2 "${ROADMAP_GATE_LOG_PREFIX} hint: live smoke exercises GET/POST /api/system/roadmap/kpis, POST /api/system/roadmap/quality-metrics, GET /api/system/roadmap/phases/status, POST/GET /api/system/roadmap/monthly-review (platform admin; see make help)"
 echo >&2 "${ROADMAP_GATE_LOG_PREFIX} roadmap acceptance: unit/integration suite"
 PYTHONPATH=backend pytest \
   backend/tests/test_roadmap_service.py \
