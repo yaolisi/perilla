@@ -53,6 +53,7 @@ HELP_TARGET_GROUP_CONFIG: Dict[str, HelpTargetGroupConfig] = {
             "roadmap-acceptance-unit",
             "roadmap-acceptance-smoke",
             "roadmap-acceptance-all",
+            "roadmap-release-gate",
             "ROADMAP_ACCEPTANCE_IN_PR_CHECK=1",
             "pr-check-fast",
         ],
