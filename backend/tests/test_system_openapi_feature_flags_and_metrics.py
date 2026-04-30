@@ -44,3 +44,33 @@ def test_openapi_feature_flags_and_hardware_metrics_use_named_schemas() -> None:
 
     hm = schemas["HardwareMetricsResponse"]
     assert set(hm.get("required") or []) >= {"cpu_load", "gpu_usage", "uptime"}
+
+    obs_ref = paths["/api/system/observability-summary"]["get"]["responses"]["200"]["content"]["application/json"]["schema"][
+        "$ref"
+    ]
+    assert obs_ref == "#/components/schemas/ObservabilitySummaryResponse"
+    assert set(schemas["ObservabilitySummaryResponse"].get("required") or []) == {
+        "requests",
+        "failed_requests",
+        "failure_rate",
+        "models_count",
+        "total_latency_ms",
+    }
+
+    rt_ref = paths["/api/system/runtime-metrics"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert rt_ref == "#/components/schemas/RuntimeMetricsApiResponse"
+    rt = schemas["RuntimeMetricsApiResponse"]
+    assert set(rt.get("required") or []) >= {"summary", "by_priority_summary", "by_model", "priority_slo_panel"}
+
+
+def test_observability_summary_and_runtime_metrics_http_smoke() -> None:
+    client = _build_client()
+    obs = client.get("/api/system/observability-summary")
+    assert obs.status_code == 200
+    body = obs.json()
+    assert set(body.keys()) >= {"requests", "failure_rate", "models_count"}
+
+    rt = client.get("/api/system/runtime-metrics")
+    assert rt.status_code == 200
+    data = rt.json()
+    assert "summary" in data and "by_model" in data and "priority_slo_panel" in data

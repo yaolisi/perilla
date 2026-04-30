@@ -637,6 +637,25 @@ class HardwareMetricsResponse(BaseModel):
     active_workers: int
 
 
+class ObservabilitySummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requests: int
+    failed_requests: int
+    failure_rate: float
+    models_count: int
+    total_latency_ms: float
+
+
+class RuntimeMetricsApiResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: Dict[str, Any]
+    by_priority_summary: Dict[str, Any]
+    by_model: Dict[str, Any]
+    priority_slo_panel: Dict[str, Any]
+
+
 class ApiKeyRevokeBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1608,7 +1627,7 @@ def get_gpu_metrics() -> Dict[str, Any]:
     return gpu_metrics
 
 @router.get("/runtime-metrics")
-async def get_runtime_metrics_api() -> Dict[str, Any]:
+async def get_runtime_metrics_api() -> RuntimeMetricsApiResponse:
     """V2.9 运行时稳定层指标：按模型的请求数、延迟、队列、tokens"""
     from core.runtime import get_runtime_metrics, get_inference_queue_manager
 
@@ -1649,11 +1668,11 @@ async def get_runtime_metrics_api() -> Dict[str, Any]:
             ),
         },
     }
-    return metrics
+    return RuntimeMetricsApiResponse.model_validate(metrics)
 
 
 @router.get("/observability-summary")
-async def observability_summary() -> Dict[str, Any]:
+async def observability_summary() -> ObservabilitySummaryResponse:
     """聚合观测摘要（用于生产巡检看板）。"""
     from core.runtime import get_runtime_metrics
 
@@ -1662,13 +1681,13 @@ async def observability_summary() -> Dict[str, Any]:
     total_requests = int(summary.get("total_requests", 0) or 0)
     total_failed = int(summary.get("total_requests_failed", 0) or 0)
     failure_rate = (total_failed / total_requests) if total_requests else 0.0
-    return {
-        "requests": total_requests,
-        "failed_requests": total_failed,
-        "failure_rate": round(failure_rate, 4),
-        "models_count": int(summary.get("models_count", 0) or 0),
-        "total_latency_ms": float(summary.get("total_latency_ms", 0.0) or 0.0),
-    }
+    return ObservabilitySummaryResponse(
+        requests=total_requests,
+        failed_requests=total_failed,
+        failure_rate=round(failure_rate, 4),
+        models_count=int(summary.get("models_count", 0) or 0),
+        total_latency_ms=float(summary.get("total_latency_ms", 0.0) or 0.0),
+    )
 
 
 @router.get("/storage-readiness")
