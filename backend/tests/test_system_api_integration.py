@@ -1329,6 +1329,16 @@ def test_roadmap_phase_status_response_contract():
         assert isinstance(phase_info["missing_capabilities"], list)
         assert isinstance(phase_info["missing_capability_details"], dict)
         assert isinstance(phase_info["kpi_results"], dict)
+        assert isinstance(phase_info.get("readiness"), dict)
+        assert set(phase_info.get("readiness", {}).keys()) >= {
+            "score",
+            "capability_readiness",
+            "kpi_readiness",
+            "capability_ready_count",
+            "capability_total_count",
+            "kpi_ready_count",
+            "kpi_total_count",
+        }
 
 
 def test_roadmap_api_degrades_gracefully_when_settings_store_unavailable(monkeypatch):

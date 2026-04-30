@@ -73,6 +73,10 @@ def test_evaluate_phase_gates_detects_missing_capabilities_and_kpi() -> None:
     assert "audit_traceability" in phase["missing_capabilities"]
     assert phase["missing_capability_details"]["audit_traceability"]["enabled"] is False
     assert phase["kpi_results"]["observability_coverage"]["passed"] is False
+    assert isinstance(phase["readiness"], dict)
+    assert phase["readiness"]["capability_total_count"] == 2
+    assert phase["readiness"]["kpi_total_count"] == 1
+    assert phase["readiness"]["score"] < 1.0
 
 
 def test_evaluate_phase_gates_accepts_multi_hop_alias() -> None:
@@ -97,6 +101,7 @@ def test_evaluate_phase_gates_accepts_multi_hop_alias() -> None:
     phase = result["phase2_advanced"]
     assert phase["passed"] is True
     assert phase["missing_capabilities"] == []
+    assert phase["readiness"]["score"] >= 0.9999
 
 
 def test_evaluate_phase_gates_missing_capability_has_fallback_detail() -> None:

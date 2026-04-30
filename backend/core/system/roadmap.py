@@ -327,6 +327,33 @@ def _evaluate_gate_kpis(snapshot: Dict[str, Any], required_kpis: Dict[str, Any])
     return kpi_ok_count, kpi_results
 
 
+def _build_phase_readiness(
+    *,
+    required_capabilities: List[str],
+    missing_capabilities: List[str],
+    required_kpis: Dict[str, Any],
+    kpi_results: Dict[str, Any],
+) -> Dict[str, Any]:
+    required_cap_count = len(required_capabilities)
+    cap_ready_count = max(0, required_cap_count - len(missing_capabilities))
+    required_kpi_count = len(required_kpis)
+    kpi_ready_count = sum(1 for item in (kpi_results or {}).values() if bool((item or {}).get("passed")))
+
+    capability_readiness = (cap_ready_count / required_cap_count) if required_cap_count else 1.0
+    kpi_readiness = (kpi_ready_count / required_kpi_count) if required_kpi_count else 1.0
+    readiness_score = round((capability_readiness * 0.6) + (kpi_readiness * 0.4), 4)
+
+    return {
+        "score": readiness_score,
+        "capability_readiness": round(capability_readiness, 4),
+        "kpi_readiness": round(kpi_readiness, 4),
+        "capability_ready_count": cap_ready_count,
+        "capability_total_count": required_cap_count,
+        "kpi_ready_count": kpi_ready_count,
+        "kpi_total_count": required_kpi_count,
+    }
+
+
 def _resolve_capability_enabled(capabilities: Dict[str, Any], name: str) -> bool:
     if bool(capabilities.get(name)):
         return True
@@ -381,11 +408,18 @@ def evaluate_phase_gates(snapshot: Dict[str, Any], gates: Dict[str, Dict[str, An
         }
         kpi_ok_count, kpi_results = _evaluate_gate_kpis(snapshot, required_kpis)
         gate_passed = (not missing_capabilities) and (kpi_ok_count == len(required_kpis))
+        readiness = _build_phase_readiness(
+            required_capabilities=required_capabilities,
+            missing_capabilities=missing_capabilities,
+            required_kpis=required_kpis,
+            kpi_results=kpi_results,
+        )
         phase_status[phase] = {
             "passed": gate_passed,
             "missing_capabilities": missing_capabilities,
             "missing_capability_details": missing_capability_details,
             "kpi_results": kpi_results,
+            "readiness": readiness,
         }
     return phase_status
 
