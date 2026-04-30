@@ -38,7 +38,10 @@ def _build_app() -> FastAPI:
             message="MCP server not found",
         )
 
-    @app.get("/api/core/framework-http-error")
+    @app.get(
+        "/api/core/framework-http-error",
+        responses={401: {"description": "Unauthorized by framework"}},
+    )
     async def _framework_http_error():
         raise HTTPException(status_code=401, detail="unauthorized by framework")
 
