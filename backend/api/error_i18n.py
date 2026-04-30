@@ -17,6 +17,10 @@ COMMON_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
         "en": "idempotency request is in progress",
         "zh": "幂等请求处理中",
     },
+    "idempotency_previous_failed": {
+        "en": "previous idempotency request failed",
+        "zh": "上一次幂等请求失败",
+    },
     "internal_server_error": {
         "en": "Internal server error",
         "zh": "服务器内部错误",
@@ -534,6 +538,195 @@ MEMORY_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
     },
 }
 
+SYSTEM_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
+    "system_config_invalid": {
+        "en": "invalid system config",
+        "zh": "系统配置不合法",
+    },
+    "system_config_invalid_governance_thresholds": {
+        "en": "invalid governance thresholds",
+        "zh": "治理阈值不合法",
+    },
+    "system_config_invalid_type": {
+        "en": "invalid system config type",
+        "zh": "系统配置类型不合法",
+    },
+    "system_config_unsupported_keys": {
+        "en": "unsupported system config keys",
+        "zh": "系统配置键不受支持",
+    },
+    "system_config_validation_failed": {
+        "en": "system config validation failed",
+        "zh": "系统配置校验失败",
+    },
+    "system_feature_flags_invalid": {
+        "en": "invalid system feature flags",
+        "zh": "系统功能开关配置不合法",
+    },
+}
+
+BACKUP_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
+    "backup_create_failed": {
+        "en": "failed to create backup",
+        "zh": "创建备份失败",
+    },
+    "backup_internal_error": {
+        "en": "backup internal error",
+        "zh": "备份内部错误",
+    },
+    "backup_not_found": {
+        "en": "backup not found",
+        "zh": "备份不存在",
+    },
+    "backup_restore_failed": {
+        "en": "failed to restore backup",
+        "zh": "恢复备份失败",
+    },
+    "model_json_backup_batch_restore_failed": {
+        "en": "failed to batch restore model json backups",
+        "zh": "批量恢复模型 JSON 备份失败",
+    },
+    "model_json_backup_delete_failed": {
+        "en": "failed to delete model json backup",
+        "zh": "删除模型 JSON 备份失败",
+    },
+    "model_json_backup_failed": {
+        "en": "failed to create model json backup",
+        "zh": "创建模型 JSON 备份失败",
+    },
+    "model_json_backup_restore_failed": {
+        "en": "failed to restore model json backup",
+        "zh": "恢复模型 JSON 备份失败",
+    },
+    "model_json_manifest_invalid_date": {
+        "en": "invalid model json manifest date",
+        "zh": "模型 JSON 清单日期不合法",
+    },
+    "model_json_manifest_not_found": {
+        "en": "model json manifest not found",
+        "zh": "模型 JSON 清单不存在",
+    },
+}
+
+PLUGIN_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
+    "plugin_market_install_failed": {
+        "en": "plugin market install failed",
+        "zh": "插件市场安装失败",
+    },
+    "plugin_market_installation_not_found": {
+        "en": "plugin market installation not found",
+        "zh": "插件市场安装记录不存在",
+    },
+    "plugin_market_package_not_found": {
+        "en": "plugin market package not found",
+        "zh": "插件市场包不存在",
+    },
+    "plugin_market_publish_invalid": {
+        "en": "invalid plugin market publish request",
+        "zh": "插件市场发布请求不合法",
+    },
+    "plugin_not_found": {
+        "en": "plugin not found",
+        "zh": "插件不存在",
+    },
+    "plugin_register_failed": {
+        "en": "plugin register failed",
+        "zh": "插件注册失败",
+    },
+    "plugin_reload_failed": {
+        "en": "plugin reload failed",
+        "zh": "插件重载失败",
+    },
+}
+
+IMAGE_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
+    "image_generation_capability_missing": {
+        "en": "image generation capability is missing",
+        "zh": "缺少图像生成能力",
+    },
+    "image_generation_failed": {
+        "en": "image generation failed",
+        "zh": "图像生成失败",
+    },
+    "image_generation_job_delete_conflict": {
+        "en": "image generation job cannot be deleted in current state",
+        "zh": "当前状态下无法删除图像生成任务",
+    },
+    "image_generation_job_not_found": {
+        "en": "image generation job not found",
+        "zh": "图像生成任务不存在",
+    },
+    "image_generation_job_state_missing": {
+        "en": "image generation job state is missing",
+        "zh": "图像生成任务状态缺失",
+    },
+    "image_generation_model_not_found": {
+        "en": "image generation model not found",
+        "zh": "图像生成模型不存在",
+    },
+    "image_generation_model_wrong_type": {
+        "en": "model is not an image generation model",
+        "zh": "模型不是图像生成模型",
+    },
+    "image_generation_output_not_found": {
+        "en": "image generation output not found",
+        "zh": "图像生成输出不存在",
+    },
+    "image_generation_persist_failed": {
+        "en": "failed to persist image generation result",
+        "zh": "保存图像生成结果失败",
+    },
+    "image_generation_queue_full": {
+        "en": "image generation queue is full",
+        "zh": "图像生成队列已满",
+    },
+    "image_generation_thumbnail_not_found": {
+        "en": "image generation thumbnail not found",
+        "zh": "图像生成缩略图不存在",
+    },
+    "image_generation_warmup_not_found": {
+        "en": "image generation warmup target not found",
+        "zh": "图像生成预热目标不存在",
+    },
+}
+
+EVENT_BUS_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
+    "event_bus_dlq_clear_confirmation_required": {
+        "en": "confirmation is required to clear DLQ",
+        "zh": "清空死信队列需要确认参数",
+    },
+    "event_bus_dlq_replay_confirmation_required": {
+        "en": "confirmation is required to replay DLQ",
+        "zh": "重放死信队列需要确认参数",
+    },
+    "event_bus_dlq_replay_rate_limited": {
+        "en": "DLQ replay is rate limited",
+        "zh": "死信队列重放触发限流",
+    },
+}
+
+INFERENCE_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
+    "inference_cache_clear_challenge_rate_limited": {
+        "en": "cache clear challenge is rate limited",
+        "zh": "缓存清理挑战触发限流",
+    },
+    "inference_cache_clear_confirmation_required": {
+        "en": "cache clear confirmation is required",
+        "zh": "缓存清理需要确认参数",
+    },
+    "inference_cache_clear_scope_required": {
+        "en": "cache clear scope is required",
+        "zh": "缓存清理范围为必填项",
+    },
+}
+
+SESSION_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
+    "chat_session_not_found": {
+        "en": "chat session not found",
+        "zh": "对话会话不存在",
+    },
+}
+
 MISC_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
 }
 
@@ -552,6 +745,13 @@ _ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
     **VLM_ERROR_MESSAGES,
     **COLLABORATION_ERROR_MESSAGES,
     **MEMORY_ERROR_MESSAGES,
+    **SYSTEM_ERROR_MESSAGES,
+    **BACKUP_ERROR_MESSAGES,
+    **PLUGIN_ERROR_MESSAGES,
+    **IMAGE_ERROR_MESSAGES,
+    **EVENT_BUS_ERROR_MESSAGES,
+    **INFERENCE_ERROR_MESSAGES,
+    **SESSION_ERROR_MESSAGES,
     **MISC_ERROR_MESSAGES,
 }
 
