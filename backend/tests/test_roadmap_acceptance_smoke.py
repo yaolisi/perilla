@@ -23,7 +23,7 @@ def test_run_smoke_happy_path(monkeypatch):
             {
                 "snapshot": {},
                 "north_star": {"score": 1.0},
-                "phase_gate": {"score": 1.0},
+                "phase_gate": {"score": 1.0, "readiness_summary": {"average_score": 0.92, "lowest_phase": "phase2_advanced"}},
                 "go_no_go": "go",
                 "go_no_go_reasons": [{"type": "summary", "message": "north_star_and_phase_gates_passed"}],
             },
@@ -33,6 +33,7 @@ def test_run_smoke_happy_path(monkeypatch):
             {
                 "review": {
                     "go_no_go": "no_go",
+                    "phase_gate": {"readiness_summary": {"average_score": 0.75, "lowest_phase": "phase2_advanced"}},
                     "go_no_go_reasons": [
                         {
                             "type": "readiness_risk",

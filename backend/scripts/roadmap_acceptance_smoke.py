@@ -58,6 +58,10 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
     _assert(isinstance(body.get("snapshot"), dict), "phase status missing snapshot")
     _assert(isinstance(body.get("north_star"), dict), "phase status missing north_star")
     _assert(isinstance(body.get("phase_gate"), dict), "phase status missing phase_gate")
+    _assert(
+        isinstance((body.get("phase_gate") or {}).get("readiness_summary"), dict),
+        "phase status missing readiness_summary",
+    )
     _assert(body.get("go_no_go") in {"go", "no_go"}, "phase status go_no_go invalid")
     _assert(isinstance(body.get("go_no_go_reasons"), list), "phase status go_no_go_reasons must be list")
     for reason in body.get("go_no_go_reasons") or []:
@@ -72,6 +76,10 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
     _assert(review_create["status_code"] == 200, "monthly review create should be 200")
     review = review_create["body"].get("review", {})
     _assert(review.get("go_no_go") in {"go", "no_go"}, "monthly review go_no_go invalid")
+    _assert(
+        isinstance((review.get("phase_gate") or {}).get("readiness_summary"), dict),
+        "monthly review missing readiness_summary",
+    )
     _assert(isinstance(review.get("go_no_go_reasons"), list), "monthly review go_no_go_reasons must be list")
     for reason in review.get("go_no_go_reasons") or []:
         _assert(isinstance(reason, dict), "monthly review go_no_go_reasons item must be object")
@@ -123,6 +131,8 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
             {
                 "ok": True,
                 "phase_gate_score": body.get("phase_gate", {}).get("score"),
+                "phase_readiness_avg": body.get("phase_gate", {}).get("readiness_summary", {}).get("average_score"),
+                "phase_readiness_lowest": body.get("phase_gate", {}).get("readiness_summary", {}).get("lowest_phase"),
                 "north_star_score": body.get("north_star", {}).get("score"),
                 "latest_go_no_go": review.get("go_no_go"),
             },
