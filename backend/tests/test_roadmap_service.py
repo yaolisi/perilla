@@ -75,6 +75,71 @@ def test_evaluate_phase_gates_detects_missing_capabilities_and_kpi() -> None:
     assert phase["kpi_results"]["observability_coverage"]["passed"] is False
 
 
+def test_evaluate_phase_gates_accepts_multi_hop_alias() -> None:
+    snapshot = {
+        "capabilities": {"multi_hop_retrieval_system": True},
+        "capability_details": {
+            "multi_hop_retrieval_system": {
+                "source": "auto_detect",
+                "enabled": True,
+                "signals": {"manifest_exists": True},
+            }
+        },
+        "multi_hop_accuracy_gain": 0.2,
+    }
+    gates = {
+        "phase2_advanced": {
+            "required_capabilities": ["multi_hop_retrieval"],
+            "required_kpis": {"multi_hop_accuracy_gain": 0.15},
+        }
+    }
+    result = roadmap.evaluate_phase_gates(snapshot, gates)
+    phase = result["phase2_advanced"]
+    assert phase["passed"] is True
+    assert phase["missing_capabilities"] == []
+
+
+def test_evaluate_phase_gates_missing_capability_has_fallback_detail() -> None:
+    snapshot = {
+        "capabilities": {},
+        "capability_details": {},
+        "multi_hop_accuracy_gain": 0.1,
+    }
+    gates = {
+        "phase2_advanced": {
+            "required_capabilities": ["anomaly_detection"],
+            "required_kpis": {"multi_hop_accuracy_gain": 0.15},
+        }
+    }
+    result = roadmap.evaluate_phase_gates(snapshot, gates)
+    detail = result["phase2_advanced"]["missing_capability_details"]["anomaly_detection"]
+    assert detail["enabled"] is False
+    assert detail["source"] == "gate_evaluator"
+    assert detail["signals"]["requested_capability"] == "anomaly_detection"
+
+
+def test_build_roadmap_snapshot_includes_anomaly_signals(monkeypatch) -> None:
+    store = _FakeStore()
+    store.set_setting("chaosFailRateWarn", 0.01)
+    store.set_setting("chaosP95WarnMs", 2000)
+    store.set_setting("chaosNetErrWarn", 10)
+    monkeypatch.setattr(
+        roadmap,
+        "collect_operational_baseline",
+        lambda: {
+            "online_error_rate": 0.05,
+            "p95_latency_ms": 3500,
+            "failed_requests": 12,
+        },
+    )
+    monkeypatch.setattr(roadmap, "_load_manual_quality_metrics", lambda _store: {})
+
+    snapshot = roadmap.build_roadmap_snapshot(store=store)
+    anomaly = snapshot.get("anomaly_signals", {})
+    assert anomaly.get("anomaly_detected") is True
+    assert set(anomaly.get("breached_metrics") or []) == {"online_error_rate", "p95_latency_ms", "failed_requests"}
+
+
 def test_create_monthly_review_persists_history(monkeypatch) -> None:
     store = _FakeStore()
     monkeypatch.setattr(roadmap, "get_system_settings_store", lambda: store)
@@ -193,10 +258,12 @@ def test_build_go_no_go_reasons_for_no_go_prefers_blockers() -> None:
             {"capability": "hybrid_retrieval", "phase_count": 2, "blocked_phases": ["phase1_core", "phase2_advanced"]},
             {"capability": "dynamic_batching", "phase_count": 1, "blocked_phases": ["phase1_core"]},
         ],
-        max_items=3,
+        anomaly_signals={"anomaly_detected": True, "breached_metrics": ["online_error_rate"]},
+        max_items=4,
     )
     assert reasons[0]["type"] == "capability_blocker"
     assert reasons[0]["capability"] == "hybrid_retrieval"
+    assert any(item.get("type") == "anomaly_risk" for item in reasons)
     assert any(item.get("type") == "north_star" for item in reasons)
 
 
@@ -214,10 +281,12 @@ def test_build_go_no_go_summary_for_go_and_no_go() -> None:
         north_star=roadmap.RoadmapEvaluation(score=0.5, passed=False, reasons=["kpi gap"]),
         gate_score=0.5,
         blocking_capabilities=[{"capability": "hybrid_retrieval", "phase_count": 2, "blocked_phases": ["phase1_core"]}],
+        anomaly_signals={"anomaly_detected": True, "breached_metrics": ["p95_latency_ms"]},
     )
     assert no_go_summary["go_no_go"] == "no_go"
     assert no_go_summary["top_blocker_capability"] == "hybrid_retrieval"
     assert no_go_summary["go_no_go_reasons"][0]["type"] == "capability_blocker"
+    assert any(item.get("type") == "anomaly_risk" for item in no_go_summary["go_no_go_reasons"])
 
 
 def test_create_monthly_review_sets_top_blocker_capability(monkeypatch) -> None:

@@ -25,10 +25,24 @@ def test_run_smoke_happy_path(monkeypatch):
                 "north_star": {"score": 1.0},
                 "phase_gate": {"score": 1.0},
                 "go_no_go": "go",
-                "go_no_go_reasons": [],
+                "go_no_go_reasons": [{"type": "summary", "message": "north_star_and_phase_gates_passed"}],
             },
         ),
-        _FakeResponse(200, {"review": {"go_no_go": "go"}}),
+        _FakeResponse(
+            200,
+            {
+                "review": {
+                    "go_no_go": "no_go",
+                    "go_no_go_reasons": [
+                        {
+                            "type": "anomaly_risk",
+                            "message": "runtime_anomaly_threshold_breached",
+                            "breached_metrics": ["online_error_rate"],
+                        }
+                    ],
+                }
+            },
+        ),
         _FakeResponse(
             200,
             {

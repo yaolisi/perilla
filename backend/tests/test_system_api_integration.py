@@ -1023,6 +1023,47 @@ def test_roadmap_phase_status_includes_auto_detected_capabilities(monkeypatch):
     assert capability_details.get("hybrid_retrieval", {}).get("signals", {}).get("manifest_exists") is True
 
 
+def test_detect_roadmap_capabilities_includes_phase2_keys(monkeypatch):
+    monkeypatch.setattr(system_api, "_list_agents_for_capability_detection", lambda: [])
+    monkeypatch.setattr(system_api, "_detect_dynamic_batching_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_hybrid_retrieval_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_multi_hop_retrieval_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_kg_augmented_rag_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_active_learning_reviewed_update_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_anomaly_detection_capability", lambda: True)
+
+    caps = system_api._detect_roadmap_capabilities()
+    assert caps["multi_hop_retrieval"] is True
+    assert caps["multi_hop_retrieval_system"] is True
+    assert caps["kg_augmented_rag"] is True
+    assert caps["active_learning_reviewed_update"] is True
+    assert caps["anomaly_detection"] is True
+
+
+def test_detect_roadmap_capability_details_includes_phase2_keys(monkeypatch):
+    monkeypatch.setattr(system_api, "_list_agents_for_capability_detection", lambda: [])
+    monkeypatch.setattr(system_api, "_detect_dynamic_batching_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_hybrid_retrieval_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_multi_hop_retrieval_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_kg_augmented_rag_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_active_learning_reviewed_update_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_anomaly_detection_capability", lambda: True)
+    monkeypatch.setattr(
+        system_api,
+        "build_roadmap_snapshot",
+        lambda: {"anomaly_signals": {"anomaly_detected": True, "breached_metrics": ["online_error_rate"]}},
+    )
+
+    details = system_api._detect_roadmap_capability_details()
+    assert details["multi_hop_retrieval"]["enabled"] is True
+    assert details["multi_hop_retrieval_system"]["enabled"] is True
+    assert details["kg_augmented_rag"]["signals"]["search_graph_relations_available"] is True
+    assert details["active_learning_reviewed_update"]["signals"]["manual_quality_metrics_save_available"] is True
+    assert details["anomaly_detection"]["signals"]["chaos_threshold_keys_present"] is True
+    assert details["anomaly_detection"]["signals"]["anomaly_detected"] is True
+    assert details["anomaly_detection"]["signals"]["breached_metrics"] == ["online_error_rate"]
+
+
 def test_roadmap_monthly_review_create_and_list(monkeypatch):
     client = _build_client()
     captured = {}

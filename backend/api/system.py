@@ -53,6 +53,7 @@ from core.plugins.market import PluginMarketValidationError, get_plugin_market_s
 from core.plugins.compatibility import build_plugin_compatibility_matrix
 from core.models.registry import get_model_registry
 from core.agent_runtime.definition import get_agent_registry
+from core.knowledge.knowledge_base_store import KnowledgeBaseStore
 from core.data.base import SessionLocal
 from core.idempotency.service import (
     IDEMPOTENCY_STATUS_FAILED,
@@ -1556,6 +1557,69 @@ def _detect_hybrid_retrieval_capability() -> bool:
         return False
 
 
+def _load_rag_plugin_manifest() -> Dict[str, Any]:
+    try:
+        if not _RAG_PLUGIN_MANIFEST_PATH.exists():
+            return {}
+        raw = _RAG_PLUGIN_MANIFEST_PATH.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _detect_multi_hop_retrieval_capability() -> bool:
+    # Phase 2 的“多跳”先以多阶段检索链路参数存在作为能力信号
+    manifest = _load_rag_plugin_manifest()
+    rag_props = (
+        (((manifest.get("input_schema") or {}).get("properties") or {}).get("rag") or {}).get("properties") or {}
+    )
+    return all(key in rag_props for key in ("keyword_top_k", "vector_top_k", "rerank_top_k"))
+
+
+def _detect_kg_augmented_rag_capability() -> bool:
+    # 通过知识库层是否暴露图谱关系检索能力判断
+    return callable(getattr(KnowledgeBaseStore, "search_graph_relations", None))
+
+
+def _detect_active_learning_reviewed_update_capability() -> bool:
+    # 先以“支持手工质量指标回填”作为主动学习闭环的基础能力
+    return callable(save_manual_quality_metrics)
+
+
+def _detect_anomaly_detection_capability() -> bool:
+    # 先以治理阈值配置 + 可观测摘要入口存在作为异常检测能力信号
+    return (
+        "chaosFailRateWarn" in ALLOWED_SYSTEM_CONFIG_KEYS
+        and "chaosP95WarnMs" in ALLOWED_SYSTEM_CONFIG_KEYS
+        and "chaosNetErrWarn" in ALLOWED_SYSTEM_CONFIG_KEYS
+    )
+
+
+def _build_anomaly_detection_detail(enabled: bool) -> Dict[str, Any]:
+    anomaly_signals = {}
+    try:
+        snapshot = build_roadmap_snapshot()
+        raw = snapshot.get("anomaly_signals")
+        if isinstance(raw, dict):
+            anomaly_signals = raw
+    except Exception:
+        anomaly_signals = {}
+    breached_metrics = anomaly_signals.get("breached_metrics") if isinstance(anomaly_signals, dict) else []
+    return {
+        "source": "runtime_thresholds",
+        "enabled": enabled,
+        "signals": {
+            "chaos_threshold_keys_present": all(
+                key in ALLOWED_SYSTEM_CONFIG_KEYS
+                for key in ("chaosFailRateWarn", "chaosP95WarnMs", "chaosNetErrWarn")
+            ),
+            "anomaly_detected": bool(anomaly_signals.get("anomaly_detected")) if isinstance(anomaly_signals, dict) else False,
+            "breached_metrics": breached_metrics if isinstance(breached_metrics, list) else [],
+        },
+    }
+
+
 def _build_hybrid_retrieval_detail(enabled: bool) -> Dict[str, Any]:
     detail: Dict[str, Any] = {
         "source": "rag_plugin_manifest",
@@ -1607,9 +1671,15 @@ def _detect_agent_role_collaboration_capability(agents: List[Any]) -> bool:
 
 def _detect_roadmap_capabilities() -> Dict[str, bool]:
     agents = _list_agents_for_capability_detection()
+    multi_hop_enabled = _detect_multi_hop_retrieval_capability()
     return {
         "dynamic_batching": _detect_dynamic_batching_capability(),
         "hybrid_retrieval": _detect_hybrid_retrieval_capability(),
+        "multi_hop_retrieval": multi_hop_enabled,
+        "multi_hop_retrieval_system": multi_hop_enabled,
+        "kg_augmented_rag": _detect_kg_augmented_rag_capability(),
+        "active_learning_reviewed_update": _detect_active_learning_reviewed_update_capability(),
+        "anomaly_detection": _detect_anomaly_detection_capability(),
         "function_calling_orchestration": _detect_function_calling_orchestration_capability(agents),
         "agent_role_collaboration": _detect_agent_role_collaboration_capability(agents),
     }
@@ -1620,9 +1690,45 @@ def _detect_roadmap_capability_details() -> Dict[str, Dict[str, Any]]:
     plan_based_agents = _iter_plan_based_agents_with_skills(agents)
     function_calling_enabled = bool(plan_based_agents)
     collaboration_enabled = len(plan_based_agents) >= 2
+    multi_hop_enabled = _detect_multi_hop_retrieval_capability()
     return {
         "dynamic_batching": _build_dynamic_batching_detail(_detect_dynamic_batching_capability()),
         "hybrid_retrieval": _build_hybrid_retrieval_detail(_detect_hybrid_retrieval_capability()),
+        "multi_hop_retrieval": {
+            "source": "rag_plugin_manifest",
+            "enabled": multi_hop_enabled,
+            "signals": {
+                "manifest_exists": bool(_RAG_PLUGIN_MANIFEST_PATH.exists()),
+                "required_chain_params": ["keyword_top_k", "vector_top_k", "rerank_top_k"],
+            },
+        },
+        "multi_hop_retrieval_system": {
+            "source": "rag_plugin_manifest",
+            "enabled": multi_hop_enabled,
+            "signals": {
+                "manifest_exists": bool(_RAG_PLUGIN_MANIFEST_PATH.exists()),
+                "required_chain_params": ["keyword_top_k", "vector_top_k", "rerank_top_k"],
+            },
+        },
+        "kg_augmented_rag": {
+            "source": "knowledge_base_store",
+            "enabled": _detect_kg_augmented_rag_capability(),
+            "signals": {
+                "search_graph_relations_available": callable(
+                    getattr(KnowledgeBaseStore, "search_graph_relations", None)
+                ),
+            },
+        },
+        "active_learning_reviewed_update": {
+            "source": "roadmap_quality_metrics",
+            "enabled": _detect_active_learning_reviewed_update_capability(),
+            "signals": {
+                "manual_quality_metrics_save_available": callable(save_manual_quality_metrics),
+            },
+        },
+        "anomaly_detection": {
+            **_build_anomaly_detection_detail(_detect_anomaly_detection_capability()),
+        },
         "function_calling_orchestration": {
             "source": "agent_registry",
             "enabled": function_calling_enabled,
@@ -1696,6 +1802,7 @@ def _build_phase_status_payload(snapshot: Dict[str, Any]) -> RoadmapPhaseStatusR
         north_star=north_star,
         gate_score=gate_score,
         blocking_capabilities=blocking_capabilities,
+        anomaly_signals=snapshot.get("anomaly_signals") if isinstance(snapshot.get("anomaly_signals"), dict) else None,
     )
     go_no_go = str(go_no_go_summary.get("go_no_go") or "no_go")
     go_no_go_reasons = list(go_no_go_summary.get("go_no_go_reasons") or [])

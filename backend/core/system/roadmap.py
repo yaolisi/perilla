@@ -21,6 +21,12 @@ DEFAULT_ROADMAP_KPIS: Dict[str, Any] = {
     "online_error_rate_max": 0.002,
 }
 
+DEFAULT_ANOMALY_THRESHOLDS: Dict[str, float] = {
+    "chaosFailRateWarn": 0.02,
+    "chaosP95WarnMs": 3000.0,
+    "chaosNetErrWarn": 50.0,
+}
+
 DEFAULT_PHASE_GATES: Dict[str, Dict[str, Any]] = {
     "phase0_foundation": {
         "required_capabilities": [
@@ -70,6 +76,12 @@ DEFAULT_PHASE_GATES: Dict[str, Dict[str, Any]] = {
             "rollback_time_seconds": 300,
         },
     },
+}
+
+
+CAPABILITY_ALIASES: Dict[str, List[str]] = {
+    "multi_hop_retrieval": ["multi_hop_retrieval_system"],
+    "multi_hop_retrieval_system": ["multi_hop_retrieval"],
 }
 
 
@@ -186,14 +198,60 @@ def save_manual_quality_metrics(payload: Dict[str, Any], store: SystemSettingsSt
     return merged
 
 
+def collect_anomaly_signals(snapshot: Dict[str, Any], store: SystemSettingsStore) -> Dict[str, Any]:
+    fail_rate_warn = float(store.get_setting("chaosFailRateWarn", DEFAULT_ANOMALY_THRESHOLDS["chaosFailRateWarn"]))
+    p95_warn_ms = float(store.get_setting("chaosP95WarnMs", DEFAULT_ANOMALY_THRESHOLDS["chaosP95WarnMs"]))
+    net_err_warn = float(store.get_setting("chaosNetErrWarn", DEFAULT_ANOMALY_THRESHOLDS["chaosNetErrWarn"]))
+
+    checks = [
+        {
+            "metric": "online_error_rate",
+            "current": float(snapshot.get("online_error_rate") or 0.0),
+            "threshold": fail_rate_warn,
+            "comparison": ">=",
+        },
+        {
+            "metric": "p95_latency_ms",
+            "current": float(snapshot.get("p95_latency_ms") or 0.0),
+            "threshold": p95_warn_ms,
+            "comparison": ">=",
+        },
+        {
+            "metric": "failed_requests",
+            "current": float(snapshot.get("failed_requests") or 0.0),
+            "threshold": net_err_warn,
+            "comparison": ">=",
+        },
+    ]
+    for item in checks:
+        item["breached"] = bool(float(item["current"]) >= float(item["threshold"]))
+
+    breached = [item["metric"] for item in checks if item.get("breached")]
+    return {
+        "enabled": True,
+        "thresholds": {
+            "chaosFailRateWarn": fail_rate_warn,
+            "chaosP95WarnMs": p95_warn_ms,
+            "chaosNetErrWarn": net_err_warn,
+        },
+        "checks": checks,
+        "breached_metrics": breached,
+        "anomaly_detected": bool(breached),
+    }
+
+
 def build_roadmap_snapshot(store: SystemSettingsStore | None = None) -> Dict[str, Any]:
     settings_store = store or get_system_settings_store()
     automatic = collect_operational_baseline()
     manual = _load_manual_quality_metrics(settings_store)
-    return {
+    merged = {
         **automatic,
         **manual,
         "snapshot_at": _utc_now_iso(),
+    }
+    merged["anomaly_signals"] = collect_anomaly_signals(merged, settings_store)
+    return {
+        **merged,
     }
 
 
@@ -269,6 +327,43 @@ def _evaluate_gate_kpis(snapshot: Dict[str, Any], required_kpis: Dict[str, Any])
     return kpi_ok_count, kpi_results
 
 
+def _resolve_capability_enabled(capabilities: Dict[str, Any], name: str) -> bool:
+    if bool(capabilities.get(name)):
+        return True
+    for alias in CAPABILITY_ALIASES.get(name, []):
+        if bool(capabilities.get(alias)):
+            return True
+    return False
+
+
+def _resolve_capability_detail(capability_details: Dict[str, Any], name: str) -> Dict[str, Any]:
+    raw = capability_details.get(name)
+    if isinstance(raw, dict):
+        return dict(raw)
+    for alias in CAPABILITY_ALIASES.get(name, []):
+        raw_alias = capability_details.get(alias)
+        if isinstance(raw_alias, dict):
+            out = dict(raw_alias)
+            signals = out.get("signals")
+            if not isinstance(signals, dict):
+                signals = {}
+            out["signals"] = {
+                **signals,
+                "resolved_from_alias": alias,
+                "requested_capability": name,
+            }
+            return out
+    return {
+        "source": "gate_evaluator",
+        "enabled": False,
+        "signals": {
+            "reason": "capability_not_detected_or_not_enabled",
+            "requested_capability": name,
+            "aliases_checked": CAPABILITY_ALIASES.get(name, []),
+        },
+    }
+
+
 def evaluate_phase_gates(snapshot: Dict[str, Any], gates: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     capabilities_raw = snapshot.get("capabilities") or {}
     capabilities = capabilities_raw if isinstance(capabilities_raw, dict) else {}
@@ -279,11 +374,10 @@ def evaluate_phase_gates(snapshot: Dict[str, Any], gates: Dict[str, Dict[str, An
     for phase, gate in gates.items():
         required_capabilities = list(gate.get("required_capabilities") or [])
         required_kpis = gate.get("required_kpis") or {}
-        missing_capabilities = [name for name in required_capabilities if not bool(capabilities.get(name))]
+        missing_capabilities = [name for name in required_capabilities if not _resolve_capability_enabled(capabilities, name)]
         missing_capability_details = {
-            name: capability_details.get(name)
+            name: _resolve_capability_detail(capability_details, name)
             for name in missing_capabilities
-            if name in capability_details
         }
         kpi_ok_count, kpi_results = _evaluate_gate_kpis(snapshot, required_kpis)
         gate_passed = (not missing_capabilities) and (kpi_ok_count == len(required_kpis))
@@ -327,6 +421,7 @@ def build_go_no_go_reasons(
     go_no_go: str,
     north_star: RoadmapEvaluation,
     blocking_capabilities: List[Dict[str, Any]],
+    anomaly_signals: Dict[str, Any] | None = None,
     max_items: int = 3,
 ) -> List[Dict[str, Any]]:
     limit = max(1, int(max_items))
@@ -349,6 +444,22 @@ def build_go_no_go_reasons(
             }
         )
 
+    anomaly_payload = anomaly_signals if isinstance(anomaly_signals, dict) else {}
+    breached_metrics = anomaly_payload.get("breached_metrics") or []
+    if (
+        len(reasons) < limit
+        and bool(anomaly_payload.get("anomaly_detected"))
+        and isinstance(breached_metrics, list)
+        and breached_metrics
+    ):
+        reasons.append(
+            {
+                "type": "anomaly_risk",
+                "message": "runtime_anomaly_threshold_breached",
+                "breached_metrics": [str(item) for item in breached_metrics],
+            }
+        )
+
     if (not north_star.passed) and len(reasons) < limit:
         reasons.append(
             {
@@ -366,12 +477,14 @@ def build_go_no_go_summary(
     north_star: RoadmapEvaluation,
     gate_score: float,
     blocking_capabilities: List[Dict[str, Any]],
+    anomaly_signals: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     go_no_go = "go" if north_star.passed and float(gate_score) >= 0.75 else "no_go"
     go_no_go_reasons = build_go_no_go_reasons(
         go_no_go=go_no_go,
         north_star=north_star,
         blocking_capabilities=blocking_capabilities,
+        anomaly_signals=anomaly_signals,
     )
     top_blocker_capability = (
         str(blocking_capabilities[0].get("capability") or "")
@@ -418,6 +531,7 @@ def create_monthly_review(
         north_star=north_star,
         gate_score=gate_score,
         blocking_capabilities=blocking_capabilities,
+        anomaly_signals=snapshot.get("anomaly_signals") if isinstance(snapshot.get("anomaly_signals"), dict) else None,
     )
     audit_total = _count_recent_audit_entries()
 

@@ -60,12 +60,25 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
     _assert(isinstance(body.get("phase_gate"), dict), "phase status missing phase_gate")
     _assert(body.get("go_no_go") in {"go", "no_go"}, "phase status go_no_go invalid")
     _assert(isinstance(body.get("go_no_go_reasons"), list), "phase status go_no_go_reasons must be list")
+    for reason in body.get("go_no_go_reasons") or []:
+        _assert(isinstance(reason, dict), "phase status go_no_go_reasons item must be object")
+        _assert(
+            str(reason.get("type") or "") in {"summary", "capability_blocker", "north_star", "anomaly_risk"},
+            "phase status go_no_go_reason.type invalid",
+        )
 
     # 5) 创建月度复盘
     review_create = _request("POST", base_url, "/api/system/roadmap/monthly-review", api_key)
     _assert(review_create["status_code"] == 200, "monthly review create should be 200")
     review = review_create["body"].get("review", {})
     _assert(review.get("go_no_go") in {"go", "no_go"}, "monthly review go_no_go invalid")
+    _assert(isinstance(review.get("go_no_go_reasons"), list), "monthly review go_no_go_reasons must be list")
+    for reason in review.get("go_no_go_reasons") or []:
+        _assert(isinstance(reason, dict), "monthly review go_no_go_reasons item must be object")
+        _assert(
+            str(reason.get("type") or "") in {"summary", "capability_blocker", "north_star", "anomaly_risk"},
+            "monthly review go_no_go_reason.type invalid",
+        )
 
     # 6) 查询月度复盘列表
     review_list = _request("GET", base_url, "/api/system/roadmap/monthly-review?limit=3", api_key)
