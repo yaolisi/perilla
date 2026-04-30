@@ -255,6 +255,19 @@ def test_build_blocking_capabilities_aggregates_and_sorts() -> None:
     assert set(items[0]["blocked_phases"]) == {"phase1_core", "phase2_advanced"}
 
 
+def test_build_phase_readiness_summary_picks_lowest_phase() -> None:
+    phase_status = {
+        "phase1_core": {"readiness": {"score": 0.85}},
+        "phase2_advanced": {"readiness": {"score": 0.65}},
+        "phase3_scale": {"readiness": {"score": 0.9}},
+    }
+    summary = roadmap.build_phase_readiness_summary(phase_status, low_threshold=0.7)
+    assert summary["lowest_phase"] == "phase2_advanced"
+    assert abs(float(summary["lowest_score"]) - 0.65) < 1e-9
+    assert summary["phases_below_threshold"] == ["phase2_advanced"]
+    assert summary["average_score"] > 0.0
+
+
 def test_build_go_no_go_reasons_for_no_go_prefers_blockers() -> None:
     reasons = roadmap.build_go_no_go_reasons(
         go_no_go="no_go",
@@ -331,6 +344,7 @@ def test_create_monthly_review_sets_top_blocker_capability(monkeypatch) -> None:
     )
     assert review["go_no_go"] == "no_go"
     assert review["top_blocker_capability"] in {"dynamic_batching", "hybrid_retrieval"}
+    assert isinstance(review["phase_gate"].get("readiness_summary"), dict)
 
 
 def test_list_monthly_reviews_filter_by_top_blocker(monkeypatch) -> None:

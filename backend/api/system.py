@@ -37,6 +37,7 @@ from core.system.runtime_settings import (
 from core.system.roadmap import (
     build_blocking_capabilities,
     build_go_no_go_summary,
+    build_phase_readiness_summary,
     build_roadmap_snapshot,
     create_monthly_review,
     get_phase_gates,
@@ -365,6 +366,7 @@ class RoadmapPhaseGateStatus(BaseModel):
     score: float
     phases: Dict[str, Dict[str, Any]]
     blocking_capabilities: List[Dict[str, Any]]
+    readiness_summary: Dict[str, Any]
     top_blocker_capability: Optional[str] = None
 
 
@@ -1860,6 +1862,7 @@ def _build_phase_status_payload(snapshot: Dict[str, Any]) -> RoadmapPhaseStatusR
     total_count = len(phase_status)
     gate_score = (passed_count / total_count) if total_count else 0.0
     blocking_capabilities = build_blocking_capabilities(phase_status)
+    readiness_summary = build_phase_readiness_summary(phase_status)
     go_no_go_summary = build_go_no_go_summary(
         north_star=north_star,
         gate_score=gate_score,
@@ -1885,6 +1888,7 @@ def _build_phase_status_payload(snapshot: Dict[str, Any]) -> RoadmapPhaseStatusR
             "score": round(gate_score, 4),
             "phases": phase_status,
             "blocking_capabilities": blocking_capabilities,
+            "readiness_summary": readiness_summary,
             "top_blocker_capability": top_blocker_capability,
         },
     }

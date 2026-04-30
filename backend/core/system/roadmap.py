@@ -450,6 +450,38 @@ def build_blocking_capabilities(phase_status: Dict[str, Dict[str, Any]]) -> List
     )
 
 
+def build_phase_readiness_summary(
+    phase_status: Dict[str, Dict[str, Any]],
+    *,
+    low_threshold: float = 0.7,
+) -> Dict[str, Any]:
+    items: List[Dict[str, Any]] = []
+    for phase_name, info in (phase_status or {}).items():
+        readiness = info.get("readiness") or {}
+        if not isinstance(readiness, dict):
+            continue
+        score = float(readiness.get("score") or 0.0)
+        items.append({"phase": str(phase_name), "score": round(score, 4)})
+    if not items:
+        return {
+            "average_score": 0.0,
+            "lowest_phase": None,
+            "lowest_score": 0.0,
+            "phases_below_threshold": [],
+            "low_threshold": float(low_threshold),
+        }
+    average_score = sum(item["score"] for item in items) / len(items)
+    ordered = sorted(items, key=lambda x: (x["score"], x["phase"]))
+    lowest = ordered[0]
+    return {
+        "average_score": round(average_score, 4),
+        "lowest_phase": lowest["phase"],
+        "lowest_score": round(float(lowest["score"]), 4),
+        "phases_below_threshold": [item["phase"] for item in ordered if float(item["score"]) < float(low_threshold)],
+        "low_threshold": float(low_threshold),
+    }
+
+
 def build_go_no_go_reasons(
     *,
     go_no_go: str,
@@ -561,6 +593,7 @@ def create_monthly_review(
     phase_passed_count = sum(1 for item in phase_status.values() if item.get("passed"))
     gate_score = phase_passed_count / len(phase_status) if phase_status else 0.0
     blocking_capabilities = build_blocking_capabilities(phase_status)
+    readiness_summary = build_phase_readiness_summary(phase_status)
     go_no_go_summary = build_go_no_go_summary(
         north_star=north_star,
         gate_score=gate_score,
@@ -582,6 +615,7 @@ def create_monthly_review(
             "passed": gate_score >= 0.75,
             "phases": phase_status,
             "blocking_capabilities": blocking_capabilities,
+            "readiness_summary": readiness_summary,
         },
         "go_no_go": go_no_go_summary["go_no_go"],
         "go_no_go_reasons": go_no_go_summary["go_no_go_reasons"],

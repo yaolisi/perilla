@@ -910,7 +910,14 @@ def test_roadmap_phase_status_endpoint_returns_gate_summary(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "evaluate_phase_gates",
-        lambda snapshot, gates: {"phase0_foundation": {"passed": True, "missing_capabilities": [], "kpi_results": {}}},
+        lambda snapshot, gates: {
+            "phase0_foundation": {
+                "passed": True,
+                "missing_capabilities": [],
+                "kpi_results": {},
+                "readiness": {"score": 1.0},
+            }
+        },
     )
 
     resp = client.get("/api/system/roadmap/phases/status")
@@ -920,6 +927,7 @@ def test_roadmap_phase_status_endpoint_returns_gate_summary(monkeypatch):
     assert body.get("phase_gate", {}).get("passed_count") == 1
     assert body.get("go_no_go") in {"go", "no_go"}
     assert isinstance(body.get("go_no_go_reasons"), list)
+    assert isinstance(body.get("phase_gate", {}).get("readiness_summary"), dict)
     assert "top_blocker_capability" in body
 
 
@@ -1313,12 +1321,21 @@ def test_roadmap_phase_status_response_contract():
 
     # phase_gate contract
     gate = body["phase_gate"]
-    assert set(gate.keys()) >= {"passed_count", "total_count", "score", "phases", "blocking_capabilities", "top_blocker_capability"}
+    assert set(gate.keys()) >= {
+        "passed_count",
+        "total_count",
+        "score",
+        "phases",
+        "blocking_capabilities",
+        "readiness_summary",
+        "top_blocker_capability",
+    }
     assert isinstance(gate["passed_count"], int)
     assert isinstance(gate["total_count"], int)
     assert isinstance(gate["score"], (int, float))
     assert isinstance(gate["phases"], dict)
     assert isinstance(gate["blocking_capabilities"], list)
+    assert isinstance(gate["readiness_summary"], dict)
     assert gate["top_blocker_capability"] is None or isinstance(gate["top_blocker_capability"], str)
 
     # 每个 phase 的 contract
