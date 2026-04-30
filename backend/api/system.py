@@ -302,6 +302,19 @@ class RoadmapKpiUpdateBody(BaseModel):
     online_error_rate_max: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
+class RoadmapKpisReadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kpis: Dict[str, Any]
+
+
+class RoadmapKpisUpdateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    kpis: Dict[str, Any]
+
+
 class RoadmapQualityMetricsUpdateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1914,8 +1927,8 @@ def _read_roadmap_capabilities() -> Dict[str, bool]:
 
 
 @router.get("/roadmap/kpis")
-async def get_roadmap_kpis_api(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
-    return {"kpis": get_roadmap_kpis()}
+async def get_roadmap_kpis_api(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> RoadmapKpisReadResponse:
+    return RoadmapKpisReadResponse(kpis=get_roadmap_kpis())
 
 
 @router.post("/roadmap/kpis")
@@ -1923,10 +1936,10 @@ async def update_roadmap_kpis_api(
     body: RoadmapKpiUpdateBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> RoadmapKpisUpdateResponse:
     payload = body.model_dump(exclude_none=True)
     merged = save_roadmap_kpis(payload)
-    return {"success": True, "kpis": merged}
+    return RoadmapKpisUpdateResponse(success=True, kpis=merged)
 
 
 @router.get("/roadmap/quality-metrics")
