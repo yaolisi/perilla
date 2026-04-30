@@ -482,12 +482,68 @@ def build_phase_readiness_summary(
     }
 
 
+def _build_capability_blocker_reasons(
+    blocking_capabilities: List[Dict[str, Any]],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    reasons: List[Dict[str, Any]] = []
+    for item in blocking_capabilities[:limit]:
+        reasons.append(
+            {
+                "type": "capability_blocker",
+                "capability": str(item.get("capability") or ""),
+                "phase_count": int(item.get("phase_count") or 0),
+                "blocked_phases": list(item.get("blocked_phases") or []),
+            }
+        )
+    return reasons
+
+
+def _build_anomaly_risk_reason(anomaly_signals: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    payload = anomaly_signals if isinstance(anomaly_signals, dict) else {}
+    breached_metrics = payload.get("breached_metrics") or []
+    if not bool(payload.get("anomaly_detected")) or not isinstance(breached_metrics, list) or not breached_metrics:
+        return None
+    return {
+        "type": "anomaly_risk",
+        "message": "runtime_anomaly_threshold_breached",
+        "breached_metrics": [str(item) for item in breached_metrics],
+    }
+
+
+def _build_readiness_risk_reason(readiness_summary: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    payload = readiness_summary if isinstance(readiness_summary, dict) else {}
+    lowest_phase = str(payload.get("lowest_phase") or "").strip()
+    lowest_score = float(payload.get("lowest_score") or 0.0)
+    low_threshold = float(payload.get("low_threshold") or 0.0)
+    if (not lowest_phase) or lowest_score >= low_threshold:
+        return None
+    return {
+        "type": "readiness_risk",
+        "message": "phase_readiness_below_threshold",
+        "lowest_phase": lowest_phase,
+        "lowest_score": round(lowest_score, 4),
+        "low_threshold": round(low_threshold, 4),
+    }
+
+
+def _build_north_star_reason(north_star: RoadmapEvaluation) -> Dict[str, Any] | None:
+    if north_star.passed:
+        return None
+    return {
+        "type": "north_star",
+        "message": "north_star_kpis_not_fully_met",
+        "score": round(float(north_star.score), 4),
+    }
+
+
 def build_go_no_go_reasons(
     *,
     go_no_go: str,
     north_star: RoadmapEvaluation,
     blocking_capabilities: List[Dict[str, Any]],
     anomaly_signals: Dict[str, Any] | None = None,
+    readiness_summary: Dict[str, Any] | None = None,
     max_items: int = 3,
 ) -> List[Dict[str, Any]]:
     limit = max(1, int(max_items))
@@ -499,41 +555,16 @@ def build_go_no_go_reasons(
             }
         ]
 
-    reasons: List[Dict[str, Any]] = []
-    for item in blocking_capabilities[:limit]:
-        reasons.append(
-            {
-                "type": "capability_blocker",
-                "capability": str(item.get("capability") or ""),
-                "phase_count": int(item.get("phase_count") or 0),
-                "blocked_phases": list(item.get("blocked_phases") or []),
-            }
-        )
-
-    anomaly_payload = anomaly_signals if isinstance(anomaly_signals, dict) else {}
-    breached_metrics = anomaly_payload.get("breached_metrics") or []
-    if (
-        len(reasons) < limit
-        and bool(anomaly_payload.get("anomaly_detected"))
-        and isinstance(breached_metrics, list)
-        and breached_metrics
-    ):
-        reasons.append(
-            {
-                "type": "anomaly_risk",
-                "message": "runtime_anomaly_threshold_breached",
-                "breached_metrics": [str(item) for item in breached_metrics],
-            }
-        )
-
-    if (not north_star.passed) and len(reasons) < limit:
-        reasons.append(
-            {
-                "type": "north_star",
-                "message": "north_star_kpis_not_fully_met",
-                "score": round(float(north_star.score), 4),
-            }
-        )
+    reasons = _build_capability_blocker_reasons(blocking_capabilities, limit=limit)
+    optional_reasons = [
+        _build_anomaly_risk_reason(anomaly_signals),
+        _build_readiness_risk_reason(readiness_summary),
+        _build_north_star_reason(north_star),
+    ]
+    for item in optional_reasons:
+        if item is None or len(reasons) >= limit:
+            continue
+        reasons.append(item)
 
     return reasons[:limit]
 
@@ -544,6 +575,7 @@ def build_go_no_go_summary(
     gate_score: float,
     blocking_capabilities: List[Dict[str, Any]],
     anomaly_signals: Dict[str, Any] | None = None,
+    readiness_summary: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     go_no_go = "go" if north_star.passed and float(gate_score) >= 0.75 else "no_go"
     go_no_go_reasons = build_go_no_go_reasons(
@@ -551,6 +583,7 @@ def build_go_no_go_summary(
         north_star=north_star,
         blocking_capabilities=blocking_capabilities,
         anomaly_signals=anomaly_signals,
+        readiness_summary=readiness_summary,
     )
     top_blocker_capability = (
         str(blocking_capabilities[0].get("capability") or "")
@@ -599,6 +632,7 @@ def create_monthly_review(
         gate_score=gate_score,
         blocking_capabilities=blocking_capabilities,
         anomaly_signals=snapshot.get("anomaly_signals") if isinstance(snapshot.get("anomaly_signals"), dict) else None,
+        readiness_summary=readiness_summary,
     )
     audit_total = _count_recent_audit_entries()
 

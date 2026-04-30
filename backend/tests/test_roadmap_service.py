@@ -277,11 +277,13 @@ def test_build_go_no_go_reasons_for_no_go_prefers_blockers() -> None:
             {"capability": "dynamic_batching", "phase_count": 1, "blocked_phases": ["phase1_core"]},
         ],
         anomaly_signals={"anomaly_detected": True, "breached_metrics": ["online_error_rate"]},
-        max_items=4,
+        readiness_summary={"lowest_phase": "phase2_advanced", "lowest_score": 0.62, "low_threshold": 0.7},
+        max_items=5,
     )
     assert reasons[0]["type"] == "capability_blocker"
     assert reasons[0]["capability"] == "hybrid_retrieval"
     assert any(item.get("type") == "anomaly_risk" for item in reasons)
+    assert any(item.get("type") == "readiness_risk" for item in reasons)
     assert any(item.get("type") == "north_star" for item in reasons)
 
 
@@ -300,11 +302,13 @@ def test_build_go_no_go_summary_for_go_and_no_go() -> None:
         gate_score=0.5,
         blocking_capabilities=[{"capability": "hybrid_retrieval", "phase_count": 2, "blocked_phases": ["phase1_core"]}],
         anomaly_signals={"anomaly_detected": True, "breached_metrics": ["p95_latency_ms"]},
+        readiness_summary={"lowest_phase": "phase1_core", "lowest_score": 0.5, "low_threshold": 0.7},
     )
     assert no_go_summary["go_no_go"] == "no_go"
     assert no_go_summary["top_blocker_capability"] == "hybrid_retrieval"
     assert no_go_summary["go_no_go_reasons"][0]["type"] == "capability_blocker"
     assert any(item.get("type") == "anomaly_risk" for item in no_go_summary["go_no_go_reasons"])
+    assert any(item.get("type") == "readiness_risk" for item in no_go_summary["go_no_go_reasons"])
 
 
 def test_create_monthly_review_sets_top_blocker_capability(monkeypatch) -> None:

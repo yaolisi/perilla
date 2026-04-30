@@ -1868,6 +1868,7 @@ def _build_phase_status_payload(snapshot: Dict[str, Any]) -> RoadmapPhaseStatusR
         gate_score=gate_score,
         blocking_capabilities=blocking_capabilities,
         anomaly_signals=snapshot.get("anomaly_signals") if isinstance(snapshot.get("anomaly_signals"), dict) else None,
+        readiness_summary=readiness_summary,
     )
     go_no_go = str(go_no_go_summary.get("go_no_go") or "no_go")
     go_no_go_reasons = list(go_no_go_summary.get("go_no_go_reasons") or [])
