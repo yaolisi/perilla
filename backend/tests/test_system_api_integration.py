@@ -31,7 +31,7 @@ def test_update_feature_flags_invalid_payload_returns_structured_error(fallback_
     resp = client.post("/api/system/feature-flags", json={"flags": "not-an-object"})
     assert resp.status_code == 400
     body = resp.json()
-    assert body.get("detail") == "flags must be object"
+    assert body.get("detail") == "invalid system feature flags"
     assert body.get("error", {}).get("code") == "system_feature_flags_invalid"
     assert fallback_probe == []
 
@@ -871,3 +871,68 @@ def test_event_bus_dlq_replay_idempotency_previous_failed(monkeypatch):
     assert resp.status_code == 409
     body = resp.json()
     assert body.get("error", {}).get("code") == "idempotency_previous_failed"
+
+
+def test_roadmap_kpi_update_and_fetch_roundtrip(monkeypatch):
+    client = _build_client()
+    store = {}
+
+    def _fake_get():
+        return store.get("kpis", {"availability_min": 0.999})
+
+    def _fake_save(payload):
+        merged = {**_fake_get(), **payload}
+        store["kpis"] = merged
+        return merged
+
+    monkeypatch.setattr(system_api, "get_roadmap_kpis", _fake_get)
+    monkeypatch.setattr(system_api, "save_roadmap_kpis", _fake_save)
+
+    post_resp = client.post("/api/system/roadmap/kpis", json={"p99_latency_ms_max": 2200})
+    assert post_resp.status_code == 200
+    assert post_resp.json().get("kpis", {}).get("p99_latency_ms_max") == 2200
+
+    get_resp = client.get("/api/system/roadmap/kpis")
+    assert get_resp.status_code == 200
+    assert get_resp.json().get("kpis", {}).get("availability_min") == pytest.approx(0.999)
+
+
+def test_roadmap_phase_status_endpoint_returns_gate_summary(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(system_api, "build_roadmap_snapshot", lambda: {"online_error_rate": 0.001, "capabilities": {}})
+    monkeypatch.setattr(system_api, "get_roadmap_kpis", lambda: {"availability_min": 0.999})
+    monkeypatch.setattr(system_api, "get_phase_gates", lambda: {"phase0_foundation": {"required_capabilities": [], "required_kpis": {}}})
+    monkeypatch.setattr(
+        system_api,
+        "evaluate_north_star",
+        lambda snapshot, kpis: type("Eval", (), {"score": 1.0, "passed": True, "reasons": ["ok"]})(),
+    )
+    monkeypatch.setattr(
+        system_api,
+        "evaluate_phase_gates",
+        lambda snapshot, gates: {"phase0_foundation": {"passed": True, "missing_capabilities": [], "kpi_results": {}}},
+    )
+
+    resp = client.get("/api/system/roadmap/phases/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body.get("north_star", {}).get("passed") is True
+    assert body.get("phase_gate", {}).get("passed_count") == 1
+
+
+def test_roadmap_monthly_review_create_and_list(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(
+        system_api,
+        "create_monthly_review",
+        lambda: {"go_no_go": "go", "north_star": {"passed": True}, "phase_gate": {"passed": True}},
+    )
+    monkeypatch.setattr(system_api, "list_monthly_reviews", lambda limit=12: [{"go_no_go": "go"}][:limit])
+
+    create_resp = client.post("/api/system/roadmap/monthly-review")
+    assert create_resp.status_code == 200
+    assert create_resp.json().get("review", {}).get("go_no_go") == "go"
+
+    list_resp = client.get("/api/system/roadmap/monthly-review", params={"limit": 5})
+    assert list_resp.status_code == 200
+    assert list_resp.json().get("count") == 1

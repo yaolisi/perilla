@@ -32,6 +32,18 @@ from core.system.runtime_settings import (
     get_inference_priority_panel_preemption_cooldown_busy_threshold,
     get_mcp_http_emit_server_push_events,
 )
+from core.system.roadmap import (
+    build_roadmap_snapshot,
+    create_monthly_review,
+    get_phase_gates,
+    get_roadmap_kpis,
+    list_monthly_reviews,
+    save_manual_quality_metrics,
+    save_phase_gates,
+    save_roadmap_kpis,
+    evaluate_north_star,
+    evaluate_phase_gates,
+)
 from core.plugins import get_plugin_manager
 from core.plugins.market import PluginMarketValidationError, get_plugin_market_service
 from core.plugins.compatibility import build_plugin_compatibility_matrix
@@ -124,6 +136,7 @@ ALLOWED_SYSTEM_CONFIG_KEYS = {
     "chaosP95WarnMs",
     "chaosNetErrWarn",
     "mcpHttpEmitServerPushEvents",
+    "roadmapCapabilitiesJson",
 }
 
 SYSTEM_CONFIG_SCHEMA_HINTS: Dict[str, Dict[str, Any]] = {
@@ -181,6 +194,12 @@ SYSTEM_CONFIG_SCHEMA_HINTS: Dict[str, Dict[str, Any]] = {
         "default": True,
         "recommended": True,
         "description": "MCP Streamable HTTP：是否在 GET SSE 上收到服务端 JSON-RPC 时发布到事件总线（mcp.streamable.server_rpc，仅摘要）。",
+    },
+    "roadmapCapabilitiesJson": {
+        "type": "string",
+        "default": "{}",
+        "recommended": "{}",
+        "description": "路线图阶段能力开关（JSON 字符串），如 {\"hybrid_retrieval\": true}。",
     },
 }
 
@@ -258,6 +277,41 @@ class SystemConfigUpdate(BaseModel):
     chaosP95WarnMs: Optional[int] = Field(default=None, ge=1, le=600000)
     chaosNetErrWarn: Optional[int] = Field(default=None, ge=0, le=10000)
     mcpHttpEmitServerPushEvents: Optional[bool] = None
+    roadmapCapabilitiesJson: Optional[str] = Field(default=None, max_length=65535)
+
+
+class RoadmapKpiUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    availability_min: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    p99_latency_ms_max: Optional[float] = Field(default=None, ge=0.0, le=300000.0)
+    rag_top5_recall_min: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    answer_usefulness_min: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    unit_cost_reduction_min: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    critical_security_incidents_max: Optional[int] = Field(default=None, ge=0, le=1000)
+    observability_coverage_min: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    online_error_rate_max: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class RoadmapQualityMetricsUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rag_top5_recall: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    answer_usefulness: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    unit_cost_reduction: Optional[float] = Field(default=None, ge=-1.0, le=1.0)
+    observability_coverage: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    critical_security_incidents: Optional[int] = Field(default=None, ge=0, le=1000)
+    throughput_gain: Optional[float] = Field(default=None, ge=0.0, le=1000.0)
+    multi_hop_accuracy_gain: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    hallucination_reduction: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    auto_scaling_trigger_success_rate: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    rollback_time_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
+
+
+class RoadmapGateUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phase_gates: Dict[str, Dict[str, Any]]
 
 
 class ApiKeyRevokeBody(BaseModel):
@@ -1372,6 +1426,106 @@ async def update_feature_flags_api(
     tenant_id = getattr(request.state, "tenant_id", None)
     saved = set_feature_flags(flags, tenant_id=tenant_id)
     return {"success": True, "tenant_id": tenant_id, "flags": saved}
+
+
+def _read_roadmap_capabilities() -> Dict[str, bool]:
+    store = get_system_settings_store()
+    raw = store.get_setting("roadmapCapabilitiesJson", "{}")
+    if isinstance(raw, dict):
+        return {str(k): bool(v) for k, v in raw.items()}
+    if not isinstance(raw, str):
+        return {}
+    text = raw.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return {str(k): bool(v) for k, v in parsed.items()}
+    except Exception:
+        return {}
+    return {}
+
+
+@router.get("/roadmap/kpis")
+async def get_roadmap_kpis_api(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
+    return {"kpis": get_roadmap_kpis()}
+
+
+@router.post("/roadmap/kpis")
+async def update_roadmap_kpis_api(
+    body: RoadmapKpiUpdateBody,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    payload = body.model_dump(exclude_none=True)
+    merged = save_roadmap_kpis(payload)
+    return {"success": True, "kpis": merged}
+
+
+@router.post("/roadmap/quality-metrics")
+async def update_roadmap_quality_metrics_api(
+    body: RoadmapQualityMetricsUpdateBody,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    payload = body.model_dump(exclude_none=True)
+    merged = save_manual_quality_metrics(payload)
+    return {"success": True, "quality_metrics": merged}
+
+
+@router.get("/roadmap/phases/status")
+async def get_roadmap_phase_status_api(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
+    snapshot = build_roadmap_snapshot()
+    snapshot["capabilities"] = _read_roadmap_capabilities()
+    gates = get_phase_gates()
+    phase_status = evaluate_phase_gates(snapshot, gates)
+    north_star = evaluate_north_star(snapshot, get_roadmap_kpis())
+    passed_count = sum(1 for item in phase_status.values() if item.get("passed"))
+    total_count = len(phase_status)
+    return {
+        "snapshot": snapshot,
+        "north_star": {
+            "score": round(north_star.score, 4),
+            "passed": north_star.passed,
+            "reasons": north_star.reasons,
+        },
+        "phase_gate": {
+            "passed_count": passed_count,
+            "total_count": total_count,
+            "score": round((passed_count / total_count), 4) if total_count else 0.0,
+            "phases": phase_status,
+        },
+    }
+
+
+@router.post("/roadmap/phase-gates")
+async def update_roadmap_phase_gates_api(
+    body: RoadmapGateUpdateBody,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    merged = save_phase_gates(body.phase_gates)
+    return {"success": True, "phase_gates": merged}
+
+
+@router.post("/roadmap/monthly-review")
+async def create_roadmap_monthly_review_api(
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    review = create_monthly_review()
+    return {"success": True, "review": review}
+
+
+@router.get("/roadmap/monthly-review")
+async def list_roadmap_monthly_review_api(
+    limit: Annotated[int, Query(ge=1, le=36)] = 12,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
+) -> Dict[str, Any]:
+    items = list_monthly_reviews(limit=limit)
+    return {"count": len(items), "items": items}
 
 
 @router.get("/metrics")
