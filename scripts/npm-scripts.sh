@@ -24,6 +24,8 @@ print_roadmap_gate_hint() {
 npm-scripts hint: roadmap gate helpers (`npm run roadmap-acceptance-validate-output`,
 `npm run roadmap-acceptance-run-validated`, `npm run roadmap-release-gate`) emit logs prefixed with
 `[roadmap-gate]` for CI grep/filter (same convention as `make help`).
+npm-scripts hint: GET /api/system/roadmap/quality-metrics (platform admin) returns merged quality metrics,
+explicit_metric_keys, phase3_kpi_inference_probe (see also `make help`).
 EOF
 }
 case "${1:-}" in

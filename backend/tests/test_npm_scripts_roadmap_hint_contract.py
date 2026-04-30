@@ -28,6 +28,9 @@ def test_npm_scripts_sh_prints_roadmap_gate_hint_on_default_list() -> None:
     assert "roadmap-acceptance-validate-output" in content
     assert "roadmap-acceptance-run-validated" in content
     assert "roadmap-release-gate" in content
+    assert "GET /api/system/roadmap/quality-metrics" in content
+    assert "explicit_metric_keys" in content
+    assert "phase3_kpi_inference_probe" in content
     assert "print_npm_scripts_error_followups()" in content
     assert "npm-scripts.sh: missing package.json at repo root" in content
     assert 'ROADMAP_GATE_LOG_PREFIX="${ROADMAP_GATE_LOG_PREFIX:-[roadmap-gate]}"' in content
