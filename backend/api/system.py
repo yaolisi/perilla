@@ -328,6 +328,8 @@ class RoadmapMonthlyReviewListAppliedFilters(BaseModel):
     offset: int
     top_blocker_capability: Optional[str] = None
     go_no_go: Optional[Literal["go", "no_go"]] = None
+    lowest_readiness_phase: Optional[str] = None
+    readiness_below_threshold: Optional[bool] = None
 
 
 class RoadmapMonthlyReviewListMeta(BaseModel):
@@ -1923,12 +1925,16 @@ def _build_monthly_review_list_payload(
     offset: int,
     top_blocker_capability: Optional[str],
     go_no_go: Optional[Literal["go", "no_go"]],
+    lowest_readiness_phase: Optional[str],
+    readiness_below_threshold: Optional[bool],
 ) -> RoadmapMonthlyReviewListResponse:
     items, total_before_limit = list_monthly_reviews_page(
         limit=limit,
         offset=offset,
         top_blocker_capability=top_blocker_capability,
         go_no_go=go_no_go,
+        lowest_readiness_phase=lowest_readiness_phase,
+        readiness_below_threshold=readiness_below_threshold,
     )
     has_more = (offset + len(items)) < total_before_limit
     next_offset = (offset + len(items)) if has_more else None
@@ -1944,6 +1950,8 @@ def _build_monthly_review_list_payload(
                 "offset": offset,
                 "top_blocker_capability": top_blocker_capability,
                 "go_no_go": go_no_go,
+                "lowest_readiness_phase": lowest_readiness_phase,
+                "readiness_below_threshold": readiness_below_threshold,
             },
             "total_before_limit": total_before_limit,
             "has_more": has_more,
@@ -1965,6 +1973,8 @@ async def list_roadmap_monthly_review_api(
     offset: Annotated[int, Query(ge=0, le=1000)] = 0,
     top_blocker_capability: Annotated[Optional[str], Query(max_length=128)] = None,
     go_no_go: Annotated[Optional[Literal["go", "no_go"]], Query()] = None,
+    lowest_readiness_phase: Annotated[Optional[str], Query(max_length=128)] = None,
+    readiness_below_threshold: Annotated[Optional[bool], Query()] = None,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
 ) -> RoadmapMonthlyReviewListResponse:
@@ -1973,6 +1983,8 @@ async def list_roadmap_monthly_review_api(
         offset=offset,
         top_blocker_capability=top_blocker_capability,
         go_no_go=go_no_go,
+        lowest_readiness_phase=lowest_readiness_phase,
+        readiness_below_threshold=readiness_below_threshold,
     )
 
 

@@ -447,3 +447,37 @@ def test_list_monthly_reviews_page_supports_combined_filters(monkeypatch) -> Non
         "2026-01-04T00:00:00Z",
         "2026-01-01T00:00:00Z",
     ]
+
+
+def test_list_monthly_reviews_page_supports_readiness_filters(monkeypatch) -> None:
+    store = _FakeStore()
+    store.set_setting(
+        "roadmap_monthly_reviews",
+        [
+            {
+                "created_at": "2026-01-01T00:00:00Z",
+                "phase_gate": {"readiness_summary": {"lowest_phase": "phase1_core", "lowest_score": 0.6, "low_threshold": 0.7}},
+            },
+            {
+                "created_at": "2026-01-02T00:00:00Z",
+                "phase_gate": {"readiness_summary": {"lowest_phase": "phase2_advanced", "lowest_score": 0.8, "low_threshold": 0.7}},
+            },
+            {
+                "created_at": "2026-01-03T00:00:00Z",
+                "phase_gate": {"readiness_summary": {"lowest_phase": "phase1_core", "lowest_score": 0.65, "low_threshold": 0.7}},
+            },
+        ],
+    )
+    monkeypatch.setattr(roadmap, "get_system_settings_store", lambda: store)
+
+    items, total = roadmap.list_monthly_reviews_page(
+        limit=10,
+        offset=0,
+        lowest_readiness_phase="phase1_core",
+        readiness_below_threshold=True,
+    )
+    assert total == 2
+    assert [item["created_at"] for item in items] == [
+        "2026-01-03T00:00:00Z",
+        "2026-01-01T00:00:00Z",
+    ]

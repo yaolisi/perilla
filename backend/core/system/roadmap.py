@@ -665,10 +665,64 @@ def create_monthly_review(
     return review
 
 
+def _iter_review_dicts(items: List[Any]) -> List[Dict[str, Any]]:
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _filter_reviews_by_top_blocker(items: List[Dict[str, Any]], blocker: str) -> List[Dict[str, Any]]:
+    if not blocker:
+        return items
+    return [item for item in items if str(item.get("top_blocker_capability") or "") == blocker]
+
+
+def _filter_reviews_by_go_no_go(items: List[Dict[str, Any]], go_no_go: str) -> List[Dict[str, Any]]:
+    marker = go_no_go.strip().lower()
+    if marker not in {"go", "no_go"}:
+        return items
+    return [item for item in items if str(item.get("go_no_go") or "").strip().lower() == marker]
+
+
+def _extract_readiness_summary(item: Dict[str, Any]) -> Dict[str, Any]:
+    raw = ((item.get("phase_gate") or {}).get("readiness_summary") or {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def _filter_reviews_by_lowest_readiness_phase(items: List[Dict[str, Any]], phase: str) -> List[Dict[str, Any]]:
+    if not phase:
+        return items
+    return [
+        item
+        for item in items
+        if str((_extract_readiness_summary(item).get("lowest_phase") or "")) == phase
+    ]
+
+
+def _is_readiness_below_threshold(item: Dict[str, Any]) -> bool:
+    summary = _extract_readiness_summary(item)
+    lowest = float(summary.get("lowest_score") or 0.0)
+    threshold = float(summary.get("low_threshold") or 0.0)
+    return lowest < threshold
+
+
+def _filter_reviews_by_readiness_threshold(
+    items: List[Dict[str, Any]],
+    readiness_below_threshold: bool | None,
+) -> List[Dict[str, Any]]:
+    if not isinstance(readiness_below_threshold, bool):
+        return items
+    return [
+        item
+        for item in items
+        if _is_readiness_below_threshold(item) is readiness_below_threshold
+    ]
+
+
 def list_monthly_reviews_page(
     limit: int = 12,
     top_blocker_capability: str | None = None,
     go_no_go: str | None = None,
+    lowest_readiness_phase: str | None = None,
+    readiness_below_threshold: bool | None = None,
     offset: int = 0,
 ) -> Tuple[List[Dict[str, Any]], int]:
     store = get_system_settings_store()
@@ -676,21 +730,11 @@ def list_monthly_reviews_page(
     if not isinstance(reviews, list):
         return [], 0
     size = max(1, min(36, int(limit)))
-    filtered = list(reviews)
-    blocker = (top_blocker_capability or "").strip()
-    if blocker:
-        filtered = [
-            item
-            for item in filtered
-            if isinstance(item, dict) and str(item.get("top_blocker_capability") or "") == blocker
-        ]
-    go_no_go_filter = (go_no_go or "").strip().lower()
-    if go_no_go_filter in {"go", "no_go"}:
-        filtered = [
-            item
-            for item in filtered
-            if isinstance(item, dict) and str(item.get("go_no_go") or "").strip().lower() == go_no_go_filter
-        ]
+    filtered = _iter_review_dicts(list(reviews))
+    filtered = _filter_reviews_by_top_blocker(filtered, (top_blocker_capability or "").strip())
+    filtered = _filter_reviews_by_go_no_go(filtered, (go_no_go or ""))
+    filtered = _filter_reviews_by_lowest_readiness_phase(filtered, (lowest_readiness_phase or "").strip())
+    filtered = _filter_reviews_by_readiness_threshold(filtered, readiness_below_threshold)
     total = len(filtered)
     ordered = filtered[::-1]
     start = max(0, int(offset))
@@ -701,12 +745,16 @@ def list_monthly_reviews(
     limit: int = 12,
     top_blocker_capability: str | None = None,
     go_no_go: str | None = None,
+    lowest_readiness_phase: str | None = None,
+    readiness_below_threshold: bool | None = None,
     offset: int = 0,
 ) -> List[Dict[str, Any]]:
     items, _ = list_monthly_reviews_page(
         limit=limit,
         top_blocker_capability=top_blocker_capability,
         go_no_go=go_no_go,
+        lowest_readiness_phase=lowest_readiness_phase,
+        readiness_below_threshold=readiness_below_threshold,
         offset=offset,
     )
     return items

@@ -1110,7 +1110,7 @@ def test_roadmap_monthly_review_create_and_list(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
             [{"go_no_go": "go"}][offset : offset + limit],
             1,
         ),
@@ -1457,7 +1457,7 @@ def test_roadmap_monthly_review_list_supports_top_blocker_filter(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
             (
                 [{"top_blocker_capability": "hybrid_retrieval"}, {"top_blocker_capability": "hybrid_retrieval"}]
                 if top_blocker_capability == "hybrid_retrieval"
@@ -1490,7 +1490,7 @@ def test_roadmap_monthly_review_list_supports_go_no_go_filter(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
             (
                 [
                     {"go_no_go": "no_go", "top_blocker_capability": "dynamic_batching"},
@@ -1523,7 +1523,7 @@ def test_roadmap_monthly_review_list_supports_offset_param(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
             [
                 {"created_at": "2026-01-03T00:00:00Z"},
                 {"created_at": "2026-01-02T00:00:00Z"},
@@ -1551,7 +1551,7 @@ def test_roadmap_monthly_review_list_supports_combined_filters(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
             (
                 [{"go_no_go": "no_go", "top_blocker_capability": "hybrid_retrieval"}]
                 if (top_blocker_capability == "hybrid_retrieval" and go_no_go == "no_go")
@@ -1581,7 +1581,7 @@ def test_roadmap_monthly_review_list_empty_result_meta_contract(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None: ([], 0),
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: ([], 0),
     )
     resp = client.get("/api/system/roadmap/monthly-review", params={"limit": 10, "offset": 0})
     assert resp.status_code == 200
@@ -1594,3 +1594,29 @@ def test_roadmap_monthly_review_list_empty_result_meta_contract(monkeypatch):
     assert body["meta"]["prev_offset"] is None
     assert body["meta"]["page_window"]["start"] == 0
     assert body["meta"]["page_window"]["end_exclusive"] == 0
+
+
+def test_roadmap_monthly_review_list_supports_readiness_filters(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(
+        system_api,
+        "list_monthly_reviews_page",
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
+            (
+                [{"go_no_go": "no_go", "phase_gate": {"readiness_summary": {"lowest_phase": "phase2_advanced"}}}]
+                if (lowest_readiness_phase == "phase2_advanced" and readiness_below_threshold is True)
+                else []
+            )[offset : offset + limit],
+            1 if (lowest_readiness_phase == "phase2_advanced" and readiness_below_threshold is True) else 0,
+        ),
+    )
+    resp = client.get(
+        "/api/system/roadmap/monthly-review",
+        params={"lowest_readiness_phase": "phase2_advanced", "readiness_below_threshold": "true", "limit": 5, "offset": 0},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["meta"]["applied_filters"]["lowest_readiness_phase"] == "phase2_advanced"
+    assert body["meta"]["applied_filters"]["readiness_below_threshold"] is True
+    assert body["meta"]["total_before_limit"] == 1
