@@ -122,6 +122,14 @@ def test_make_help_mentions_roadmap_kpis_api() -> None:
     )
 
 
+def test_make_help_mentions_roadmap_phase_status_api() -> None:
+    output = _make_help_output()
+    assert (
+        "API GET /api/system/roadmap/phases/status (platform admin): snapshot, north_star, phase_gate, go_no_go"
+        in output
+    )
+
+
 def test_make_help_mentions_roadmap_log_prefix_semantics() -> None:
     output = _make_help_output()
     assert "Logs prefixed with [roadmap-gate] for CI grep/filter" in output

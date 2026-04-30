@@ -28,6 +28,8 @@ npm-scripts hint: GET/POST /api/system/roadmap/kpis (platform admin) reads/saves
 (see also `make help`).
 npm-scripts hint: GET /api/system/roadmap/quality-metrics (platform admin) returns merged quality metrics,
 explicit_metric_keys, phase3_kpi_inference_probe (see also `make help`).
+npm-scripts hint: GET /api/system/roadmap/phases/status (platform admin) returns snapshot, north_star, phase_gate,
+go_no_go (see also `make help`).
 EOF
 }
 case "${1:-}" in

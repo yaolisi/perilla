@@ -22,7 +22,7 @@ def _build_client() -> TestClient:
     return TestClient(app)
 
 
-def test_openapi_includes_roadmap_kpis_and_quality_metrics() -> None:
+def test_openapi_includes_roadmap_kpis_quality_metrics_and_phase_status() -> None:
     client = _build_client()
     resp = client.get("/openapi.json")
     assert resp.status_code == 200
@@ -58,3 +58,29 @@ def test_openapi_includes_roadmap_kpis_and_quality_metrics() -> None:
     assert kpi_update["properties"]["success"]["const"] is True
     qm_required = set(schemas["RoadmapQualityMetricsReadResponse"].get("required") or [])
     assert {"quality_metrics", "explicit_metric_keys_tracked"} <= qm_required
+
+    phase_get = paths["/api/system/roadmap/phases/status"]["get"]
+    phase_ref = phase_get["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert phase_ref == "#/components/schemas/RoadmapPhaseStatusResponse"
+
+    rps = schemas["RoadmapPhaseStatusResponse"]
+    assert set(rps.get("required") or []) == {
+        "snapshot",
+        "north_star",
+        "go_no_go",
+        "go_no_go_reasons",
+        "phase_gate",
+    }
+    assert rps["properties"]["north_star"]["$ref"] == "#/components/schemas/RoadmapNorthStarStatus"
+    assert rps["properties"]["phase_gate"]["$ref"] == "#/components/schemas/RoadmapPhaseGateStatus"
+    assert rps["properties"]["go_no_go"]["enum"] == ["go", "no_go"]
+
+    assert set(schemas["RoadmapNorthStarStatus"].get("required") or []) == {"score", "passed", "reasons"}
+    assert set(schemas["RoadmapPhaseGateStatus"].get("required") or []) == {
+        "passed_count",
+        "total_count",
+        "score",
+        "phases",
+        "blocking_capabilities",
+        "readiness_summary",
+    }

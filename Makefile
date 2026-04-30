@@ -225,6 +225,7 @@ help:
 	@echo "                   - npm run roadmap-acceptance-validate-output / roadmap-acceptance-run-validated / roadmap-release-gate → scripts/acceptance/*.sh (stderr hints; export ROADMAP_GATE_LOG_PREFIX to customize)"
 	@echo "                   - API GET/POST /api/system/roadmap/kpis (platform admin): merged north-star KPI thresholds"
 	@echo "                   - API GET /api/system/roadmap/quality-metrics (platform admin): merged metrics, explicit_metric_keys, phase3_kpi_inference_probe"
+	@echo "                   - API GET /api/system/roadmap/phases/status (platform admin): snapshot, north_star, phase_gate, go_no_go"
 	@echo "  make smart-routing-smoke"
 	@echo "                   - Run smart routing script/unit smoke tests"
 	@echo "  make smart-routing-all-checks"

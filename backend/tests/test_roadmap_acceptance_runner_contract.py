@@ -9,7 +9,7 @@ def test_run_roadmap_acceptance_script_supports_strict_gate_envs() -> None:
 
     assert 'ROADMAP_GATE_LOG_PREFIX="${ROADMAP_GATE_LOG_PREFIX:-[roadmap-gate]}"' in script
     assert (
-        'echo >&2 "${ROADMAP_GATE_LOG_PREFIX} hint: live smoke exercises GET/POST /api/system/roadmap/kpis and POST /api/system/roadmap/quality-metrics (platform admin; see make help)"'
+        'echo >&2 "${ROADMAP_GATE_LOG_PREFIX} hint: live smoke exercises GET/POST /api/system/roadmap/kpis, POST /api/system/roadmap/quality-metrics, GET /api/system/roadmap/phases/status (platform admin; see make help)"'
         in script
     )
     assert 'echo >&2 "${ROADMAP_GATE_LOG_PREFIX} roadmap acceptance: unit/integration suite"' in script
