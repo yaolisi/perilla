@@ -53,6 +53,9 @@ HELP_TARGET_GROUP_CONFIG: Dict[str, HelpTargetGroupConfig] = {
             "roadmap-acceptance-unit",
             "roadmap-acceptance-smoke",
             "roadmap-acceptance-all",
+            "roadmap-acceptance-validate-schema-version",
+            "roadmap-acceptance-validate-output",
+            "roadmap-acceptance-run-validated",
             "roadmap-release-gate",
             "ROADMAP_ACCEPTANCE_IN_PR_CHECK=1",
             "pr-check-fast",
@@ -96,6 +99,24 @@ def test_make_help_contains_event_bus_smoke_entrypoints() -> None:
 def test_make_help_contains_cb_entrypoints() -> None:
     output = _make_help_output()
     _assert_targets_present(output, HELP_TARGET_GROUP_CONFIG["continuous_batching"]["targets"])
+
+
+def test_make_help_mentions_roadmap_exit_code_semantics() -> None:
+    output = _make_help_output()
+    assert "Exit code semantics: 2=parameter/input error, 1=contract/business failure" in output
+
+
+def test_make_help_mentions_roadmap_log_prefix_semantics() -> None:
+    output = _make_help_output()
+    assert "Logs prefixed with [roadmap-gate] for CI grep/filter" in output
+    assert (
+        "scripts/acceptance/run_roadmap_acceptance.sh: phase lines on stderr, prefixed by ROADMAP_GATE_LOG_PREFIX"
+        in output
+    )
+    assert (
+        "npm run roadmap-acceptance-validate-output / roadmap-acceptance-run-validated / roadmap-release-gate → scripts/acceptance/*.sh (stderr hints; export ROADMAP_GATE_LOG_PREFIX to customize)"
+        in output
+    )
 
 
 @pytest.mark.parametrize("group_name,group_cfg", list(HELP_TARGET_GROUP_CONFIG.items()))

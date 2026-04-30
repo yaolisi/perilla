@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from scripts import roadmap_acceptance_smoke as smoke
 
 
@@ -90,7 +92,11 @@ def test_run_smoke_happy_path(monkeypatch):
         return seq.pop(0)
 
     monkeypatch.setattr(smoke.requests, "request", _fake_request)
-    smoke.run_smoke("http://127.0.0.1:8000", api_key=None)
+    result = smoke.run_smoke("http://127.0.0.1:8000", api_key=None)
+    assert result["ok"] is True
+    assert result["schema_version"] == 1
+    assert isinstance(result["generated_at_ms"], int)
+    assert "release_gate" in result
 
 
 def test_run_smoke_raises_on_server_error(monkeypatch):
@@ -165,3 +171,51 @@ def test_run_smoke_strict_gate_fails_when_no_go(monkeypatch):
         assert False, "expected strict gate to fail"
     except AssertionError as exc:
         assert "release gate failed" in str(exc)
+
+
+def test_run_smoke_rejects_out_of_range_gate_threshold(monkeypatch):
+    def _fake_request(method, url, headers=None, json=None, timeout=20):  # noqa: ANN001
+        _ = (method, url, headers, json, timeout)
+        raise AssertionError("request should not be called")
+
+    monkeypatch.setattr(smoke.requests, "request", _fake_request)
+    try:
+        smoke.run_smoke(
+            "http://127.0.0.1:8000",
+            api_key=None,
+            min_readiness_avg=1.2,
+        )
+        assert False, "expected threshold validation to fail"
+    except AssertionError as exc:
+        assert "invalid min_readiness_avg" in str(exc)
+
+
+def test_main_writes_output_json_on_error(monkeypatch, tmp_path):
+    out = tmp_path / "gate-result.json"
+
+    def _fake_run_smoke(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = (args, kwargs)
+        raise AssertionError("release gate failed")
+
+    monkeypatch.setattr(smoke, "run_smoke", _fake_run_smoke)
+    monkeypatch.setattr(
+        smoke.sys,
+        "argv",
+        [
+            "roadmap_acceptance_smoke.py",
+            "--output-json",
+            str(out),
+            "--require-go",
+            "--min-readiness-avg",
+            "0.8",
+        ],
+    )
+
+    code = smoke.main()
+    assert code == 1
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["ok"] is False
+    assert payload["schema_version"] == 1
+    assert isinstance(payload["generated_at_ms"], int)
+    assert payload["release_gate"]["require_go"] is True
+    assert abs(float(payload["release_gate"]["min_readiness_avg"]) - 0.8) < 1e-9

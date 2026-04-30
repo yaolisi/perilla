@@ -13,4 +13,6 @@ def test_root_package_json_includes_roadmap_acceptance_scripts() -> None:
     assert scripts.get("roadmap-acceptance-unit") == "make roadmap-acceptance-unit"
     assert scripts.get("roadmap-acceptance-smoke") == "make roadmap-acceptance-smoke"
     assert scripts.get("roadmap-acceptance-all") == "make roadmap-acceptance-all"
-    assert scripts.get("roadmap-release-gate") == "make roadmap-release-gate"
+    assert scripts.get("roadmap-acceptance-run-validated") == "bash scripts/acceptance/roadmap_run_validated.sh"
+    assert scripts.get("roadmap-acceptance-validate-output") == "bash scripts/acceptance/roadmap_validate_output.sh"
+    assert scripts.get("roadmap-release-gate") == "bash scripts/acceptance/roadmap_release_gate.sh"

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+from pathlib import Path
 from typing import Any, Dict
 
 import requests
@@ -56,6 +58,25 @@ def _apply_release_gate(
         )
 
 
+def _validate_gate_threshold(name: str, value: float | None) -> None:
+    if value is None:
+        return
+    _assert(0.0 <= float(value) <= 1.0, f"invalid {name}: expected 0~1")
+
+
+def _write_output_json(path: str | None, payload: Dict[str, Any]) -> None:
+    if not path:
+        return
+    Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _with_result_meta(payload: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(payload)
+    result["schema_version"] = 1
+    result["generated_at_ms"] = int(time.time() * 1000)
+    return result
+
+
 def run_smoke(
     base_url: str,
     api_key: str | None,
@@ -63,7 +84,10 @@ def run_smoke(
     require_go: bool = False,
     min_readiness_avg: float | None = None,
     max_lowest_readiness_score: float | None = None,
-) -> None:
+) -> Dict[str, Any]:
+    _validate_gate_threshold("min_readiness_avg", min_readiness_avg)
+    _validate_gate_threshold("max_lowest_readiness_score", max_lowest_readiness_score)
+
     # 1) 读取 KPI
     kpi_get = _request("GET", base_url, "/api/system/roadmap/kpis", api_key)
     _assert(kpi_get["status_code"] == 200, "roadmap kpis read should be 200")
@@ -160,18 +184,20 @@ def run_smoke(
         "monthly review readiness filter readiness_below_threshold invalid",
     )
 
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "phase_gate_score": body.get("phase_gate", {}).get("score"),
-                "phase_readiness_avg": body.get("phase_gate", {}).get("readiness_summary", {}).get("average_score"),
-                "phase_readiness_lowest": body.get("phase_gate", {}).get("readiness_summary", {}).get("lowest_phase"),
-                "north_star_score": body.get("north_star", {}).get("score"),
-                "latest_go_no_go": review.get("go_no_go"),
-            },
-            ensure_ascii=False,
-        )
+    return _with_result_meta(
+        {
+        "ok": True,
+        "phase_gate_score": body.get("phase_gate", {}).get("score"),
+        "phase_readiness_avg": body.get("phase_gate", {}).get("readiness_summary", {}).get("average_score"),
+        "phase_readiness_lowest": body.get("phase_gate", {}).get("readiness_summary", {}).get("lowest_phase"),
+        "north_star_score": body.get("north_star", {}).get("score"),
+        "latest_go_no_go": review.get("go_no_go"),
+        "release_gate": {
+            "require_go": require_go,
+            "min_readiness_avg": min_readiness_avg,
+            "max_lowest_readiness_score": max_lowest_readiness_score,
+        },
+        }
     )
 
 
@@ -192,19 +218,34 @@ def main() -> int:
         default=None,
         help="Optional maximum readiness_summary.lowest_score gate (0~1).",
     )
+    parser.add_argument("--output-json", default=None, help="Optional path to write machine-readable result JSON.")
     args = parser.parse_args()
 
     try:
-        run_smoke(
+        result = run_smoke(
             args.base_url,
             args.api_key,
             require_go=bool(args.require_go),
             min_readiness_avg=args.min_readiness_avg,
             max_lowest_readiness_score=args.max_lowest_readiness_score,
         )
+        _write_output_json(args.output_json, result)
+        print(json.dumps(result, ensure_ascii=False))
         return 0
     except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        error_result = _with_result_meta(
+            {
+            "ok": False,
+            "error": str(exc),
+            "release_gate": {
+                "require_go": bool(args.require_go),
+                "min_readiness_avg": args.min_readiness_avg,
+                "max_lowest_readiness_score": args.max_lowest_readiness_score,
+            },
+            },
+        )
+        _write_output_json(args.output_json, error_result)
+        print(json.dumps(error_result, ensure_ascii=False), file=sys.stderr)
         return 1
 
 
