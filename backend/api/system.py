@@ -429,6 +429,36 @@ class RoadmapPhaseStatusResponse(BaseModel):
     phase_gate: RoadmapPhaseGateStatus
 
 
+class KernelStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    can_toggle: bool
+    description: str
+
+
+class KernelStatsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_runs: int
+    kernel_runs: int
+    plan_based_runs: int
+    kernel_success_rate: float
+    kernel_fallback_rate: float
+    step_fail_rate: float
+    replan_trigger_rate: float
+    avg_duration_ms: float
+    p50_duration_ms: Optional[float] = None
+    p95_duration_ms: Optional[float] = None
+
+
+class KernelStatsResetResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    message: str
+
+
 class ApiKeyRevokeBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2300,7 +2330,7 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
 # ========== Execution Kernel 管理 API ==========
 
 @router.get("/kernel/stats")
-async def get_kernel_stats() -> Dict[str, Any]:
+async def get_kernel_stats() -> KernelStatsResponse:
     """
     获取 Execution Kernel 聚合统计指标
     
@@ -2317,11 +2347,12 @@ async def get_kernel_stats() -> Dict[str, Any]:
     - p95_duration_ms: P95 耗时
     """
     from core.agent_runtime.v2.observability import get_kernel_stats
-    return cast(Dict[str, Any], get_kernel_stats().get_stats())
+
+    return KernelStatsResponse.model_validate(get_kernel_stats().get_stats())
 
 
 @router.get("/kernel/status")
-async def get_kernel_status() -> Dict[str, Any]:
+async def get_kernel_status() -> KernelStatusResponse:
     """
     获取 Execution Kernel 当前状态
     
@@ -2330,11 +2361,12 @@ async def get_kernel_status() -> Dict[str, Any]:
     - can_toggle: 是否可以运行时切换
     """
     from core.agent_runtime.v2.runtime import USE_EXECUTION_KERNEL
-    return {
-        "enabled": USE_EXECUTION_KERNEL,
-        "can_toggle": True,
-        "description": "Execution Kernel is a DAG-based execution engine. Set USE_EXECUTION_KERNEL in runtime.py or use agent-level override."
-    }
+
+    return KernelStatusResponse(
+        enabled=USE_EXECUTION_KERNEL,
+        can_toggle=True,
+        description="Execution Kernel is a DAG-based execution engine. Set USE_EXECUTION_KERNEL in runtime.py or use agent-level override.",
+    )
 
 
 @router.post("/kernel/toggle")
@@ -2372,13 +2404,13 @@ async def toggle_kernel(
 
 
 @router.post("/kernel/stats/reset")
-async def reset_kernel_stats(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
+async def reset_kernel_stats(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> KernelStatsResetResponse:
     """重置 Kernel 统计指标"""
     from core.agent_runtime.v2.observability import get_kernel_stats
     stats = get_kernel_stats()
     stats._reset()
     log_structured("System", "kernel_stats_reset")
-    return {"success": True, "message": "Kernel stats reset"}
+    return KernelStatsResetResponse(success=True, message="Kernel stats reset")
 
 
 # ========== V2.7: Optimization Layer API ==========
