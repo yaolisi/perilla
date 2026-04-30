@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 import asyncio
 import psutil  # type: ignore[import-untyped]
@@ -484,6 +484,126 @@ KernelToggleResponse = Annotated[
     Union[KernelToggleSuccessResponse, KernelToggleErrorResponse],
     Field(discriminator="success"),
 ]
+
+
+class OptimizationSchedulerPolicySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = None
+    version: Optional[str] = None
+
+
+class OptimizationSnapshotSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Optional[str] = None
+    node_count: int
+    skill_count: int
+
+
+class OptimizationAgentScopedConfigsSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    agent_ids: List[str]
+
+
+class OptimizationStatusUnavailableResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: Literal[False] = False
+    error: str
+
+
+class OptimizationStatusReadyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    scheduler_policy: OptimizationSchedulerPolicySummary
+    snapshot: OptimizationSnapshotSummary
+    agent_scoped_configs: OptimizationAgentScopedConfigsSummary
+    config: Dict[str, Any]
+
+
+OptimizationStatusResponse = OptimizationStatusUnavailableResponse | OptimizationStatusReadyResponse
+
+
+class OptimizationRebuildBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    instance_ids: Optional[List[str]] = None
+    limit_instances: int = Field(default=100, ge=1, le=100000)
+
+
+class OptimizationRebuildSuccessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    version: str
+    node_count: int
+    skill_count: int
+
+
+class OptimizationRebuildFailureResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[False] = False
+    error: str
+
+
+OptimizationRebuildResponse = Annotated[
+    Union[OptimizationRebuildSuccessResponse, OptimizationRebuildFailureResponse],
+    Field(discriminator="success"),
+]
+
+
+class OptimizationConfigUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    scheduler_policy: str = "default"
+    policy_params: Dict[str, Any] = Field(default_factory=dict)
+    auto_build_snapshot: bool = True
+    collect_statistics: bool = True
+
+
+class OptimizationConfigUpdateSuccessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    config: Dict[str, Any]
+
+
+class OptimizationConfigUpdateFailureResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[False] = False
+    error: str
+
+
+OptimizationConfigUpdateResponse = Annotated[
+    Union[OptimizationConfigUpdateSuccessResponse, OptimizationConfigUpdateFailureResponse],
+    Field(discriminator="success"),
+]
+
+
+class OptimizationImpactErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    error: str
+
+
+class OptimizationImpactOkResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    impact: Dict[str, Any]
+    baseline_empty: bool
+    note: str
+    current_policy: Optional[str] = None
+    optimization_enabled: bool
+
+
+OptimizationImpactReportResponse = OptimizationImpactErrorResponse | OptimizationImpactOkResponse
 
 
 class ApiKeyRevokeBody(BaseModel):
@@ -2442,7 +2562,7 @@ async def reset_kernel_stats(*, _role: Annotated[Any, Depends(require_platform_a
 # ========== V2.7: Optimization Layer API ==========
 
 @router.get("/kernel/optimization")
-async def get_optimization_status() -> Dict[str, Any]:
+async def get_optimization_status() -> OptimizationStatusResponse:
     """
     V2.7: 获取 Optimization Layer 状态
     
@@ -2453,24 +2573,21 @@ async def get_optimization_status() -> Dict[str, Any]:
     - config: 完整配置
     """
     from core.agent_runtime.v2.runtime import get_kernel_adapter
-    
+
     adapter = get_kernel_adapter()
     if adapter is None:
-        return {
-            "enabled": False,
-            "error": KERNEL_ADAPTER_NOT_INITIALIZED,
-        }
+        return OptimizationStatusUnavailableResponse(error=KERNEL_ADAPTER_NOT_INITIALIZED)
     if not adapter._initialized:
         await adapter.initialize()
-    return cast(Dict[str, Any], adapter.get_optimization_status())
+    return OptimizationStatusReadyResponse.model_validate(adapter.get_optimization_status())
 
 
 @router.post("/kernel/optimization/rebuild-snapshot")
 async def rebuild_optimization_snapshot(
-    data: Optional[Dict[str, Any]] = None,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+    body: Annotated[OptimizationRebuildBody | None, Body()] = None,
+) -> OptimizationRebuildResponse:
     """
     V2.7: 重新构建 OptimizationSnapshot
     
@@ -2487,41 +2604,44 @@ async def rebuild_optimization_snapshot(
     
     adapter = get_kernel_adapter()
     if adapter is None:
-        return {"success": False, "error": KERNEL_ADAPTER_NOT_INITIALIZED}
+        return OptimizationRebuildFailureResponse(success=False, error=KERNEL_ADAPTER_NOT_INITIALIZED)
     if not adapter._initialized:
         await adapter.initialize()
-    
-    data = data or {}
-    instance_ids = data.get("instance_ids")
-    limit_instances = data.get("limit_instances", 100)
-    
+
+    payload = body or OptimizationRebuildBody()
+    instance_ids = payload.instance_ids
+    limit_instances = payload.limit_instances
+
     try:
         snapshot = await adapter.rebuild_optimization_snapshot(
             instance_ids=instance_ids,
             limit_instances=limit_instances,
         )
-        
-        log_structured("System", "optimization_snapshot_rebuilt", 
-                      version=snapshot.version,
-                      node_count=len(snapshot.node_weights))
-        
-        return {
-            "success": True,
-            "version": snapshot.version,
-            "node_count": len(snapshot.node_weights),
-            "skill_count": len(snapshot.skill_weights),
-        }
+
+        log_structured(
+            "System",
+            "optimization_snapshot_rebuilt",
+            version=snapshot.version,
+            node_count=len(snapshot.node_weights),
+        )
+
+        return OptimizationRebuildSuccessResponse(
+            success=True,
+            version=str(snapshot.version),
+            node_count=len(snapshot.node_weights),
+            skill_count=len(snapshot.skill_weights),
+        )
     except Exception as e:
         logger.error(f"[System] Failed to rebuild optimization snapshot: {e}")
-        return {"success": False, "error": str(e)}
+        return OptimizationRebuildFailureResponse(success=False, error=str(e))
 
 
 @router.post("/kernel/optimization/config")
 async def set_optimization_config(
-    data: Dict[str, Any],
+    body: OptimizationConfigUpdateBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> OptimizationConfigUpdateResponse:
     """
     V2.7: 更新 Optimization 配置
     
@@ -2539,39 +2659,39 @@ async def set_optimization_config(
     
     adapter = get_kernel_adapter()
     if adapter is None:
-        return {"success": False, "error": KERNEL_ADAPTER_NOT_INITIALIZED}
+        return OptimizationConfigUpdateFailureResponse(success=False, error=KERNEL_ADAPTER_NOT_INITIALIZED)
     if not adapter._initialized:
         await adapter.initialize()
-    
+
     try:
         config = OptimizationConfig(
-            enabled=data.get("enabled", False),
-            scheduler_policy=data.get("scheduler_policy", "default"),
-            policy_params=data.get("policy_params", {}),
-            auto_build_snapshot=data.get("auto_build_snapshot", True),
-            collect_statistics=data.get("collect_statistics", True),
+            enabled=body.enabled,
+            scheduler_policy=body.scheduler_policy,
+            policy_params=body.policy_params,
+            auto_build_snapshot=body.auto_build_snapshot,
+            collect_statistics=body.collect_statistics,
         )
-        
+
         adapter.set_optimization_config(config)
-        
+
         # 每次更新配置都重新初始化策略，确保关闭优化时切回 DefaultPolicy
         await adapter._initialize_optimization()
-        
-        log_structured("System", "optimization_config_updated",
-                      enabled=config.enabled,
-                      policy=config.scheduler_policy)
-        
-        return {
-            "success": True,
-            "config": config.to_dict(),
-        }
+
+        log_structured(
+            "System",
+            "optimization_config_updated",
+            enabled=config.enabled,
+            policy=config.scheduler_policy,
+        )
+
+        return OptimizationConfigUpdateSuccessResponse(success=True, config=config.to_dict())
     except Exception as e:
         logger.error(f"[System] Failed to update optimization config: {e}")
-        return {"success": False, "error": str(e)}
+        return OptimizationConfigUpdateFailureResponse(success=False, error=str(e))
 
 
 @router.get("/kernel/optimization/impact-report")
-async def get_optimization_impact_report() -> Dict[str, Any]:
+async def get_optimization_impact_report() -> OptimizationImpactReportResponse:
     """
     V2.7: 获取优化效果报告
     
@@ -2586,15 +2706,15 @@ async def get_optimization_impact_report() -> Dict[str, Any]:
     
     adapter = get_kernel_adapter()
     if adapter is None:
-        return {"error": KERNEL_ADAPTER_NOT_INITIALIZED}
-    
+        return OptimizationImpactErrorResponse(error=KERNEL_ADAPTER_NOT_INITIALIZED)
+
     if not adapter._initialized:
         await adapter.initialize()
-    
+
     current_snapshot = adapter._optimization_snapshot
     if current_snapshot is None:
-        return {"error": "No optimization snapshot available"}
-    
+        return OptimizationImpactErrorResponse(error="No optimization snapshot available")
+
     # 使用空快照作为基准对比
     baseline_snapshot = OptimizationSnapshot.empty()
     baseline_empty = True
@@ -2602,14 +2722,17 @@ async def get_optimization_impact_report() -> Dict[str, Any]:
     # 计算优化效果
     impact = compute_optimization_impact(baseline_snapshot, current_snapshot)
 
-    log_structured("System", "optimization_impact_report",
-                  improvement_pct=impact["improvement_pct"],
-                  latency_reduction=impact["latency_reduction_pct"])
+    log_structured(
+        "System",
+        "optimization_impact_report",
+        improvement_pct=impact["improvement_pct"],
+        latency_reduction=impact["latency_reduction_pct"],
+    )
 
-    return {
-        "impact": impact,
-        "baseline_empty": baseline_empty,
-        "note": "空快照表示无历史数据基准，当前数值为相对「无优化」的差异；success_rate_before=0 仅表示基准无数据。",
-        "current_policy": adapter._scheduler_policy.get_name() if adapter._scheduler_policy else None,
-        "optimization_enabled": adapter._optimization_config.enabled if adapter._optimization_config else False,
-    }
+    return OptimizationImpactOkResponse(
+        impact=impact,
+        baseline_empty=baseline_empty,
+        note="空快照表示无历史数据基准，当前数值为相对「无优化」的差异；success_rate_before=0 仅表示基准无数据。",
+        current_policy=adapter._scheduler_policy.get_name() if adapter._scheduler_policy else None,
+        optimization_enabled=adapter._optimization_config.enabled if adapter._optimization_config else False,
+    )

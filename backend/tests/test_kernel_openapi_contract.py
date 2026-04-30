@@ -84,6 +84,73 @@ def test_kernel_toggle_response_models_validate() -> None:
     assert bad.error == "e"
 
 
+def test_openapi_kernel_optimization_endpoints_use_named_success_schemas() -> None:
+    client = _build_client()
+    spec = client.get("/openapi.json").json()
+    paths = spec.get("paths") or {}
+
+    opt_get = paths["/api/system/kernel/optimization"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert opt_get.get("anyOf")
+    assert {
+        "#/components/schemas/OptimizationStatusUnavailableResponse",
+        "#/components/schemas/OptimizationStatusReadyResponse",
+    } == {x["$ref"] for x in opt_get["anyOf"]}
+
+    rebuild = paths["/api/system/kernel/optimization/rebuild-snapshot"]["post"]
+    rb_schema = rebuild["requestBody"]["content"]["application/json"]["schema"]
+    if rb_schema.get("anyOf"):
+        rb_refs = {item["$ref"] for item in rb_schema["anyOf"] if item.get("$ref")}
+        assert "#/components/schemas/OptimizationRebuildBody" in rb_refs
+    else:
+        assert rb_schema["$ref"] == "#/components/schemas/OptimizationRebuildBody"
+    rb_200 = rebuild["responses"]["200"]["content"]["application/json"]["schema"]
+    assert rb_200.get("oneOf")
+    assert {
+        "#/components/schemas/OptimizationRebuildSuccessResponse",
+        "#/components/schemas/OptimizationRebuildFailureResponse",
+    } == {x["$ref"] for x in rb_200["oneOf"]}
+
+    cfg = paths["/api/system/kernel/optimization/config"]["post"]
+    assert cfg["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/OptimizationConfigUpdateBody"
+    cfg_200 = cfg["responses"]["200"]["content"]["application/json"]["schema"]
+    assert cfg_200.get("oneOf")
+    assert {
+        "#/components/schemas/OptimizationConfigUpdateSuccessResponse",
+        "#/components/schemas/OptimizationConfigUpdateFailureResponse",
+    } == {x["$ref"] for x in cfg_200["oneOf"]}
+
+    imp = paths["/api/system/kernel/optimization/impact-report"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert imp.get("anyOf")
+    assert {
+        "#/components/schemas/OptimizationImpactErrorResponse",
+        "#/components/schemas/OptimizationImpactOkResponse",
+    } == {x["$ref"] for x in imp["anyOf"]}
+
+
+def test_optimization_endpoints_adapter_missing_json(monkeypatch):
+    import core.agent_runtime.v2.runtime as runtime_mod
+
+    monkeypatch.setattr(runtime_mod, "get_kernel_adapter", lambda: None)
+    client = _build_client()
+
+    opt = client.get("/api/system/kernel/optimization")
+    assert opt.status_code == 200
+    assert opt.json() == {"enabled": False, "error": system_api.KERNEL_ADAPTER_NOT_INITIALIZED}
+
+    impact = client.get("/api/system/kernel/optimization/impact-report")
+    assert impact.status_code == 200
+    assert impact.json() == {"error": system_api.KERNEL_ADAPTER_NOT_INITIALIZED}
+
+    rebuild = client.post("/api/system/kernel/optimization/rebuild-snapshot", json={})
+    assert rebuild.status_code == 200
+    assert rebuild.json() == {"success": False, "error": system_api.KERNEL_ADAPTER_NOT_INITIALIZED}
+
+    cfg = client.post("/api/system/kernel/optimization/config", json={})
+    assert cfg.status_code == 200
+    assert cfg.json()["success"] is False
+    assert cfg.json()["error"] == system_api.KERNEL_ADAPTER_NOT_INITIALIZED
+
+
 def test_kernel_toggle_http_success_and_missing_enabled(monkeypatch):
     import core.agent_runtime.v2.runtime as runtime_module
 
