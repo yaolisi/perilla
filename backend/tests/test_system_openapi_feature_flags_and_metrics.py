@@ -74,3 +74,33 @@ def test_observability_summary_and_runtime_metrics_http_smoke() -> None:
     assert rt.status_code == 200
     data = rt.json()
     assert "summary" in data and "by_model" in data and "priority_slo_panel" in data
+
+
+def test_openapi_storage_readiness_and_queue_summary() -> None:
+    client = _build_client()
+    spec = client.get("/openapi.json").json()
+    paths = spec.get("paths") or {}
+    schemas = spec.get("components", {}).get("schemas") or {}
+
+    sr_ref = paths["/api/system/storage-readiness"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert sr_ref == "#/components/schemas/StorageReadinessResponse"
+    assert set(schemas["StorageReadinessResponse"].get("required") or []) == {"backend", "level", "advice"}
+
+    qs_ref = paths["/api/system/queue-summary"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert qs_ref == "#/components/schemas/QueueSummaryResponse"
+    assert set(schemas["QueueSummaryResponse"].get("required") or []) == {
+        "workflow",
+        "image_generation",
+        "runtime",
+        "total_load",
+    }
+
+    sr = client.get("/api/system/storage-readiness")
+    assert sr.status_code == 200
+    assert set(sr.json().keys()) == {"backend", "level", "advice"}
+
+    qs = client.get("/api/system/queue-summary")
+    assert qs.status_code == 200
+    body = qs.json()
+    assert body["workflow"]["running"] >= 0
+    assert body["total_load"] >= 0

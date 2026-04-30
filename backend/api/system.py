@@ -656,6 +656,42 @@ class RuntimeMetricsApiResponse(BaseModel):
     priority_slo_panel: Dict[str, Any]
 
 
+class StorageReadinessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    backend: str
+    level: str
+    advice: str
+
+
+class QueueWorkflowSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    running: int
+
+
+class QueueImageGenerationSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pending: int
+    running: int
+
+
+class QueueRuntimeSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    active_models: int
+
+
+class QueueSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workflow: QueueWorkflowSummary
+    image_generation: QueueImageGenerationSummary
+    runtime: QueueRuntimeSummary
+    total_load: int
+
+
 class ApiKeyRevokeBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1691,12 +1727,12 @@ async def observability_summary() -> ObservabilitySummaryResponse:
 
 
 @router.get("/storage-readiness")
-async def storage_readiness_api() -> Dict[str, Any]:
-    return cast(Dict[str, Any], storage_readiness(getattr(settings, "db_path", "")))
+async def storage_readiness_api() -> StorageReadinessResponse:
+    return StorageReadinessResponse.model_validate(storage_readiness(getattr(settings, "db_path", "")))
 
 
 @router.get("/queue-summary")
-async def queue_summary_api() -> Dict[str, Any]:
+async def queue_summary_api() -> QueueSummaryResponse:
     """统一任务负载摘要（workflow + image + runtime）。"""
     workflow_running = 0
     image_pending = 0
@@ -1739,8 +1775,7 @@ async def queue_summary_api() -> Dict[str, Any]:
     except Exception:
         runtime_models = 0
 
-    return cast(
-        Dict[str, Any],
+    return QueueSummaryResponse.model_validate(
         build_unified_queue_summary(workflow_running, image_pending, image_running, runtime_models),
     )
 
