@@ -63,7 +63,7 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
     for reason in body.get("go_no_go_reasons") or []:
         _assert(isinstance(reason, dict), "phase status go_no_go_reasons item must be object")
         _assert(
-            str(reason.get("type") or "") in {"summary", "capability_blocker", "north_star", "anomaly_risk"},
+            str(reason.get("type") or "") in {"summary", "capability_blocker", "north_star", "anomaly_risk", "readiness_risk"},
             "phase status go_no_go_reason.type invalid",
         )
 
@@ -76,7 +76,7 @@ def run_smoke(base_url: str, api_key: str | None) -> None:
     for reason in review.get("go_no_go_reasons") or []:
         _assert(isinstance(reason, dict), "monthly review go_no_go_reasons item must be object")
         _assert(
-            str(reason.get("type") or "") in {"summary", "capability_blocker", "north_star", "anomaly_risk"},
+            str(reason.get("type") or "") in {"summary", "capability_blocker", "north_star", "anomaly_risk", "readiness_risk"},
             "monthly review go_no_go_reason.type invalid",
         )
 

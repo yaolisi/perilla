@@ -35,9 +35,11 @@ def test_run_smoke_happy_path(monkeypatch):
                     "go_no_go": "no_go",
                     "go_no_go_reasons": [
                         {
-                            "type": "anomaly_risk",
-                            "message": "runtime_anomaly_threshold_breached",
-                            "breached_metrics": ["online_error_rate"],
+                            "type": "readiness_risk",
+                            "message": "phase_readiness_below_threshold",
+                            "lowest_phase": "phase2_advanced",
+                            "lowest_score": 0.62,
+                            "low_threshold": 0.7,
                         }
                     ],
                 }
