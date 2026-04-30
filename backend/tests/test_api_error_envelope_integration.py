@@ -42,6 +42,14 @@ def _build_app() -> FastAPI:
     async def _framework_http_error():
         raise HTTPException(status_code=401, detail="unauthorized by framework")
 
+    @app.get("/api/core/workflow-not-found")
+    async def _workflow_not_found():
+        raise_api_error(
+            status_code=404,
+            code="workflow_not_found",
+            message="workflow not found",
+        )
+
     return app
 
 
@@ -99,6 +107,19 @@ def test_mcp_not_found_message_is_localized():
     assert body["detail"] == "MCP 服务不存在"
     assert body["error"]["message"] == "MCP 服务不存在"
     assert body["error"]["code"] == "mcp_server_not_found"
+
+
+def test_workflow_not_found_is_english_when_accept_language_is_english():
+    client = TestClient(_build_app())
+    resp = client.get(
+        "/api/core/workflow-not-found",
+        headers={"Accept-Language": "en-US,en;q=0.9"},
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["detail"] == "workflow not found"
+    assert body["error"]["message"] == "workflow not found"
+    assert body["error"]["code"] == "workflow_not_found"
 
 
 def test_framework_http_exception_triggers_fallback_observer(fallback_probe):
