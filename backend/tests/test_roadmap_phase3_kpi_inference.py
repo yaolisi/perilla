@@ -29,6 +29,34 @@ def test_save_manual_quality_metrics_tracks_explicit_keys() -> None:
     assert keys >= {"rag_top5_recall", "throughput_gain"}
 
 
+def test_describe_roadmap_quality_metrics_returns_stable_shape() -> None:
+    store = _Store()
+    out = roadmap.describe_roadmap_quality_metrics(store=store)
+    assert set(out.keys()) == {
+        "quality_metrics",
+        "explicit_metric_keys",
+        "explicit_metric_keys_tracked",
+        "phase3_kpi_inference_probe",
+    }
+    assert isinstance(out["quality_metrics"], dict)
+    assert out["explicit_metric_keys"] is None
+    assert out["explicit_metric_keys_tracked"] is False
+    assert isinstance(out["phase3_kpi_inference_probe"], dict)
+
+
+def test_describe_roadmap_quality_metrics_lists_explicit_keys_when_tracked() -> None:
+    store = _Store(
+        {
+            "roadmap_quality_metrics": {"rag_top5_recall": 0.82},
+            "roadmap_quality_metrics_explicit_keys": ["rag_top5_recall"],
+        },
+    )
+    out = roadmap.describe_roadmap_quality_metrics(store=store)
+    assert out["explicit_metric_keys_tracked"] is True
+    assert out["explicit_metric_keys"] == ["rag_top5_recall"]
+    assert out["quality_metrics"].get("rag_top5_recall") == pytest.approx(0.82)
+
+
 def test_build_snapshot_fills_phase3_kpis_when_quality_metrics_not_persisted(monkeypatch: pytest.MonkeyPatch) -> None:
     store = _Store()
     monkeypatch.setattr(roadmap, "get_system_settings_store", lambda: store)
