@@ -759,12 +759,31 @@ _ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
 def _resolve_locale(accept_language: str | None) -> str:
     if not accept_language:
         return "en"
+    best_locale = "en"
+    best_q = -1.0
     normalized = accept_language.lower()
     for raw_item in normalized.split(","):
-        lang = raw_item.strip().split(";", 1)[0]
-        if lang.startswith("zh"):
-            return "zh"
-    return "en"
+        item = raw_item.strip()
+        if not item:
+            continue
+        lang, *params = item.split(";")
+        q = _parse_q_value(params)
+        locale = "zh" if lang.startswith("zh") else "en"
+        if q > best_q:
+            best_q = q
+            best_locale = locale
+    return best_locale
+
+
+def _parse_q_value(params: list[str]) -> float:
+    for p in params:
+        part = p.strip()
+        if part.startswith("q="):
+            try:
+                return float(part[2:])
+            except ValueError:
+                return 0.0
+    return 1.0
 
 
 def localize_error_message(*, code: str, default_message: str, accept_language: str | None) -> str:

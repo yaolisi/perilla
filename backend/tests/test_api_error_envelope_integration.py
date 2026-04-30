@@ -143,11 +143,24 @@ def test_tool_not_found_is_localized_to_zh():
     assert body["error"]["code"] == "tool_not_found"
 
 
-def test_accept_language_with_spaces_still_localizes_to_zh():
+def test_accept_language_with_spaces_respects_q_priority():
     client = TestClient(_build_app())
     resp = client.get(
         "/api/core/tool-not-found",
         headers={"Accept-Language": "en-US,en;q=0.9, zh-CN;q=0.8"},
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["detail"] == "tool not found"
+    assert body["error"]["message"] == "tool not found"
+    assert body["error"]["code"] == "tool_not_found"
+
+
+def test_accept_language_zh_with_higher_q_wins_even_if_not_first():
+    client = TestClient(_build_app())
+    resp = client.get(
+        "/api/core/tool-not-found",
+        headers={"Accept-Language": "en-US;q=0.5, zh-CN;q=0.9"},
     )
     assert resp.status_code == 404
     body = resp.json()
