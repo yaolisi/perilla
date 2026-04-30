@@ -106,6 +106,14 @@ def test_make_help_mentions_roadmap_exit_code_semantics() -> None:
     assert "Exit code semantics: 2=parameter/input error, 1=contract/business failure" in output
 
 
+def test_make_help_mentions_roadmap_quality_metrics_read_api() -> None:
+    output = _make_help_output()
+    assert (
+        "API GET /api/system/roadmap/quality-metrics (platform admin): merged metrics, explicit_metric_keys, phase3_kpi_inference_probe"
+        in output
+    )
+
+
 def test_make_help_mentions_roadmap_log_prefix_semantics() -> None:
     output = _make_help_output()
     assert "Logs prefixed with [roadmap-gate] for CI grep/filter" in output
