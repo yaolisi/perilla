@@ -1620,6 +1620,29 @@ def _build_anomaly_detection_detail(enabled: bool) -> Dict[str, Any]:
     }
 
 
+def _detect_cluster_scaling_capability() -> bool:
+    return (
+        "runtimeMaxCachedLocalRuntimes" in ALLOWED_SYSTEM_CONFIG_KEYS
+        and callable(build_unified_queue_summary)
+    )
+
+
+def _detect_model_version_governance_capability() -> bool:
+    return callable(get_model_registry) and callable(build_plugin_compatibility_matrix)
+
+
+def _detect_sso_integration_capability() -> bool:
+    return callable(require_authenticated_platform_admin) and (Path(__file__).resolve().parent.parent / "middleware" / "rbac_enforcement.py").exists()
+
+
+def _detect_multimodal_pilot_capability() -> bool:
+    return (
+        "asrModelId" in ALLOWED_SYSTEM_CONFIG_KEYS
+        and "imageGenerationDefaultModelId" in ALLOWED_SYSTEM_CONFIG_KEYS
+        and (Path(__file__).resolve().parent / "vlm.py").exists()
+    )
+
+
 def _build_hybrid_retrieval_detail(enabled: bool) -> Dict[str, Any]:
     detail: Dict[str, Any] = {
         "source": "rag_plugin_manifest",
@@ -1680,6 +1703,10 @@ def _detect_roadmap_capabilities() -> Dict[str, bool]:
         "kg_augmented_rag": _detect_kg_augmented_rag_capability(),
         "active_learning_reviewed_update": _detect_active_learning_reviewed_update_capability(),
         "anomaly_detection": _detect_anomaly_detection_capability(),
+        "cluster_scaling": _detect_cluster_scaling_capability(),
+        "model_version_governance": _detect_model_version_governance_capability(),
+        "sso_integration": _detect_sso_integration_capability(),
+        "multimodal_pilot": _detect_multimodal_pilot_capability(),
         "function_calling_orchestration": _detect_function_calling_orchestration_capability(agents),
         "agent_role_collaboration": _detect_agent_role_collaboration_capability(agents),
     }
@@ -1728,6 +1755,41 @@ def _detect_roadmap_capability_details() -> Dict[str, Dict[str, Any]]:
         },
         "anomaly_detection": {
             **_build_anomaly_detection_detail(_detect_anomaly_detection_capability()),
+        },
+        "cluster_scaling": {
+            "source": "runtime_control_plane",
+            "enabled": _detect_cluster_scaling_capability(),
+            "signals": {
+                "runtime_cache_controls_present": "runtimeMaxCachedLocalRuntimes" in ALLOWED_SYSTEM_CONFIG_KEYS,
+                "queue_summary_available": callable(build_unified_queue_summary),
+            },
+        },
+        "model_version_governance": {
+            "source": "model_registry_and_plugin_matrix",
+            "enabled": _detect_model_version_governance_capability(),
+            "signals": {
+                "model_registry_available": callable(get_model_registry),
+                "plugin_compatibility_matrix_available": callable(build_plugin_compatibility_matrix),
+            },
+        },
+        "sso_integration": {
+            "source": "security_stack",
+            "enabled": _detect_sso_integration_capability(),
+            "signals": {
+                "auth_guard_available": callable(require_authenticated_platform_admin),
+                "rbac_enforcement_module_present": (
+                    Path(__file__).resolve().parent.parent / "middleware" / "rbac_enforcement.py"
+                ).exists(),
+            },
+        },
+        "multimodal_pilot": {
+            "source": "multimodal_endpoints_and_settings",
+            "enabled": _detect_multimodal_pilot_capability(),
+            "signals": {
+                "asr_setting_present": "asrModelId" in ALLOWED_SYSTEM_CONFIG_KEYS,
+                "image_generation_setting_present": "imageGenerationDefaultModelId" in ALLOWED_SYSTEM_CONFIG_KEYS,
+                "vlm_api_present": (Path(__file__).resolve().parent / "vlm.py").exists(),
+            },
         },
         "function_calling_orchestration": {
             "source": "agent_registry",

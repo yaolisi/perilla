@@ -1023,7 +1023,7 @@ def test_roadmap_phase_status_includes_auto_detected_capabilities(monkeypatch):
     assert capability_details.get("hybrid_retrieval", {}).get("signals", {}).get("manifest_exists") is True
 
 
-def test_detect_roadmap_capabilities_includes_phase2_keys(monkeypatch):
+def test_detect_roadmap_capabilities_includes_phase2_and_phase3_keys(monkeypatch):
     monkeypatch.setattr(system_api, "_list_agents_for_capability_detection", lambda: [])
     monkeypatch.setattr(system_api, "_detect_dynamic_batching_capability", lambda: True)
     monkeypatch.setattr(system_api, "_detect_hybrid_retrieval_capability", lambda: True)
@@ -1031,6 +1031,10 @@ def test_detect_roadmap_capabilities_includes_phase2_keys(monkeypatch):
     monkeypatch.setattr(system_api, "_detect_kg_augmented_rag_capability", lambda: True)
     monkeypatch.setattr(system_api, "_detect_active_learning_reviewed_update_capability", lambda: True)
     monkeypatch.setattr(system_api, "_detect_anomaly_detection_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_cluster_scaling_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_model_version_governance_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_sso_integration_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_multimodal_pilot_capability", lambda: True)
 
     caps = system_api._detect_roadmap_capabilities()
     assert caps["multi_hop_retrieval"] is True
@@ -1038,9 +1042,13 @@ def test_detect_roadmap_capabilities_includes_phase2_keys(monkeypatch):
     assert caps["kg_augmented_rag"] is True
     assert caps["active_learning_reviewed_update"] is True
     assert caps["anomaly_detection"] is True
+    assert caps["cluster_scaling"] is True
+    assert caps["model_version_governance"] is True
+    assert caps["sso_integration"] is True
+    assert caps["multimodal_pilot"] is True
 
 
-def test_detect_roadmap_capability_details_includes_phase2_keys(monkeypatch):
+def test_detect_roadmap_capability_details_includes_phase2_and_phase3_keys(monkeypatch):
     monkeypatch.setattr(system_api, "_list_agents_for_capability_detection", lambda: [])
     monkeypatch.setattr(system_api, "_detect_dynamic_batching_capability", lambda: True)
     monkeypatch.setattr(system_api, "_detect_hybrid_retrieval_capability", lambda: True)
@@ -1048,6 +1056,10 @@ def test_detect_roadmap_capability_details_includes_phase2_keys(monkeypatch):
     monkeypatch.setattr(system_api, "_detect_kg_augmented_rag_capability", lambda: True)
     monkeypatch.setattr(system_api, "_detect_active_learning_reviewed_update_capability", lambda: True)
     monkeypatch.setattr(system_api, "_detect_anomaly_detection_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_cluster_scaling_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_model_version_governance_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_sso_integration_capability", lambda: True)
+    monkeypatch.setattr(system_api, "_detect_multimodal_pilot_capability", lambda: True)
     monkeypatch.setattr(
         system_api,
         "build_roadmap_snapshot",
@@ -1062,6 +1074,10 @@ def test_detect_roadmap_capability_details_includes_phase2_keys(monkeypatch):
     assert details["anomaly_detection"]["signals"]["chaos_threshold_keys_present"] is True
     assert details["anomaly_detection"]["signals"]["anomaly_detected"] is True
     assert details["anomaly_detection"]["signals"]["breached_metrics"] == ["online_error_rate"]
+    assert details["cluster_scaling"]["enabled"] is True
+    assert details["model_version_governance"]["enabled"] is True
+    assert details["sso_integration"]["enabled"] is True
+    assert details["multimodal_pilot"]["enabled"] is True
 
 
 def test_roadmap_monthly_review_create_and_list(monkeypatch):
