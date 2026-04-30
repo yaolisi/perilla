@@ -317,6 +317,15 @@ class RoadmapQualityMetricsUpdateBody(BaseModel):
     rollback_time_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
 
 
+class RoadmapQualityMetricsReadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quality_metrics: Dict[str, Any]
+    explicit_metric_keys: Optional[List[str]] = None
+    explicit_metric_keys_tracked: bool
+    phase3_kpi_inference_probe: Dict[str, Any] = Field(default_factory=dict)
+
+
 class RoadmapGateUpdateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1913,9 +1922,11 @@ async def update_roadmap_kpis_api(
     return {"success": True, "kpis": merged}
 
 
-@router.get("/roadmap/quality-metrics")
-async def get_roadmap_quality_metrics_api(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
-    return describe_roadmap_quality_metrics()
+@router.get("/roadmap/quality-metrics", response_model=RoadmapQualityMetricsReadResponse)
+async def get_roadmap_quality_metrics_api(
+    *, _role: Annotated[Any, Depends(require_platform_admin)],
+) -> RoadmapQualityMetricsReadResponse:
+    return RoadmapQualityMetricsReadResponse.model_validate(describe_roadmap_quality_metrics())
 
 
 @router.post("/roadmap/quality-metrics")

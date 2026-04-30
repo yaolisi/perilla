@@ -4,6 +4,7 @@ from contextlib import nullcontext
 
 import pytest
 
+from api.system import RoadmapQualityMetricsReadResponse
 from core.system import roadmap
 
 
@@ -27,6 +28,15 @@ def test_save_manual_quality_metrics_tracks_explicit_keys() -> None:
     roadmap.save_manual_quality_metrics({"throughput_gain": 2.0}, store=store)
     keys = set(store._data.get("roadmap_quality_metrics_explicit_keys") or [])
     assert keys >= {"rag_top5_recall", "throughput_gain"}
+
+
+def test_roadmap_quality_metrics_read_response_validates_describe_payload() -> None:
+    store = _Store()
+    payload = roadmap.describe_roadmap_quality_metrics(store=store)
+    model = RoadmapQualityMetricsReadResponse.model_validate(payload)
+    assert model.explicit_metric_keys_tracked is False
+    assert model.explicit_metric_keys is None
+    assert isinstance(model.phase3_kpi_inference_probe, dict)
 
 
 def test_describe_roadmap_quality_metrics_returns_stable_shape() -> None:
