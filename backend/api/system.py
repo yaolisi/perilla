@@ -330,6 +330,7 @@ class RoadmapMonthlyReviewListAppliedFilters(BaseModel):
     go_no_go: Optional[Literal["go", "no_go"]] = None
     lowest_readiness_phase: Optional[str] = None
     readiness_below_threshold: Optional[bool] = None
+    max_lowest_readiness_score: Optional[float] = None
 
 
 class RoadmapMonthlyReviewListMeta(BaseModel):
@@ -1927,6 +1928,7 @@ def _build_monthly_review_list_payload(
     go_no_go: Optional[Literal["go", "no_go"]],
     lowest_readiness_phase: Optional[str],
     readiness_below_threshold: Optional[bool],
+    max_lowest_readiness_score: Optional[float],
 ) -> RoadmapMonthlyReviewListResponse:
     items, total_before_limit = list_monthly_reviews_page(
         limit=limit,
@@ -1935,6 +1937,7 @@ def _build_monthly_review_list_payload(
         go_no_go=go_no_go,
         lowest_readiness_phase=lowest_readiness_phase,
         readiness_below_threshold=readiness_below_threshold,
+        max_lowest_readiness_score=max_lowest_readiness_score,
     )
     has_more = (offset + len(items)) < total_before_limit
     next_offset = (offset + len(items)) if has_more else None
@@ -1952,6 +1955,7 @@ def _build_monthly_review_list_payload(
                 "go_no_go": go_no_go,
                 "lowest_readiness_phase": lowest_readiness_phase,
                 "readiness_below_threshold": readiness_below_threshold,
+                "max_lowest_readiness_score": max_lowest_readiness_score,
             },
             "total_before_limit": total_before_limit,
             "has_more": has_more,
@@ -1975,6 +1979,7 @@ async def list_roadmap_monthly_review_api(
     go_no_go: Annotated[Optional[Literal["go", "no_go"]], Query()] = None,
     lowest_readiness_phase: Annotated[Optional[str], Query(max_length=128)] = None,
     readiness_below_threshold: Annotated[Optional[bool], Query()] = None,
+    max_lowest_readiness_score: Annotated[Optional[float], Query(ge=0.0, le=1.0)] = None,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
 ) -> RoadmapMonthlyReviewListResponse:
@@ -1985,6 +1990,7 @@ async def list_roadmap_monthly_review_api(
         go_no_go=go_no_go,
         lowest_readiness_phase=lowest_readiness_phase,
         readiness_below_threshold=readiness_below_threshold,
+        max_lowest_readiness_score=max_lowest_readiness_score,
     )
 
 

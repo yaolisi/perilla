@@ -717,12 +717,27 @@ def _filter_reviews_by_readiness_threshold(
     ]
 
 
+def _filter_reviews_by_max_lowest_readiness_score(
+    items: List[Dict[str, Any]],
+    max_lowest_readiness_score: float | None,
+) -> List[Dict[str, Any]]:
+    if max_lowest_readiness_score is None:
+        return items
+    cap = float(max_lowest_readiness_score)
+    return [
+        item
+        for item in items
+        if float((_extract_readiness_summary(item).get("lowest_score") or 0.0)) <= cap
+    ]
+
+
 def list_monthly_reviews_page(
     limit: int = 12,
     top_blocker_capability: str | None = None,
     go_no_go: str | None = None,
     lowest_readiness_phase: str | None = None,
     readiness_below_threshold: bool | None = None,
+    max_lowest_readiness_score: float | None = None,
     offset: int = 0,
 ) -> Tuple[List[Dict[str, Any]], int]:
     store = get_system_settings_store()
@@ -735,6 +750,7 @@ def list_monthly_reviews_page(
     filtered = _filter_reviews_by_go_no_go(filtered, (go_no_go or ""))
     filtered = _filter_reviews_by_lowest_readiness_phase(filtered, (lowest_readiness_phase or "").strip())
     filtered = _filter_reviews_by_readiness_threshold(filtered, readiness_below_threshold)
+    filtered = _filter_reviews_by_max_lowest_readiness_score(filtered, max_lowest_readiness_score)
     total = len(filtered)
     ordered = filtered[::-1]
     start = max(0, int(offset))
@@ -747,6 +763,7 @@ def list_monthly_reviews(
     go_no_go: str | None = None,
     lowest_readiness_phase: str | None = None,
     readiness_below_threshold: bool | None = None,
+    max_lowest_readiness_score: float | None = None,
     offset: int = 0,
 ) -> List[Dict[str, Any]]:
     items, _ = list_monthly_reviews_page(
@@ -755,6 +772,7 @@ def list_monthly_reviews(
         go_no_go=go_no_go,
         lowest_readiness_phase=lowest_readiness_phase,
         readiness_below_threshold=readiness_below_threshold,
+        max_lowest_readiness_score=max_lowest_readiness_score,
         offset=offset,
     )
     return items

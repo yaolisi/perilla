@@ -1110,7 +1110,7 @@ def test_roadmap_monthly_review_create_and_list(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None, max_lowest_readiness_score=None: (
             [{"go_no_go": "go"}][offset : offset + limit],
             1,
         ),
@@ -1475,7 +1475,7 @@ def test_roadmap_monthly_review_list_supports_top_blocker_filter(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None, max_lowest_readiness_score=None: (
             (
                 [{"top_blocker_capability": "hybrid_retrieval"}, {"top_blocker_capability": "hybrid_retrieval"}]
                 if top_blocker_capability == "hybrid_retrieval"
@@ -1508,7 +1508,7 @@ def test_roadmap_monthly_review_list_supports_go_no_go_filter(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None, max_lowest_readiness_score=None: (
             (
                 [
                     {"go_no_go": "no_go", "top_blocker_capability": "dynamic_batching"},
@@ -1541,7 +1541,7 @@ def test_roadmap_monthly_review_list_supports_offset_param(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None, max_lowest_readiness_score=None: (
             [
                 {"created_at": "2026-01-03T00:00:00Z"},
                 {"created_at": "2026-01-02T00:00:00Z"},
@@ -1569,7 +1569,7 @@ def test_roadmap_monthly_review_list_supports_combined_filters(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None, max_lowest_readiness_score=None: (
             (
                 [{"go_no_go": "no_go", "top_blocker_capability": "hybrid_retrieval"}]
                 if (top_blocker_capability == "hybrid_retrieval" and go_no_go == "no_go")
@@ -1599,7 +1599,7 @@ def test_roadmap_monthly_review_list_empty_result_meta_contract(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: ([], 0),
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None, max_lowest_readiness_score=None: ([], 0),
     )
     resp = client.get("/api/system/roadmap/monthly-review", params={"limit": 10, "offset": 0})
     assert resp.status_code == 200
@@ -1619,7 +1619,7 @@ def test_roadmap_monthly_review_list_supports_readiness_filters(monkeypatch):
     monkeypatch.setattr(
         system_api,
         "list_monthly_reviews_page",
-        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None: (
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None, max_lowest_readiness_score=None: (
             (
                 [{"go_no_go": "no_go", "phase_gate": {"readiness_summary": {"lowest_phase": "phase2_advanced"}}}]
                 if (lowest_readiness_phase == "phase2_advanced" and readiness_below_threshold is True)
@@ -1637,4 +1637,37 @@ def test_roadmap_monthly_review_list_supports_readiness_filters(monkeypatch):
     assert body["count"] == 1
     assert body["meta"]["applied_filters"]["lowest_readiness_phase"] == "phase2_advanced"
     assert body["meta"]["applied_filters"]["readiness_below_threshold"] is True
+    assert body["meta"]["total_before_limit"] == 1
+
+
+def test_roadmap_monthly_review_list_supports_max_lowest_readiness_score(monkeypatch):
+    client = _build_client()
+    monkeypatch.setattr(
+        system_api,
+        "list_monthly_reviews_page",
+        lambda limit=12, offset=0, top_blocker_capability=None, go_no_go=None, lowest_readiness_phase=None, readiness_below_threshold=None, max_lowest_readiness_score=None: (
+            (
+                [{"phase_gate": {"readiness_summary": {"lowest_score": 0.64}}}]
+                if (
+                    max_lowest_readiness_score is not None
+                    and abs(float(max_lowest_readiness_score) - 0.65) < 1e-9
+                )
+                else []
+            )[offset : offset + limit],
+            1
+            if (
+                max_lowest_readiness_score is not None
+                and abs(float(max_lowest_readiness_score) - 0.65) < 1e-9
+            )
+            else 0,
+        ),
+    )
+    resp = client.get(
+        "/api/system/roadmap/monthly-review",
+        params={"max_lowest_readiness_score": "0.65", "limit": 5, "offset": 0},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1
+    assert abs(float(body["meta"]["applied_filters"]["max_lowest_readiness_score"]) - 0.65) < 1e-9
     assert body["meta"]["total_before_limit"] == 1
