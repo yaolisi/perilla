@@ -2,9 +2,11 @@
 V2.8 Inference Gateway Layer - ASR Response Model
 """
 
-from typing import Any, Dict, List
+from typing import List
 
 from pydantic import BaseModel, Field
+
+from core.inference.models.metadata import AsrSegmentJsonMap, InferenceMetadataJsonMap
 
 
 class ASRResponse(BaseModel):
@@ -23,11 +25,14 @@ class ASRResponse(BaseModel):
 
     text: str = Field(default="", description="Transcription text")
     language: str = Field(default="unknown", description="Detected language")
-    segments: List[Dict[str, Any]] = Field(default_factory=list, description="Timestamp segments")
+    segments: List[AsrSegmentJsonMap] = Field(default_factory=list, description="Timestamp segments")
     provider: str = Field(default="", description="Provider name")
     model: str = Field(default="", description="Actual model used")
     model_alias: str = Field(default="", description="Original alias requested")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    metadata: InferenceMetadataJsonMap = Field(
+        default_factory=InferenceMetadataJsonMap,
+        description="Additional metadata",
+    )
 
     @property
     def success(self) -> bool:

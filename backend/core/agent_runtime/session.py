@@ -11,9 +11,9 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy import select, update, delete
 
@@ -22,6 +22,23 @@ from core.data.models.session import AgentSession as AgentSessionORM
 from log import logger
 from core.types import Message
 from core.events import get_event_bus
+
+
+class AgentSessionStateJsonMap(BaseModel):
+    """AgentSession.state：会话结构化状态（协作块、工具观测等）；OpenAPI 具名 object。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+def agent_session_state_as_dict(sess_state: Any) -> Dict[str, Any]:
+    """供持久化、协作合并与内核上下文使用的 dict 视图。"""
+    if sess_state is None:
+        return {}
+    if isinstance(sess_state, AgentSessionStateJsonMap):
+        return sess_state.model_dump(mode="python")
+    if isinstance(sess_state, dict):
+        return dict(sess_state)
+    return {}
 
 
 class AgentSession(BaseModel):
@@ -38,7 +55,7 @@ class AgentSession(BaseModel):
     """上传文件时的工作目录（绝对路径），供后续同会话 run 时 file.read 使用。"""
     workspace_dir: Optional[str] = None
     # Structured state for recent tool observations (avoid parsing message text)
-    state: dict = Field(default_factory=dict)
+    state: AgentSessionStateJsonMap = Field(default_factory=AgentSessionStateJsonMap)
     
     # V2.6: Execution Kernel instance ID (for event stream replay/debug)
     kernel_instance_id: Optional[str] = None
@@ -55,7 +72,7 @@ class AgentSessionStore:
         try:
             now = datetime.now(timezone.utc)
             messages_json = json.dumps([m.model_dump() for m in session.messages])
-            state_json = json.dumps(session.state or {})
+            state_json = json.dumps(agent_session_state_as_dict(session.state), ensure_ascii=False)
             workspace_dir = getattr(session, "workspace_dir", None) or None
 
             # 转换 ISO 格式字符串为 datetime 对象
@@ -148,11 +165,14 @@ class AgentSessionStore:
         """ORM 对象转 AgentSession"""
         messages_data = json.loads(session_orm.messages_json)
         messages = [Message(**m) for m in messages_data]
-        state = {}
+        state_raw: Dict[str, Any] = {}
         try:
-            state = json.loads(session_orm.state_json) if session_orm.state_json else {}
+            state_raw = json.loads(session_orm.state_json) if session_orm.state_json else {}
         except Exception:
-            state = {}
+            state_raw = {}
+        if not isinstance(state_raw, dict):
+            state_raw = {}
+        state = AgentSessionStateJsonMap.model_validate(state_raw)
 
         return AgentSession(
             session_id=session_orm.session_id,

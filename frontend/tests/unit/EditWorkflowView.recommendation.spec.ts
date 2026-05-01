@@ -2,6 +2,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { defineComponent } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import zhLocale from '@/i18n/locales/zh.json'
 import EditWorkflowView from '@/components/workflow/EditWorkflowView.vue'
 
 vi.mock('vue-router', () => ({
@@ -71,7 +72,11 @@ function makeI18n() {
   return createI18n({
     legacy: false,
     locale: 'zh',
-    messages: { zh: {} },
+    messages: {
+      zh: {
+        workflow_page: zhLocale.workflow_page,
+      },
+    },
     missingWarn: false,
     fallbackWarn: false,
   })

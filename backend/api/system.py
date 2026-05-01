@@ -13,7 +13,7 @@ from log import logger, log_structured
 
 import subprocess
 from typing import Annotated, Any, AsyncIterator, Dict, List, Literal, Optional, Union, cast
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from api.errors import raise_api_error
 from config.settings import settings
@@ -87,6 +87,27 @@ _INFERENCE_CACHE_CHALLENGE_METRICS: dict[str, int] = {
     "validate_failed_code_mismatch_total": 0,
     "rate_limited_total": 0,
 }
+
+
+class SystemJsonMap(BaseModel):
+    """系统 / 路线图 API 中的自由 JSON 对象。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class SystemJsonRecord(BaseModel):
+    """系统 API 中列表行的自由 JSON 对象。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class SystemStringBoolMap(RootModel[Dict[str, bool]]):
+    """特性开关：任意键 -> 布尔。"""
+
+
+class SystemStringIntMap(RootModel[Dict[str, int]]):
+    """分页窗口等：任意键 -> 整数。"""
+
 
 ALLOWED_SYSTEM_CONFIG_KEYS = {
     "offlineMode",
@@ -305,14 +326,14 @@ class RoadmapKpiUpdateBody(BaseModel):
 class RoadmapKpisReadResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kpis: Dict[str, Any]
+    kpis: SystemJsonMap
 
 
 class RoadmapKpisUpdateResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     success: Literal[True] = True
-    kpis: Dict[str, Any]
+    kpis: SystemJsonMap
 
 
 class RoadmapQualityMetricsUpdateBody(BaseModel):
@@ -333,30 +354,30 @@ class RoadmapQualityMetricsUpdateBody(BaseModel):
 class RoadmapQualityMetricsReadResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    quality_metrics: Dict[str, Any]
+    quality_metrics: SystemJsonMap
     explicit_metric_keys: Optional[List[str]] = None
     explicit_metric_keys_tracked: bool
-    phase3_kpi_inference_probe: Dict[str, Any] = Field(default_factory=dict)
+    phase3_kpi_inference_probe: SystemJsonMap = Field(default_factory=SystemJsonMap)
 
 
 class RoadmapQualityMetricsUpdateResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     success: Literal[True] = True
-    quality_metrics: Dict[str, Any]
+    quality_metrics: SystemJsonMap
 
 
 class RoadmapGateUpdateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    phase_gates: Dict[str, Dict[str, Any]]
+    phase_gates: Dict[str, SystemJsonMap]
 
 
 class RoadmapPhaseGatesUpdateResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     success: Literal[True] = True
-    phase_gates: Dict[str, Any]
+    phase_gates: SystemJsonMap
 
 
 class RoadmapMonthlyReviewListAppliedFilters(BaseModel):
@@ -380,14 +401,14 @@ class RoadmapMonthlyReviewListMeta(BaseModel):
     next_offset: Optional[int] = None
     prev_offset: Optional[int] = None
     returned_order: Literal["newest_first"] = "newest_first"
-    page_window: Dict[str, int]
+    page_window: SystemStringIntMap
 
 
 class RoadmapMonthlyReviewListResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     count: int
-    items: List[Dict[str, Any]]
+    items: List[SystemJsonRecord]
     meta: RoadmapMonthlyReviewListMeta
 
 
@@ -395,7 +416,7 @@ class RoadmapMonthlyReviewCreateResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     success: Literal[True] = True
-    review: Dict[str, Any]
+    review: SystemJsonMap
 
 
 class RoadmapNorthStarStatus(BaseModel):
@@ -412,19 +433,19 @@ class RoadmapPhaseGateStatus(BaseModel):
     passed_count: int
     total_count: int
     score: float
-    phases: Dict[str, Dict[str, Any]]
-    blocking_capabilities: List[Dict[str, Any]]
-    readiness_summary: Dict[str, Any]
+    phases: Dict[str, SystemJsonMap]
+    blocking_capabilities: List[SystemJsonRecord]
+    readiness_summary: SystemJsonMap
     top_blocker_capability: Optional[str] = None
 
 
 class RoadmapPhaseStatusResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    snapshot: Dict[str, Any]
+    snapshot: SystemJsonMap
     north_star: RoadmapNorthStarStatus
     go_no_go: Literal["go", "no_go"]
-    go_no_go_reasons: List[Dict[str, Any]]
+    go_no_go_reasons: List[SystemJsonRecord]
     top_blocker_capability: Optional[str] = None
     phase_gate: RoadmapPhaseGateStatus
 
@@ -522,7 +543,7 @@ class OptimizationStatusReadyResponse(BaseModel):
     scheduler_policy: OptimizationSchedulerPolicySummary
     snapshot: OptimizationSnapshotSummary
     agent_scoped_configs: OptimizationAgentScopedConfigsSummary
-    config: Dict[str, Any]
+    config: SystemJsonMap
 
 
 OptimizationStatusResponse = OptimizationStatusUnavailableResponse | OptimizationStatusReadyResponse
@@ -562,7 +583,7 @@ class OptimizationConfigUpdateBody(BaseModel):
 
     enabled: bool = False
     scheduler_policy: str = "default"
-    policy_params: Dict[str, Any] = Field(default_factory=dict)
+    policy_params: SystemJsonMap = Field(default_factory=SystemJsonMap)
     auto_build_snapshot: bool = True
     collect_statistics: bool = True
 
@@ -571,7 +592,7 @@ class OptimizationConfigUpdateSuccessResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     success: Literal[True] = True
-    config: Dict[str, Any]
+    config: SystemJsonMap
 
 
 class OptimizationConfigUpdateFailureResponse(BaseModel):
@@ -596,7 +617,7 @@ class OptimizationImpactErrorResponse(BaseModel):
 class OptimizationImpactOkResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    impact: Dict[str, Any]
+    impact: SystemJsonMap
     baseline_empty: bool
     note: str
     current_policy: Optional[str] = None
@@ -610,7 +631,7 @@ class FeatureFlagsReadResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tenant_id: Optional[Union[str, int]] = None
-    flags: Dict[str, bool]
+    flags: SystemStringBoolMap
 
 
 class FeatureFlagsUpdateResponse(BaseModel):
@@ -618,7 +639,7 @@ class FeatureFlagsUpdateResponse(BaseModel):
 
     success: Literal[True] = True
     tenant_id: Optional[Union[str, int]] = None
-    flags: Dict[str, bool]
+    flags: SystemStringBoolMap
 
 
 class HardwareMetricsResponse(BaseModel):
@@ -650,10 +671,10 @@ class ObservabilitySummaryResponse(BaseModel):
 class RuntimeMetricsApiResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    summary: Dict[str, Any]
-    by_priority_summary: Dict[str, Any]
-    by_model: Dict[str, Any]
-    priority_slo_panel: Dict[str, Any]
+    summary: SystemJsonMap
+    by_priority_summary: SystemJsonMap
+    by_model: SystemJsonMap
+    priority_slo_panel: SystemJsonMap
 
 
 class StorageReadinessResponse(BaseModel):
@@ -690,6 +711,165 @@ class QueueSummaryResponse(BaseModel):
     image_generation: QueueImageGenerationSummary
     runtime: QueueRuntimeSummary
     total_load: int
+
+
+class EventBusRuntimeStatusResponse(BaseModel):
+    """Runtime counters + DLQ size; extra metric keys remain allowed for forward compatibility."""
+
+    model_config = ConfigDict(extra="allow")
+
+    dlq_size: int
+    published_total: int = 0
+    handled_success_total: int = 0
+    handled_failure_total: int = 0
+    replay_attempts_total: int = 0
+    replay_dry_run_total: int = 0
+    replay_rate_limited_total: int = 0
+    replay_replayed_total: int = 0
+    replay_failed_total: int = 0
+    last_error: str = ""
+    per_event_type: SystemJsonMap = Field(default_factory=SystemJsonMap)
+
+
+class EventBusDlqListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    items: List[SystemJsonRecord]
+
+
+class EventBusDlqClearResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    cleared: int
+
+
+class EventBusDlqReplayGroupedBucket(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total: int = 0
+    replayed: int = 0
+    failed: int = 0
+
+
+class EventBusDlqReplayResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    dry_run: bool
+    candidate: int
+    replayed: int
+    failed: int
+    grouped: Dict[str, EventBusDlqReplayGroupedBucket]
+
+
+class SystemConfigReadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ollama_base_url: str
+    localai_base_url: str
+    textgen_webui_base_url: str
+    app_name: str
+    version: str
+    local_model_directory: str
+    settings: SystemJsonMap
+    mcp_http_emit_server_push_events_effective: bool
+
+
+class SystemConfigUpdateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+
+
+class SystemConfigSchemaResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allowed_keys: List[str]
+    schema_hints: Dict[str, SystemJsonMap]
+    query_examples: Dict[str, str]
+    examples: Optional[SystemJsonMap] = None
+
+
+class PluginListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    plugins: List[SystemJsonRecord]
+
+
+class PluginSimpleOkResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+
+
+class PluginMarketPackageListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    items: List[SystemJsonRecord]
+
+
+class PluginMarketPublishResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    package_id: str
+    review_status: str
+
+
+class PluginMarketReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    package_id: str
+    approved: bool
+
+
+class PluginMarketInstallResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    package_id: str
+    installed: Literal[True] = True
+
+
+class PluginMarketInstallationListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    items: List[SystemJsonRecord]
+
+
+class PluginMarketToggleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    package_id: str
+    enabled: bool
+
+
+class PluginCompatibilityMatrixRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package_id: str
+    name: str
+    plugin_version: str
+    gateway_version: str
+    compatible_gateway_versions: List[str]
+    compatible: bool
+    review_status: str
+    visibility: str
+
+
+class PluginCompatibilityMatrixResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    gateway_version: str
+    count: int
+    items: List[PluginCompatibilityMatrixRow]
 
 
 class EngineReloadResponse(BaseModel):
@@ -966,32 +1146,32 @@ async def _validate_cache_clear_challenge_from_redis(
     return False
 
 @router.get("/config")
-async def get_config() -> Dict[str, Any]:
+async def get_config() -> SystemConfigReadResponse:
     """获取系统配置"""
     store = get_system_settings_store()
     db_settings = store.get_all_settings()
     
     # 优先从数据库读取用户设置的目录，否则使用配置文件默认值
     local_model_dir = db_settings.get("dataDirectory") or settings.local_model_directory
-    
-    return {
-        "ollama_base_url": settings.ollama_base_url,
-        "localai_base_url": settings.localai_base_url,
-        "textgen_webui_base_url": settings.textgen_webui_base_url,
-        "app_name": settings.app_name,
-        "version": settings.version,
-        "local_model_directory": local_model_dir,
-        "settings": db_settings,
-        # MCP Streamable HTTP：合并 SystemSetting 与 .env 后的生效值（供控制台与其它客户端展示）
-        "mcp_http_emit_server_push_events_effective": get_mcp_http_emit_server_push_events(),
-    }
+    resolved_dir = str(local_model_dir) if local_model_dir is not None else str(settings.local_model_directory)
+
+    return SystemConfigReadResponse(
+        ollama_base_url=str(settings.ollama_base_url),
+        localai_base_url=str(settings.localai_base_url),
+        textgen_webui_base_url=str(settings.textgen_webui_base_url),
+        app_name=str(settings.app_name),
+        version=str(settings.version),
+        local_model_directory=resolved_dir,
+        settings=db_settings,
+        mcp_http_emit_server_push_events_effective=get_mcp_http_emit_server_push_events(),
+    )
 
 @router.post("/config")
 async def update_config(
     config_data: Dict[str, Any],
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> SystemConfigUpdateResponse:
     """更新系统配置"""
     config_data = _validate_system_config_payload(config_data)
     if "inferenceSmartRoutingPoliciesJson" in config_data:
@@ -999,16 +1179,16 @@ async def update_config(
     store = get_system_settings_store()
     for key, value in config_data.items():
         store.set_setting(key, value)
-    return {"success": True}
+    return SystemConfigUpdateResponse()
 
 
-@router.get("/config/schema")
+@router.get("/config/schema", response_model_exclude_none=True)
 async def get_config_schema(
     keys: Annotated[Optional[str], Query(description="逗号分隔，仅返回指定配置键 schema")] = None,
     keys_list: Annotated[Optional[List[str]], Query(alias="keys", description="可重复 keys 参数")] = None,
     include_examples: Annotated[bool, Query(description="是否包含示例 payload")] = True,
     compact: Annotated[bool, Query(description="紧凑模式，仅保留关键 schema 字段")] = False,
-) -> Dict[str, Any]:
+) -> SystemConfigSchemaResponse:
     """
     返回系统配置字段定义与示例，供前端配置页动态渲染使用。
     """
@@ -1030,10 +1210,7 @@ async def get_config_schema(
         allowed_keys = sorted(ALLOWED_SYSTEM_CONFIG_KEYS)
     if compact:
         schema_hints = _compact_schema_hints(schema_hints)
-    response: Dict[str, Any] = {
-        "allowed_keys": allowed_keys,
-        "schema_hints": schema_hints,
-        "query_examples": {
+    query_examples: Dict[str, str] = {
             "all": "/api/system/config/schema",
             "compact_no_examples": "/api/system/config/schema?compact=true&include_examples=false",
             "filtered_keys_csv": (
@@ -1048,13 +1225,16 @@ async def get_config_schema(
                 "/api/system/config/schema?"
                 "keys=workflowContractOutputAddedRisky&compact=true&include_examples=false"
             ),
-        },
     }
-    if include_examples:
-        response["examples"] = {
-            "workflow_contract_policy": SYSTEM_CONFIG_EXAMPLE_PAYLOAD,
-        }
-    return response
+    examples: Optional[Dict[str, Any]] = (
+        {"workflow_contract_policy": SYSTEM_CONFIG_EXAMPLE_PAYLOAD} if include_examples else None
+    )
+    return SystemConfigSchemaResponse(
+        allowed_keys=allowed_keys,
+        schema_hints=schema_hints,
+        query_examples=query_examples,
+        examples=examples,
+    )
 
 
 def _compact_schema_hints(schema_hints: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -1245,10 +1425,10 @@ def _plugin_init_context() -> tuple[Any, Any]:
 
 
 @router.get("/plugins")
-async def list_plugins(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
+async def list_plugins(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> PluginListResponse:
     manager = get_plugin_manager()
     plugins = manager.list_plugins()
-    return {"count": len(plugins), "plugins": plugins}
+    return PluginListResponse(count=len(plugins), plugins=plugins)
 
 
 @router.post("/plugins/register")
@@ -1256,7 +1436,7 @@ async def register_plugin(
     body: PluginRegisterBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> PluginSimpleOkResponse:
     manager = get_plugin_manager()
     model_registry, memory = _plugin_init_context()
     ok = await manager.register_from_manifest(
@@ -1273,7 +1453,7 @@ async def register_plugin(
             message="Plugin register failed",
             details={"manifest_path": body.manifest_path},
         )
-    return {"success": True}
+    return PluginSimpleOkResponse()
 
 
 @router.post("/plugins/unregister")
@@ -1281,7 +1461,7 @@ async def unregister_plugin(
     body: PluginUnregisterBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> PluginSimpleOkResponse:
     manager = get_plugin_manager()
     ok = await manager.unregister(body.name, body.version)
     if not ok:
@@ -1291,7 +1471,7 @@ async def unregister_plugin(
             message="Plugin not found",
             details={"name": body.name, "version": body.version},
         )
-    return {"success": True}
+    return PluginSimpleOkResponse()
 
 
 @router.post("/plugins/reload")
@@ -1299,7 +1479,7 @@ async def reload_plugin(
     body: PluginReloadBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> PluginSimpleOkResponse:
     manager = get_plugin_manager()
     model_registry, memory = _plugin_init_context()
     ok = await manager.reload(
@@ -1316,7 +1496,7 @@ async def reload_plugin(
             message="Plugin reload failed",
             details={"name": body.name, "version": body.version},
         )
-    return {"success": True}
+    return PluginSimpleOkResponse()
 
 
 @router.post("/plugins/default")
@@ -1324,10 +1504,10 @@ async def set_default_plugin_version(
     body: PluginSetDefaultBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> PluginSimpleOkResponse:
     manager = get_plugin_manager()
     manager.set_default_version(body.name, body.version)
-    return {"success": True}
+    return PluginSimpleOkResponse()
 
 
 @router.get("/plugins/market")
@@ -1335,10 +1515,10 @@ async def list_plugin_market_packages(
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
     review_status: Annotated[Optional[str], Query(max_length=32)] = None,
-) -> Dict[str, Any]:
+) -> PluginMarketPackageListResponse:
     service = get_plugin_market_service()
     items = service.list_packages(review_status=review_status)
-    return {"count": len(items), "items": items}
+    return PluginMarketPackageListResponse(count=len(items), items=items)
 
 
 @router.post("/plugins/market/publish")
@@ -1347,7 +1527,7 @@ async def publish_plugin_market_package(
     request: Request,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> PluginMarketPublishResponse:
     service = get_plugin_market_service()
     try:
         result = service.publish(
@@ -1359,7 +1539,7 @@ async def publish_plugin_market_package(
         )
     except PluginMarketValidationError as e:
         raise_api_error(status_code=400, code="plugin_market_publish_invalid", message=str(e))
-    return {"success": True, **result}
+    return PluginMarketPublishResponse(success=True, **result)
 
 
 @router.post("/plugins/market/review")
@@ -1367,7 +1547,7 @@ async def review_plugin_market_package(
     body: PluginMarketReviewBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> PluginMarketReviewResponse:
     service = get_plugin_market_service()
     ok = service.review(package_id=body.package_id, approve=body.approve, visibility=body.visibility)
     if not ok:
@@ -1377,7 +1557,7 @@ async def review_plugin_market_package(
             message="Plugin package not found",
             details={"package_id": body.package_id},
         )
-    return {"success": True, "package_id": body.package_id, "approved": body.approve}
+    return PluginMarketReviewResponse(success=True, package_id=body.package_id, approved=body.approve)
 
 
 @router.post("/plugins/market/install")
@@ -1386,7 +1566,7 @@ async def install_plugin_market_package(
     request: Request,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> PluginMarketInstallResponse:
     service = get_plugin_market_service()
     model_registry, memory = _plugin_init_context()
     try:
@@ -1399,14 +1579,17 @@ async def install_plugin_market_package(
         )
     except PluginMarketValidationError as e:
         raise_api_error(status_code=400, code="plugin_market_install_failed", message=str(e))
-    return {"success": True, **result}
+    return PluginMarketInstallResponse(success=True, **result)
 
 
 @router.get("/plugins/market/installations")
-async def list_plugin_market_installations(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
+async def list_plugin_market_installations(
+    *, _role: Annotated[Any, Depends(require_platform_admin)]
+) -> PluginMarketInstallationListResponse:
     service = get_plugin_market_service()
     items = service.list_installations()
-    return {"count": len(items), "items": items}
+    parsed = [SystemJsonRecord.model_validate(x) for x in items]
+    return PluginMarketInstallationListResponse(count=len(parsed), items=parsed)
 
 
 @router.post("/plugins/market/toggle")
@@ -1414,7 +1597,7 @@ async def toggle_plugin_market_installation(
     body: PluginMarketToggleBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> PluginMarketToggleResponse:
     service = get_plugin_market_service()
     model_registry, memory = _plugin_init_context()
     ok = await service.set_enabled(
@@ -1431,17 +1614,21 @@ async def toggle_plugin_market_installation(
             message="Plugin installation not found",
             details={"package_id": body.package_id},
         )
-    return {"success": True, "package_id": body.package_id, "enabled": body.enabled}
+    return PluginMarketToggleResponse(success=True, package_id=body.package_id, enabled=body.enabled)
 
 
 @router.get("/plugins/compatibility/matrix")
-async def get_plugin_compatibility_matrix(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
-    return build_plugin_compatibility_matrix()
+async def get_plugin_compatibility_matrix(
+    *, _role: Annotated[Any, Depends(require_platform_admin)]
+) -> PluginCompatibilityMatrixResponse:
+    raw = build_plugin_compatibility_matrix()
+    return PluginCompatibilityMatrixResponse.model_validate(raw)
 
 
 @router.get("/event-bus/status")
-async def event_bus_status(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> Dict[str, Any]:
-    return await get_event_bus_runtime_status()
+async def event_bus_status(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> EventBusRuntimeStatusResponse:
+    raw = await get_event_bus_runtime_status()
+    return EventBusRuntimeStatusResponse.model_validate(raw)
 
 
 @router.get("/event-bus/dlq")
@@ -1451,9 +1638,9 @@ async def event_bus_dlq(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     event_type: Annotated[Optional[str], Query(max_length=128)] = None,
     since_ts: Annotated[Optional[int], Query(ge=0)] = None,
-) -> Dict[str, Any]:
+) -> EventBusDlqListResponse:
     items = await get_event_bus_dlq(limit=limit, event_type=event_type, since_ts=since_ts)
-    return {"count": len(items), "items": items}
+    return EventBusDlqListResponse(count=len(items), items=items)
 
 
 @router.post("/event-bus/dlq/clear")
@@ -1461,7 +1648,7 @@ async def event_bus_dlq_clear(
     body: EventBusDlqClearBody,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> EventBusDlqClearResponse:
     if not body.confirm:
         raise_api_error(
             status_code=400,
@@ -1469,7 +1656,7 @@ async def event_bus_dlq_clear(
             message="confirm=true is required to clear event bus DLQ.",
         )
     cleared = await clear_event_bus_dlq()
-    return {"success": True, "cleared": cleared}
+    return EventBusDlqClearResponse(cleared=cleared)
 
 
 @router.post("/event-bus/dlq/replay")
@@ -1478,7 +1665,7 @@ async def event_bus_dlq_replay(
     request: Request,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
-) -> Dict[str, Any]:
+) -> EventBusDlqReplayResponse:
     if not body.confirm:
         raise_api_error(
             status_code=400,
@@ -1486,7 +1673,20 @@ async def event_bus_dlq_replay(
             message="confirm=true is required to replay event bus DLQ.",
         )
     result = await _run_replay_with_optional_idempotency(body, request)
-    return {"success": True, **result}
+    grouped_raw = result.get("grouped") or {}
+    if not isinstance(grouped_raw, dict):
+        grouped_raw = {}
+    grouped = {
+        str(k): EventBusDlqReplayGroupedBucket.model_validate(v if isinstance(v, dict) else {})
+        for k, v in grouped_raw.items()
+    }
+    return EventBusDlqReplayResponse(
+        dry_run=bool(result.get("dry_run")),
+        candidate=int(result.get("candidate", 0)),
+        replayed=int(result.get("replayed", 0)),
+        failed=int(result.get("failed", 0)),
+        grouped=grouped,
+    )
 
 @router.post("/engine/reload")
 async def reload_engine(*, _role: Annotated[Any, Depends(require_platform_admin)]) -> EngineReloadResponse:
@@ -1654,7 +1854,7 @@ async def browse_directory() -> BrowseDirectoryResponse:
                 return BrowseDirectoryResponse(path=stdout.decode().strip())
     except Exception as e:
         logger.error(f"[System] Browse directory failed: {e}")
-
+        
     return BrowseDirectoryResponse(path=None)
 
 # 获取启动时间
@@ -2354,7 +2554,8 @@ async def update_roadmap_phase_gates_api(
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
 ) -> RoadmapPhaseGatesUpdateResponse:
-    merged = save_phase_gates(body.phase_gates)
+    gates_payload = {k: v.model_dump(mode="json") for k, v in body.phase_gates.items()}
+    merged = save_phase_gates(gates_payload)
     return RoadmapPhaseGatesUpdateResponse(success=True, phase_gates=merged)
 
 
@@ -2447,17 +2648,17 @@ async def list_roadmap_monthly_review_api(
 async def get_metrics() -> HardwareMetricsResponse:
     """获取硬件指标"""
     from core.inference.stats.tracker import get_inference_stats
-
+    
     cpu_usage = psutil.cpu_percent(interval=None)
     memory = psutil.virtual_memory()
-
+    
     gpu_info = get_gpu_metrics()
     uptime_seconds = int(time.time() - BOOT_TIME)
-
+    
     inference_stats = get_inference_stats().get_stats()
     raw_speed = inference_stats.get("inference_speed")
     inference_speed = float(raw_speed) if isinstance(raw_speed, (int, float)) else None
-
+    
     payload = {
         "cpu_load": float(cpu_usage),
         "ram_used": round(memory.used / (1024**3), 1),
@@ -2680,16 +2881,16 @@ async def toggle_kernel(
     """
     from core.agent_runtime.v2.runtime import USE_EXECUTION_KERNEL
     import core.agent_runtime.v2.runtime as runtime_module
-
+    
     if body.enabled is None:
         return KernelToggleErrorResponse(success=False, error="Missing 'enabled' field")
-
+    
     enabled = body.enabled
     runtime_module.USE_EXECUTION_KERNEL = bool(enabled)
-
+    
     log_structured("System", "kernel_toggled", enabled=bool(enabled), previous=USE_EXECUTION_KERNEL)
     logger.info(f"[System] Execution Kernel toggled to: {enabled}")
-
+    
     return KernelToggleSuccessResponse(
         success=True,
         enabled=bool(enabled),
@@ -2721,7 +2922,7 @@ async def get_optimization_status() -> OptimizationStatusResponse:
     - config: 完整配置
     """
     from core.agent_runtime.v2.runtime import get_kernel_adapter
-
+    
     adapter = get_kernel_adapter()
     if adapter is None:
         return OptimizationStatusUnavailableResponse(error=KERNEL_ADAPTER_NOT_INITIALIZED)
@@ -2755,21 +2956,21 @@ async def rebuild_optimization_snapshot(
         return OptimizationRebuildFailureResponse(success=False, error=KERNEL_ADAPTER_NOT_INITIALIZED)
     if not adapter._initialized:
         await adapter.initialize()
-
+    
     payload = body or OptimizationRebuildBody()
     instance_ids = payload.instance_ids
     limit_instances = payload.limit_instances
-
+    
     try:
         snapshot = await adapter.rebuild_optimization_snapshot(
             instance_ids=instance_ids,
             limit_instances=limit_instances,
         )
-
+        
         log_structured(
             "System",
             "optimization_snapshot_rebuilt",
-            version=snapshot.version,
+                      version=snapshot.version,
             node_count=len(snapshot.node_weights),
         )
 
@@ -2810,28 +3011,28 @@ async def set_optimization_config(
         return OptimizationConfigUpdateFailureResponse(success=False, error=KERNEL_ADAPTER_NOT_INITIALIZED)
     if not adapter._initialized:
         await adapter.initialize()
-
+    
     try:
         config = OptimizationConfig(
             enabled=body.enabled,
             scheduler_policy=body.scheduler_policy,
-            policy_params=body.policy_params,
+            policy_params=body.policy_params.model_dump(mode="json"),
             auto_build_snapshot=body.auto_build_snapshot,
             collect_statistics=body.collect_statistics,
         )
-
+        
         adapter.set_optimization_config(config)
-
+        
         # 每次更新配置都重新初始化策略，确保关闭优化时切回 DefaultPolicy
         await adapter._initialize_optimization()
-
+        
         log_structured(
             "System",
             "optimization_config_updated",
-            enabled=config.enabled,
+                      enabled=config.enabled,
             policy=config.scheduler_policy,
         )
-
+        
         return OptimizationConfigUpdateSuccessResponse(success=True, config=config.to_dict())
     except Exception as e:
         logger.error(f"[System] Failed to update optimization config: {e}")
@@ -2855,14 +3056,14 @@ async def get_optimization_impact_report() -> OptimizationImpactReportResponse:
     adapter = get_kernel_adapter()
     if adapter is None:
         return OptimizationImpactErrorResponse(error=KERNEL_ADAPTER_NOT_INITIALIZED)
-
+    
     if not adapter._initialized:
         await adapter.initialize()
-
+    
     current_snapshot = adapter._optimization_snapshot
     if current_snapshot is None:
         return OptimizationImpactErrorResponse(error="No optimization snapshot available")
-
+    
     # 使用空快照作为基准对比
     baseline_snapshot = OptimizationSnapshot.empty()
     baseline_empty = True
@@ -2873,7 +3074,7 @@ async def get_optimization_impact_report() -> OptimizationImpactReportResponse:
     log_structured(
         "System",
         "optimization_impact_report",
-        improvement_pct=impact["improvement_pct"],
+                  improvement_pct=impact["improvement_pct"],
         latency_reduction=impact["latency_reduction_pct"],
     )
 

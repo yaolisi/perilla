@@ -31,16 +31,17 @@ from core.models.registry import get_model_registry
 from core.runtime.queue import get_inference_queue_manager
 from core.runtimes.factory import get_runtime_factory
 from core.runtimes.image_generation_types import (
+    ImageGenerationJobDeleteResponse,
     ImageGenerationJobResponse,
     ImageGenerationJobListResponse,
     ImageGenerationJobStatus,
     ImageGenerationRequest as RuntimeImageGenerationRequest,
     ImageGenerationResponse,
+    ImageGenerationWarmupCompletedResponse,
     ImageGenerationWarmupResponse,
 )
 
 router = APIRouter()
-JSONDict = Dict[str, Any]
 DEFAULT_IMAGE_MIME = "image/png"
 JOB_CANCELLED_MSG = "Image generation job cancelled"
 JOB_CANCELLED_BEFORE_START_MSG = "Image generation job cancelled before start"
@@ -832,7 +833,10 @@ async def _run_generation_job(job_id: str) -> None:
         await _recompute_queue_positions(descriptor.id)
 
 
-@router.post("/api/v1/images/generate")
+@router.post(
+    "/api/v1/images/generate",
+    response_model=ImageGenerationResponse | ImageGenerationJobResponse,
+)
 async def generate_image(
     request: ImageGenerateRequest,
     wait: Annotated[bool, Query(description="true=同步等待结果；false=创建异步任务并返回 job")] = True,
@@ -896,7 +900,7 @@ async def generate_image(
     return _job_to_response(saved)
 
 
-@router.get("/api/v1/images/jobs/{job_id}")
+@router.get("/api/v1/images/jobs/{job_id}", response_model=ImageGenerationJobResponse)
 async def get_image_generation_job(job_id: str) -> ImageGenerationJobResponse:
     job = await _get_job(job_id)
     if job:
@@ -917,7 +921,7 @@ async def get_image_generation_job(job_id: str) -> ImageGenerationJobResponse:
         db.close()
 
 
-@router.get("/api/v1/images/jobs")
+@router.get("/api/v1/images/jobs", response_model=ImageGenerationJobListResponse)
 async def list_image_generation_jobs(
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -958,8 +962,8 @@ async def list_image_generation_jobs(
         db.close()
 
 
-@router.delete("/api/v1/images/jobs/{job_id}")
-async def delete_image_generation_job(job_id: str) -> JSONDict:
+@router.delete("/api/v1/images/jobs/{job_id}", response_model=ImageGenerationJobDeleteResponse)
+async def delete_image_generation_job(job_id: str) -> ImageGenerationJobDeleteResponse:
     async with _IMAGE_JOBS_LOCK:
         job = _IMAGE_JOBS.get(job_id)
         model_id = job.request.model if job else None
@@ -989,10 +993,10 @@ async def delete_image_generation_job(job_id: str) -> JSONDict:
     if model_id:
         await _recompute_queue_positions(model_id)
     logger.info("[ImageGenerateAPI] job_deleted job_id=%s", job_id)
-    return {"ok": True, "job_id": job_id}
+    return ImageGenerationJobDeleteResponse(ok=True, job_id=job_id)
 
 
-@router.post("/api/v1/images/jobs/{job_id}/cancel")
+@router.post("/api/v1/images/jobs/{job_id}/cancel", response_model=ImageGenerationJobResponse)
 async def cancel_image_generation_job(job_id: str) -> ImageGenerationJobResponse:
     job = await _get_job(job_id)
     if not job:
@@ -1112,7 +1116,7 @@ async def download_image_generation_job_thumbnail(job_id: str) -> FileResponse:
     return FileResponse(str(path), media_type=mime_type or DEFAULT_IMAGE_MIME, filename=path.name)
 
 
-@router.get("/api/v1/images/warmup/latest")
+@router.get("/api/v1/images/warmup/latest", response_model=ImageGenerationWarmupResponse)
 async def get_latest_image_generation_warmup(
     model: Annotated[str | None, Query()] = None,
 ) -> ImageGenerationWarmupResponse:
@@ -1128,8 +1132,8 @@ async def get_latest_image_generation_warmup(
     return _orm_to_warmup_response(row)
 
 
-@router.post("/api/v1/images/warmup")
-async def warmup_image_generation_runtime(request: ImageWarmupRequest) -> JSONDict:
+@router.post("/api/v1/images/warmup", response_model=ImageGenerationWarmupCompletedResponse)
+async def warmup_image_generation_runtime(request: ImageWarmupRequest) -> ImageGenerationWarmupCompletedResponse:
     image_request = ImageGenerateRequest(
         model=request.model,
         prompt=request.prompt,
@@ -1188,13 +1192,13 @@ async def warmup_image_generation_runtime(request: ImageWarmupRequest) -> JSONDi
         response.width,
         response.height,
     )
-    return {
-        "ok": True,
-        "warmup_id": warmup_id,
-        "model": descriptor.id,
-        "started_at": started_at,
-        "elapsed_ms": elapsed_ms,
-        "output_path": response.output_path,
-        "width": response.width,
-        "height": response.height,
-    }
+    return ImageGenerationWarmupCompletedResponse(
+        ok=True,
+        warmup_id=warmup_id,
+        model=descriptor.id,
+        started_at=started_at,
+        elapsed_ms=elapsed_ms,
+        output_path=response.output_path,
+        width=response.width,
+        height=response.height,
+    )

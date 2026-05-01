@@ -2,9 +2,11 @@
 RAG Trace API
 提供 RAG Trace 的内部和外部 API
 """
-from fastapi import APIRouter, Request
-from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, Body, Request
+from typing import List, Literal
+
 from log import logger
+from pydantic import BaseModel, ConfigDict
 
 from api.errors import raise_api_error
 from core.rag.trace_store import RAGTraceStore, RAGTraceStoreConfig
@@ -20,12 +22,25 @@ _db_path = RAGTraceStore.default_db_path()
 _trace_store = RAGTraceStore(RAGTraceStoreConfig(db_path=_db_path))
 
 
+class RagTraceStartResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str
+
+
+class RagTraceAckResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+
+
 # =========================
 # 内部 API（不对前端暴露）
 # =========================
 
 @router.post("/internal/trace/start")
 async def start_trace(
+    request: Request,
     session_id: str,
     message_id: str,
     rag_id: str,
@@ -34,15 +49,14 @@ async def start_trace(
     embedding_model: str = "",
     vector_store: str = "sqlite-vec",
     top_k: int = 5,
-    request: Optional[Request] = None,
-) -> Dict[str, Any]:
+) -> RagTraceStartResponse:
     """
     创建 RAG Trace（内部调用）
     
     ⚠️ 不对前端暴露，仅供后端内部使用
     """
     try:
-        user_id = get_user_id(request) if request else "default"
+        user_id = get_user_id(request)
         trace_id = _trace_store.create_trace(
             session_id=session_id,
             message_id=message_id,
@@ -54,7 +68,7 @@ async def start_trace(
             top_k=top_k,
             user_id=user_id,
         )
-        return {"trace_id": trace_id}
+        return RagTraceStartResponse(trace_id=trace_id)
     except Exception as e:
         logger.error(f"Failed to create trace: {e}", exc_info=True)
         raise_api_error(status_code=500, code="rag_trace_internal_error", message=str(e))
@@ -64,16 +78,16 @@ async def start_trace(
 @router.post("/internal/trace/{trace_id}/chunks")
 async def add_trace_chunks(
     trace_id: str,
-    chunks: List[Dict[str, Any]],
-) -> Dict[str, Any]:
+    chunks: List[RAGTraceChunk] = Body(...),
+) -> RagTraceAckResponse:
     """
     追加检索结果 chunks（内部调用）
     
     ⚠️ 不对前端暴露，仅供后端内部使用
     """
     try:
-        _trace_store.add_chunks(trace_id, chunks)
-        return {"success": True}
+        _trace_store.add_chunks(trace_id, [c.model_dump(mode="json") for c in chunks])
+        return RagTraceAckResponse()
     except ValueError as e:
         raise_api_error(status_code=400, code="rag_trace_invalid_chunks", message=str(e), details={"trace_id": trace_id})
         raise AssertionError("unreachable")
@@ -87,7 +101,7 @@ async def add_trace_chunks(
 async def finalize_trace(
     trace_id: str,
     injected_token_count: int,
-) -> Dict[str, Any]:
+) -> RagTraceAckResponse:
     """
     完成 Trace（推理结束后调用，内部调用）
     
@@ -95,7 +109,7 @@ async def finalize_trace(
     """
     try:
         _trace_store.finalize_trace(trace_id, injected_token_count)
-        return {"success": True}
+        return RagTraceAckResponse()
     except ValueError as e:
         raise_api_error(status_code=400, code="rag_trace_finalize_invalid", message=str(e), details={"trace_id": trace_id})
         raise AssertionError("unreachable")

@@ -5,15 +5,25 @@ import hashlib
 from string import Formatter
 import uuid
 from pathlib import Path
-from typing import Annotated, List, Optional, Dict, Any, AsyncIterator, cast
+from typing import Annotated, List, Literal, Optional, Dict, Any, AsyncIterator, cast
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from core.agent_runtime.agent_generator import generate_agent_draft_from_nl
-from core.agent_runtime.definition import AgentDefinition, get_agent_registry
-from core.agent_runtime.session import AgentSession, get_agent_session_store
+from core.agent_runtime.agent_generator import generate_agent_draft_from_nl, GenerateAgentFromNlResult
+from core.agent_runtime.definition import (
+    AgentDefinition,
+    AgentModelParamsJsonMap,
+    agent_model_params_as_dict,
+    get_agent_registry,
+)
+from core.agent_runtime.session import (
+    AgentSession,
+    AgentSessionStateJsonMap,
+    agent_session_state_as_dict,
+    get_agent_session_store,
+)
 from core.agent_runtime.collaboration import (
     build_api_root_collaboration,
     merge_collaboration_into_state,
@@ -80,6 +90,7 @@ SSE_STATUS_DELTA_SCHEMA_VERSION = 1
 SSE_STREAM_RESOURCE_NOT_FOUND_ERROR_CODE = "sse_stream_resource_not_found"
 SSE_STREAM_RUNTIME_ERROR_CODE = "sse_stream_runtime_error"
 
+
 def _get_user_id(request: Request) -> str:
     uid = (request.headers.get("X-User-Id") or "").strip()
     return uid or "default"
@@ -120,7 +131,7 @@ class CreateAgentRequest(BaseModel):
     replan_prompt: Optional[str] = Field(default=None, description="Custom replan instruction when strategy is replan")
     response_mode: Optional[str] = Field(default=None, description="Agent response mode: default or direct_tool_result")
     # Model parameters (e.g., intent_rules, skill_param_extractors, use_skill_discovery, etc.)
-    model_params: Optional[Dict[str, Any]] = Field(
+    model_params: Optional[AgentModelParamsJsonMap] = Field(
         default=None,
         description=(
             "Model parameters: intent_rules, skill_param_extractors, use_skill_discovery (bool), "
@@ -149,6 +160,40 @@ class GenerateAgentFromNlRequest(BaseModel):
     description: str = Field(..., min_length=4, max_length=8000)
     model_id: Optional[str] = Field(default=None, description="可选；缺省使用首个可用模型")
     top_skills: int = Field(default=12, ge=1, le=32, description="语义发现返回的技能数量上限")
+
+
+class EnabledSkillMetaItem(BaseModel):
+    id: str
+    name: str
+    is_mcp: bool
+
+
+class AgentWithSkillsMetaResponse(AgentDefinition):
+    enabled_skills_meta: List[EnabledSkillMetaItem] = Field(default_factory=list)
+
+
+class AgentsListEnvelope(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[AgentWithSkillsMetaResponse]
+
+
+class AgentDeleteOkResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+
+
+class AgentSessionsListEnvelope(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[AgentSession]
+
+
+class AgentTraceEventsListEnvelope(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[AgentTraceEvent]
+
+
+class AgentSessionDeletedResponse(BaseModel):
+    deleted: bool = True
+    session_id: str
 
 
 def _validate_execution_strategy_field(value: Optional[str]) -> None:
@@ -301,7 +346,7 @@ class RunAgentRequest(BaseModel):
     # 多 Agent 协作（Phase 0）：写入 session.state["collaboration"] 与 Kernel initial_context
     correlation_id: Optional[str] = None
     orchestrator_agent_id: Optional[str] = None
-    invoked_from: Optional[Dict[str, Any]] = None
+    invoked_from: Optional[AgentModelParamsJsonMap] = None
 
 def _normalize_id_list(items: List[str]) -> List[str]:
     """Normalize user-provided id lists: strip, drop empty, de-duplicate (preserve order)."""
@@ -391,40 +436,39 @@ def _enforce_skill_safety(skill_ids: List[str]) -> None:
         )
 
 
-def _enabled_skills_meta(skill_ids: List[str]) -> List[Dict[str, Any]]:
+def _enabled_skills_meta(skill_ids: List[str]) -> List[EnabledSkillMetaItem]:
     """与 enabled_skills 同序；供执行页等 UI 展示名称与 MCP 标记，无需再请求 /api/skills。"""
-    out: List[Dict[str, Any]] = []
+    out: List[EnabledSkillMetaItem] = []
     for sid in skill_ids:
         skill = SkillRegistry.get(sid)
         if skill:
             d = skill.to_dict()
             out.append(
-                {
-                    "id": sid,
-                    "name": d.get("name") or sid,
-                    "is_mcp": bool(d.get("is_mcp")),
-                }
+                EnabledSkillMetaItem(
+                    id=sid,
+                    name=str(d.get("name") or sid),
+                    is_mcp=bool(d.get("is_mcp")),
+                )
             )
         else:
-            out.append({"id": sid, "name": sid, "is_mcp": False})
+            out.append(EnabledSkillMetaItem(id=sid, name=sid, is_mcp=False))
     return out
 
 
-def _agent_with_skills_meta(a: AgentDefinition) -> Dict[str, Any]:
+def _agent_with_skills_meta(a: AgentDefinition) -> AgentWithSkillsMetaResponse:
     """JSON 序列化 + enabled_skills_meta（与 GET/列表一致）。"""
-    payload = a.model_dump(mode="json")
-    payload["enabled_skills_meta"] = _enabled_skills_meta(list(a.enabled_skills or []))
-    return payload
+    meta = _enabled_skills_meta(list(a.enabled_skills or []))
+    return AgentWithSkillsMetaResponse(**a.model_dump(mode="json"), enabled_skills_meta=meta)
 
 
-@router.get("")
-async def list_agents() -> Any:
+@router.get("", response_model=AgentsListEnvelope)
+async def list_agents() -> AgentsListEnvelope:
     registry = get_agent_registry()
     data = [_agent_with_skills_meta(a) for a in registry.list_agents()]
-    return {"object": "list", "data": data}
+    return AgentsListEnvelope(object="list", data=data)
 
-@router.post("")
-async def create_agent(req: CreateAgentRequest) -> Any:
+@router.post("", response_model=AgentWithSkillsMetaResponse)
+async def create_agent(req: CreateAgentRequest) -> AgentWithSkillsMetaResponse:
     """Create a new agent with validation"""
     registry = get_agent_registry()
     
@@ -502,7 +546,11 @@ async def create_agent(req: CreateAgentRequest) -> Any:
     agent_id = f"agent_{uuid.uuid4().hex[:8]}"
     
     # Create agent definition (v1.5: store enabled_skills; keep tool_ids for backward compat)
-    model_params = _apply_response_mode(req.model_params, req.response_mode, enabled_skills)
+    model_params = _apply_response_mode(
+        req.model_params.model_dump(mode="json") if req.model_params is not None else None,
+        req.response_mode,
+        enabled_skills,
+    )
     _validate_execution_strategy_field(req.execution_strategy)
     _validate_kernel_opts_consistency(req.execution_strategy, req.max_parallel_nodes, model_params)
     _validate_model_params_tool_failure_reflection(model_params)
@@ -526,7 +574,7 @@ async def create_agent(req: CreateAgentRequest) -> Any:
         max_replan_count=req.max_replan_count if req.max_replan_count is not None else 3,
         on_failure_strategy=failure_strategy,
         replan_prompt=replan_prompt,
-        model_params=model_params,
+        model_params=AgentModelParamsJsonMap.model_validate(model_params or {}),
     )
     
     if registry.create_agent(agent):
@@ -535,8 +583,8 @@ async def create_agent(req: CreateAgentRequest) -> Any:
     raise_api_error(status_code=500, code="agent_create_failed", message="Failed to create agent")
 
 
-@router.post("/generate-from-nl")
-async def generate_agent_from_nl(req: GenerateAgentFromNlRequest) -> Any:
+@router.post("/generate-from-nl", response_model=GenerateAgentFromNlResult)
+async def generate_agent_from_nl(req: GenerateAgentFromNlRequest) -> GenerateAgentFromNlResult:
     """
     基于本地模型与 Skill 语义发现生成 Agent 草稿；不写入数据库。
     """
@@ -547,7 +595,7 @@ async def generate_agent_from_nl(req: GenerateAgentFromNlRequest) -> Any:
             model_id=mid if mid else None,
             top_skills=req.top_skills,
         )
-        return result.model_dump()
+        return result
     except ValueError as e:
         msg = str(e)
         if msg == "description_too_short":
@@ -577,8 +625,8 @@ async def generate_agent_from_nl(req: GenerateAgentFromNlRequest) -> Any:
         )
 
 
-@router.get("/{agent_id}")
-async def get_agent(agent_id: str) -> Any:
+@router.get("/{agent_id}", response_model=AgentWithSkillsMetaResponse)
+async def get_agent(agent_id: str) -> AgentWithSkillsMetaResponse:
     registry = get_agent_registry()
     agent = registry.get_agent(agent_id)
     if not agent:
@@ -590,8 +638,8 @@ async def get_agent(agent_id: str) -> Any:
         )
     return _agent_with_skills_meta(agent)
 
-@router.put("/{agent_id}")
-async def update_agent(agent_id: str, req: CreateAgentRequest) -> Any:
+@router.put("/{agent_id}", response_model=AgentWithSkillsMetaResponse)
+async def update_agent(agent_id: str, req: CreateAgentRequest) -> AgentWithSkillsMetaResponse:
     registry = get_agent_registry()
     
     # 获取现有 agent，用于合并 model_params
@@ -619,13 +667,11 @@ async def update_agent(agent_id: str, req: CreateAgentRequest) -> Any:
     _enforce_skill_safety(enabled_skills)
     
     # 深度合并 model_params：保留原有字段，只更新请求中提供的字段
-    if req.model_params is not None and req.model_params:
-        # 请求中有 model_params，深度合并（保留原有字段）
-        existing_params = existing_agent.model_params or {}
-        model_params = {**existing_params, **req.model_params}
+    if req.model_params is not None:
+        existing_params = agent_model_params_as_dict(existing_agent.model_params)
+        model_params = {**existing_params, **req.model_params.model_dump(mode="json")}
     else:
-        # 请求中没有 model_params，保留原有的
-        model_params = existing_agent.model_params or {}
+        model_params = agent_model_params_as_dict(existing_agent.model_params)
     model_params = _apply_response_mode(model_params, req.response_mode, enabled_skills)
 
     failure_strategy = (req.on_failure_strategy or "stop").strip() or "stop"
@@ -682,17 +728,17 @@ async def update_agent(agent_id: str, req: CreateAgentRequest) -> Any:
         max_replan_count=req.max_replan_count if req.max_replan_count is not None else 3,
         on_failure_strategy=failure_strategy,
         replan_prompt=replan_prompt,
-        model_params=model_params,
+        model_params=AgentModelParamsJsonMap.model_validate(model_params or {}),
     )
     if registry.update_agent(agent):
         return _agent_with_skills_meta(agent)
     raise_api_error(status_code=500, code="agent_update_failed", message="Failed to update agent")
 
-@router.delete("/{agent_id}")
-async def delete_agent(agent_id: str) -> Any:
+@router.delete("/{agent_id}", response_model=AgentDeleteOkResponse)
+async def delete_agent(agent_id: str) -> AgentDeleteOkResponse:
     registry = get_agent_registry()
     if registry.delete_agent(agent_id):
-        return {"status": "ok"}
+        return AgentDeleteOkResponse(status="ok")
     raise_api_error(
         status_code=404,
         code="agent_not_found",
@@ -724,7 +770,7 @@ def _resolve_agent_runtime_workspace(agent: AgentDefinition, session_id: str) ->
     session_workspace = (_get_agent_workspaces_root() / session_id).resolve()
     session_workspace.mkdir(parents=True, exist_ok=True)
 
-    model_params = getattr(agent, "model_params", {}) or {}
+    model_params = agent_model_params_as_dict(getattr(agent, "model_params", None))
     custom_root = model_params.get("workspace_root")
     if not custom_root:
         return str(session_workspace)
@@ -946,13 +992,15 @@ def _prepare_run_with_files_session(
         session.step = 0
 
     if saved_names:
-        state = session.state or {}
-        state["last_uploaded_images"] = saved_names
-        state["last_uploaded_image"] = saved_names[0]
-        session.state = state
+        st = agent_session_state_as_dict(session.state)
+        st["last_uploaded_images"] = saved_names
+        st["last_uploaded_image"] = saved_names[0]
+        session.state = AgentSessionStateJsonMap.model_validate(st)
 
     if collaboration:
-        session.state = merge_collaboration_into_state(session.state, collaboration)
+        session.state = AgentSessionStateJsonMap.model_validate(
+            merge_collaboration_into_state(agent_session_state_as_dict(session.state), collaboration)
+        )
 
     session.workspace_dir = workspace_dir_str
     session.status = "running"
@@ -980,7 +1028,7 @@ def _claim_run_idempotency(
             "messages": [m.model_dump(mode="json") for m in (req.messages or [])],
             "correlation_id": req.correlation_id,
             "orchestrator_agent_id": req.orchestrator_agent_id,
-            "invoked_from": req.invoked_from,
+            "invoked_from": req.invoked_from.model_dump(mode="json") if req.invoked_from is not None else None,
         }
     )
     claim = idem_service.claim(
@@ -1034,7 +1082,9 @@ def _prepare_run_session(
         session.step = 0
 
     if collaboration:
-        session.state = merge_collaboration_into_state(session.state, collaboration)
+        session.state = AgentSessionStateJsonMap.model_validate(
+            merge_collaboration_into_state(agent_session_state_as_dict(session.state), collaboration)
+        )
 
     workspace = _resolve_agent_runtime_workspace(agent, session_id)
     session.workspace_dir = workspace
@@ -1083,8 +1133,8 @@ async def _execute_run_runtime(
         raise
 
 
-@router.post("/{agent_id}/run")
-async def run_agent(agent_id: str, req: RunAgentRequest, request: Request) -> Any:
+@router.post("/{agent_id}/run", response_model=AgentSession)
+async def run_agent(agent_id: str, req: RunAgentRequest, request: Request) -> AgentSession:
     registry = get_agent_registry()
     session_store = get_agent_session_store()
     executor = get_agent_executor()
@@ -1123,7 +1173,7 @@ async def run_agent(agent_id: str, req: RunAgentRequest, request: Request) -> An
             agent_id,
             correlation_id=req.correlation_id,
             orchestrator_agent_id=req.orchestrator_agent_id,
-            invoked_from=req.invoked_from,
+            invoked_from=req.invoked_from.model_dump(mode="json") if req.invoked_from is not None else None,
         )
         session, workspace = _prepare_run_session(
             session_store=session_store,
@@ -1149,7 +1199,7 @@ async def run_agent(agent_id: str, req: RunAgentRequest, request: Request) -> An
             idem_db.close()
 
 
-@router.post("/{agent_id}/run/with-files")
+@router.post("/{agent_id}/run/with-files", response_model=AgentSession)
 async def run_agent_with_files(
     agent_id: str,
     messages: Annotated[str, Form(..., description="JSON array of Message objects")],
@@ -1161,7 +1211,7 @@ async def run_agent_with_files(
         Optional[str],
         Form(description="Optional JSON object for invoked_from (same as POST /run body)"),
     ] = None,
-) -> Any:
+) -> AgentSession:
     """Run agent with uploaded files. Files are saved to session workspace so file.read can access them."""
     registry = get_agent_registry()
     session_store = get_agent_session_store()
@@ -1234,15 +1284,17 @@ async def run_agent_with_files(
         logger.exception(f"[Agent API] run/with-files failed session_id={session_id} agent_id={agent_id}: {e}")
         raise
 
-@session_router.get("/agent-sessions")
-async def list_agent_sessions(request: Request, agent_id: Optional[str] = None, limit: int = 50) -> Any:
+@session_router.get("/agent-sessions", response_model=AgentSessionsListEnvelope)
+async def list_agent_sessions(
+    request: Request, agent_id: Optional[str] = None, limit: int = 50
+) -> AgentSessionsListEnvelope:
     user_id = _get_user_id(request)
     session_store = get_agent_session_store()
     sessions = session_store.list_sessions(user_id=user_id, limit=limit, agent_id=agent_id)
-    return {"object": "list", "data": sessions}
+    return AgentSessionsListEnvelope(object="list", data=sessions)
 
-@session_router.get("/agent-sessions/{session_id}")
-async def get_agent_session(session_id: str) -> Any:
+@session_router.get("/agent-sessions/{session_id}", response_model=AgentSession)
+async def get_agent_session(session_id: str) -> AgentSession:
     session_store = get_agent_session_store()
     session = session_store.get_session(session_id)
     if not session:
@@ -1402,8 +1454,8 @@ class UpdateAgentSessionRequest(BaseModel):
     messages: Optional[List[Message]] = None
     status: Optional[str] = None
 
-@session_router.patch("/agent-sessions/{session_id}")
-async def update_agent_session(session_id: str, req: UpdateAgentSessionRequest) -> Any:
+@session_router.patch("/agent-sessions/{session_id}", response_model=AgentSession)
+async def update_agent_session(session_id: str, req: UpdateAgentSessionRequest) -> AgentSession:
     session_store = get_agent_session_store()
     session = session_store.get_session(session_id)
     if not session:
@@ -1429,15 +1481,14 @@ async def update_agent_session(session_id: str, req: UpdateAgentSessionRequest) 
         details={"session_id": session_id},
     )
 
-@session_router.get("/agent-sessions/{session_id}/trace")
-async def get_agent_trace(session_id: str) -> Any:
+@session_router.get("/agent-sessions/{session_id}/trace", response_model=AgentTraceEventsListEnvelope)
+async def get_agent_trace(session_id: str) -> AgentTraceEventsListEnvelope:
     trace_store = get_agent_trace_store()
     traces = trace_store.get_session_traces(session_id)
-    # 将Pydantic模型转换为字典，确保可以正确序列化为JSON
-    return {"object": "list", "data": [trace.model_dump() for trace in traces]}
+    return AgentTraceEventsListEnvelope(object="list", data=traces)
 
-@session_router.delete("/agent-sessions/{session_id}/messages/{message_index}")
-async def delete_agent_session_message(session_id: str, message_index: int) -> Any:
+@session_router.delete("/agent-sessions/{session_id}/messages/{message_index}", response_model=AgentSession)
+async def delete_agent_session_message(session_id: str, message_index: int) -> AgentSession:
     """Delete a message from agent session by index"""
     session_store = get_agent_session_store()
     success = session_store.delete_message(session_id, message_index)
@@ -1459,8 +1510,8 @@ async def delete_agent_session_message(session_id: str, message_index: int) -> A
         )
     return updated_session
 
-@session_router.delete("/agent-sessions/{session_id}")
-async def delete_agent_session(request: Request, session_id: str) -> Any:
+@session_router.delete("/agent-sessions/{session_id}", response_model=AgentSessionDeletedResponse)
+async def delete_agent_session(request: Request, session_id: str) -> AgentSessionDeletedResponse:
     """Delete an entire agent session"""
     user_id = _get_user_id(request)
     session_store = get_agent_session_store()
@@ -1472,4 +1523,4 @@ async def delete_agent_session(request: Request, session_id: str) -> Any:
             message=SESSION_NOT_FOUND_MESSAGE,
             details={"session_id": session_id},
         )
-    return {"deleted": True, "session_id": session_id}
+    return AgentSessionDeletedResponse(deleted=True, session_id=session_id)

@@ -75,5 +75,5 @@ def test_apply_request_priority_for_admin() -> None:
     )
     InferenceGateway._apply_request_priority(request)
     assert request.priority == "high"
-    assert request.metadata.get("priority_source") == "admin"
+    assert request.metadata.model_dump(mode="python").get("priority_source") == "admin"
 

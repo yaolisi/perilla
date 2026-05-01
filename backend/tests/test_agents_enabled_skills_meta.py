@@ -10,7 +10,7 @@ from typing import Any, Dict
 
 import pytest
 
-from api.agents import _enabled_skills_meta
+from api.agents import EnabledSkillMetaItem, _enabled_skills_meta
 
 pytestmark = pytest.mark.no_fallback
 
@@ -42,9 +42,9 @@ def _patch_skill_registry(monkeypatch):
 def test_meta_matches_enabled_skills_order_and_keys():
     out = _enabled_skills_meta(["first", "__missing__", "mcp_xyz"])
     assert out == [
-        {"id": "first", "name": "nm-first", "is_mcp": False},
-        {"id": "__missing__", "name": "__missing__", "is_mcp": False},
-        {"id": "mcp_xyz", "name": "nm-mcp_xyz", "is_mcp": True},
+        EnabledSkillMetaItem(id="first", name="nm-first", is_mcp=False),
+        EnabledSkillMetaItem(id="__missing__", name="__missing__", is_mcp=False),
+        EnabledSkillMetaItem(id="mcp_xyz", name="nm-mcp_xyz", is_mcp=True),
     ]
 
 

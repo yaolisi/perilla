@@ -4,11 +4,12 @@ V2.8 Inference Gateway Layer - Inference Request Model
 Unified inference request - simpler than ChatCompletionRequest.
 Designed for Skill/Agent → Gateway communication.
 """
-from typing import Any, Dict, List, Optional, Self, Literal
+from typing import List, Optional, Self, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from core.types import Message
+from core.inference.models.metadata import InferenceMetadataJsonMap
 
 
 class InferenceRequest(BaseModel):
@@ -69,9 +70,9 @@ class InferenceRequest(BaseModel):
         default="medium",
         description="Queue priority: high bypasses normal waiting order"
     )
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional metadata for logging/tracing"
+    metadata: InferenceMetadataJsonMap = Field(
+        default_factory=InferenceMetadataJsonMap,
+        description="Additional metadata for logging/tracing",
     )
 
     @model_validator(mode="after")

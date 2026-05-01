@@ -14,6 +14,7 @@ from log import logger
 from api.errors import raise_api_error
 from config.settings import settings
 
+from core.types import ChatCompletionUsage
 from core.models.descriptor import ModelDescriptor
 from core.runtimes.vlm_runtime import VLMRuntime
 from core.runtimes.factory import get_runtime_factory
@@ -190,14 +191,21 @@ class VLMGenerateRequest(BaseModel):
     max_tokens: Optional[int] = Field(default=512, ge=1, le=8192, description="最大生成 token 数")
 
 
+class VlmGenerateRoutingMetadata(BaseModel):
+    """与 /v1/chat/completions 对齐的智能路由说明（resolved_model / resolved_via）。"""
+
+    resolved_model: str
+    resolved_via: str
+
+
 class VLMGenerateResponse(BaseModel):
     """
     VLM 生成响应模型
     """
     model: str = Field(..., description="使用的模型 ID")
     text: str = Field(..., description="生成的文本结果")
-    usage: Optional[dict] = Field(default=None, description="使用统计信息")
-    metadata: Optional[dict[str, str]] = Field(
+    usage: Optional[ChatCompletionUsage] = Field(default=None, description="使用统计信息（token 估算）")
+    metadata: Optional[VlmGenerateRoutingMetadata] = Field(
         default=None,
         description="与 /v1/chat/completions 对齐：智能路由结果 resolved_model / resolved_via",
     )
@@ -446,14 +454,17 @@ async def vlm_generate(
     
     # 6. 返回结果（metadata 与 chat 侧一致，便于前端展示智能路由说明）
     _rout = _routing_submeta_for_persist_vlm(request)
+    pt_est = len(req_obj.prompt.split())
+    ct_est = len(result_text.split())
     return VLMGenerateResponse(
         model=model_id,
         text=result_text,
-        usage={
-            "prompt_tokens": len(req_obj.prompt.split()),  # 简单估算
-            "completion_tokens": len(result_text.split()),
-        },
-        metadata=_rout,
+        usage=ChatCompletionUsage(
+            prompt_tokens=pt_est,
+            completion_tokens=ct_est,
+            total_tokens=pt_est + ct_est,
+        ),
+        metadata=VlmGenerateRoutingMetadata(**_rout) if _rout else None,
     )
 
 

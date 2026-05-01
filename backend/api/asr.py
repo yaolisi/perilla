@@ -3,7 +3,8 @@ ASR API 端点
 提供 麦克风/音频 → 文本 的语音识别服务
 """
 
-from typing import Optional
+from typing import List, Optional
+
 from fastapi import APIRouter, UploadFile, File, Form
 from pydantic import BaseModel, Field
 
@@ -11,6 +12,7 @@ from api.errors import raise_api_error
 from log import logger
 from core.models.registry import get_model_registry
 from core.inference import get_inference_client
+from core.inference.models.metadata import AsrSegmentJsonMap
 
 router = APIRouter()
 
@@ -19,7 +21,7 @@ class ASRTranscribeResponse(BaseModel):
     """ASR 转录响应"""
     text: str = Field(..., description="完整转录文本")
     language: str = Field(..., description="检测到的语言代码")
-    segments: list = Field(default_factory=list, description="时间轴分段")
+    segments: List[AsrSegmentJsonMap] = Field(default_factory=list, description="时间轴分段")
 
 
 @router.post("/api/asr/transcribe")
@@ -116,7 +118,7 @@ async def asr_transcribe(
             return ASRTranscribeResponse(
                 text=resp.text or "",
                 language=resp.language or "unknown",
-                segments=resp.segments or [],
+                segments=list(resp.segments or []),
             )
         finally:
             try:

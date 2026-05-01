@@ -160,7 +160,9 @@ def test_put_agent_returns_400_when_execution_strategy_conflicts(
         headers={"X-Api-Key": "dummy-admin-key"},
     )
     assert resp.status_code == 400
-    assert "execution_strategy conflicts" in resp.json().get("detail", "")
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "agent_kernel_opts_execution_strategy_conflict"
+    assert "kernel options conflict" in body.get("detail", "")
     assert fallback_probe == []
 
 
@@ -176,7 +178,9 @@ def test_put_agent_returns_400_when_max_parallel_conflicts(
         headers={"X-Api-Key": "dummy-admin-key"},
     )
     assert resp.status_code == 400
-    assert "max_parallel_nodes conflicts" in resp.json().get("detail", "")
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "agent_kernel_opts_max_parallel_conflict"
+    assert "kernel options conflict" in body.get("detail", "")
 
 
 def test_get_agent_includes_enabled_skills_meta(agents_client: TestClient):
@@ -376,5 +380,5 @@ def test_run_agent_not_found_returns_structured_error(agents_client: TestClient)
     )
     assert resp.status_code == 404
     body = resp.json()
-    assert body.get("detail") == "Agent not found"
+    assert body.get("detail") == "agent not found"
     assert body.get("error", {}).get("code") == "agent_not_found"

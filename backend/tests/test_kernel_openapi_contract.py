@@ -88,6 +88,12 @@ def test_openapi_kernel_optimization_endpoints_use_named_success_schemas() -> No
     client = _build_client()
     spec = client.get("/openapi.json").json()
     paths = spec.get("paths") or {}
+    schemas = spec.get("components", {}).get("schemas") or {}
+    jmap = "#/components/schemas/SystemJsonMap"
+    assert schemas["OptimizationStatusReadyResponse"]["properties"]["config"]["$ref"] == jmap
+    assert schemas["OptimizationConfigUpdateBody"]["properties"]["policy_params"]["$ref"] == jmap
+    assert schemas["OptimizationConfigUpdateSuccessResponse"]["properties"]["config"]["$ref"] == jmap
+    assert schemas["OptimizationImpactOkResponse"]["properties"]["impact"]["$ref"] == jmap
 
     opt_get = paths["/api/system/kernel/optimization"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
     assert opt_get.get("anyOf")

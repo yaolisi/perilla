@@ -4,9 +4,11 @@ V2.8 Inference Gateway Layer - Embedding Request Model
 Dedicated request model for embedding inference (non-chat).
 """
 
-from typing import Any, Dict, List, Self, Union, Literal
+from typing import List, Self, Union, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from core.inference.models.metadata import InferenceMetadataJsonMap
 
 
 class EmbeddingRequest(BaseModel):
@@ -25,7 +27,10 @@ class EmbeddingRequest(BaseModel):
         default="medium",
         description="Queue priority for embedding execution"
     )
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Observability metadata")
+    metadata: InferenceMetadataJsonMap = Field(
+        default_factory=InferenceMetadataJsonMap,
+        description="Observability metadata",
+    )
 
     @model_validator(mode="after")
     def validate_input(self) -> Self:

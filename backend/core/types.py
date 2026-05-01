@@ -1,6 +1,6 @@
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Self, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # 消息角色（含 tool：用于 tool/skill 输出，表示环境观察而非用户意图）
 Role = Literal["system", "user", "assistant", "tool"]
@@ -8,18 +8,77 @@ Role = Literal["system", "user", "assistant", "tool"]
 StreamFormat = Literal["openai", "jsonl", "markdown"]
 
 
+class ChatCompletionMetadataJsonMap(BaseModel):
+    """chat 请求/响应侧透传元数据（路由分桶、resolved_model 等）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class ChatCompletionMessageContentItem(BaseModel):
+    """chat.completion choice.message.content 数组元素（OpenAI 多模态片段；未知 type 保留扩展键）。"""
+
+    model_config = ConfigDict(extra="allow")
+    type: str = ""
+
+
+class ChatCompletionChoiceMessage(BaseModel):
+    """chat.completion 单条 choice.message（OpenAI 兼容，允许 tool_calls 等扩展字段）。"""
+
+    model_config = ConfigDict(extra="allow")
+    role: str = "assistant"
+    content: Union[str, List[ChatCompletionMessageContentItem], None] = None
+
+
+class ChatCompletionChoice(BaseModel):
+    """chat.completion 单条 choice。"""
+
+    model_config = ConfigDict(extra="allow")
+    index: int = 0
+    message: ChatCompletionChoiceMessage
+    finish_reason: Optional[str] = None
+
+
+class ChatCompletionUsage(BaseModel):
+    """token 用量（OpenAI 兼容，可扩展 completion_tokens_details 等）。"""
+
+    model_config = ConfigDict(extra="allow")
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class MessageImageUrlPayload(BaseModel):
+    """OpenAI 风格 image_url 对象（url、detail 等）。"""
+
+    model_config = ConfigDict(extra="allow")
+    url: Optional[str] = None
+    detail: Optional[str] = None
+
+
+def image_url_part_url(payload: Union[MessageImageUrlPayload, Dict[str, Any], None]) -> str:
+    """从 image_url 片段解析 url 字符串（兼容 dict / 模型）。"""
+    if payload is None:
+        return ""
+    if isinstance(payload, dict):
+        return str(payload.get("url") or "")
+    return str(payload.model_dump(mode="python").get("url") or "")
+
+
 class MessageContentItem(BaseModel):
     """消息内容项（用于多模态消息）"""
     type: Literal["text", "image_url"]
     text: Optional[str] = None
-    image_url: Optional[dict] = None
+    image_url: Optional[MessageImageUrlPayload] = None
     
     @model_validator(mode='after')
     def validate_content_item(self) -> Self:
         if self.type == "text" and not self.text:
             raise ValueError("Text content item must have 'text' field")
-        if self.type == "image_url" and not self.image_url:
-            raise ValueError("Image URL content item must have 'image_url' field")
+        if self.type == "image_url":
+            if self.image_url is None:
+                raise ValueError("Image URL content item must have 'image_url' field")
+            if not image_url_part_url(self.image_url).strip():
+                raise ValueError("Image URL content item must have 'image_url' field")
         return self
 
 
@@ -76,7 +135,7 @@ class ChatCompletionRequest(BaseModel):
     rag: Optional[RAGConfig] = Field(default=None, description="RAG 知识库检索配置")
 
     # 客户端可选透传（如 role / is_admin 供智能路由分桶；不参与 LLM 拼接）
-    metadata: Optional[Dict[str, Any]] = Field(
+    metadata: Optional[ChatCompletionMetadataJsonMap] = Field(
         default=None,
         description="请求侧元数据（路由分桶等），与 assistant 输出无关",
     )
@@ -98,9 +157,9 @@ class ChatCompletionResponse(BaseModel):
     object: str = "chat.completion"
     created: int
     model: str
-    choices: List[dict]
-    usage: Optional[dict] = None
-    metadata: Optional[Dict[str, Any]] = Field(
+    choices: List[ChatCompletionChoice]
+    usage: Optional[ChatCompletionUsage] = None
+    metadata: Optional[ChatCompletionMetadataJsonMap] = Field(
         default=None,
         description="解析元数据，如 resolved_model、resolved_via（智能路由/注册表）",
     )

@@ -43,6 +43,7 @@ import {
   deleteAgent,
   createAgent,
   generateAgentFromNl,
+  type AgentModelParamsJsonMap,
   type ModelInfo,
   type GenerateAgentFromNlResponse,
 } from '@/services/api'
@@ -198,7 +199,10 @@ const fetchAgents = async (showLoading = true) => {
         }
       })
       const has_mcp_skill = skillChips.some((c) => c.isMcp)
-      const mp = agent.model_params && typeof agent.model_params === 'object' ? agent.model_params as Record<string, unknown> : null
+      const mp =
+        agent.model_params && typeof agent.model_params === 'object'
+          ? (agent.model_params as AgentModelParamsJsonMap)
+          : null
       const tfr = mp?.tool_failure_reflection
       const toolFailureReflection =
         Boolean(tfr && typeof tfr === 'object' && (tfr as { enabled?: boolean }).enabled === true)

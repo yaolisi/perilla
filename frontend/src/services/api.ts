@@ -1735,6 +1735,11 @@ export interface ToolFailureReflectionOutputPayload {
   max_reflections_per_run?: number
 }
 
+/**
+ * 与后端 OpenAPI `AgentModelParamsJsonMap` / `AgentDefinition.model_params` 同构（允许任意额外键）。
+ */
+export type AgentModelParamsJsonMap = Record<string, unknown>
+
 export interface AgentDefinition {
   agent_id: string
   name: string
@@ -1764,7 +1769,7 @@ export interface AgentDefinition {
   /**
    * 与后端 `AgentDefinition.model_params` 一致；可含 `plan_execution`（见 `PlanExecutionConfig`）、`tool_failure_reflection`（见 `ToolFailureReflectionConfig`）等。
    */
-  model_params?: Record<string, any>
+  model_params?: AgentModelParamsJsonMap
 }
 
 export interface CreateAgentRequest {
@@ -1800,14 +1805,14 @@ export interface CreateAgentRequest {
   /**
    * `plan_execution` 见 `PlanExecutionConfig`；`tool_failure_reflection` 见 `ToolFailureReflectionConfig`（与后端合并逻辑一致）。
    */
-  model_params?: Record<string, any>
+  model_params?: AgentModelParamsJsonMap
 }
 
 /** 多 Agent 协作埋点：与 POST /api/agents/{id}/run 及 session.state.collaboration 一致 */
 export interface AgentCollaborationContext {
   correlation_id: string
   orchestrator_agent_id: string
-  invoked_from: Record<string, unknown>
+  invoked_from: AgentModelParamsJsonMap
 }
 
 export interface RunAgentRequest {
@@ -1817,8 +1822,8 @@ export interface RunAgentRequest {
   correlation_id?: string
   /** 可选；缺省为当前 agent_id */
   orchestrator_agent_id?: string
-  /** 可选；缺省为 { type: 'api', agent_id } */
-  invoked_from?: Record<string, unknown>
+  /** 可选；缺省为 { type: 'api', agent_id }（与 OpenAPI `AgentModelParamsJsonMap` 同构） */
+  invoked_from?: AgentModelParamsJsonMap
 }
 
 export interface AgentSession {

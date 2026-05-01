@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from core.data.base import get_db
@@ -15,6 +15,12 @@ from core.security.audit_service import query_audit_logs
 from core.security.deps import require_audit_reader
 
 router = APIRouter(prefix="/api/v1/audit", tags=["audit"])
+
+
+class AuditLogDetail(BaseModel):
+    """审计附加载荷（结构随事件类型变化，OpenAPI 侧用命名 schema + additionalProperties）。"""
+
+    model_config = ConfigDict(extra="allow")
 
 
 class AuditLogItem(BaseModel):
@@ -29,7 +35,7 @@ class AuditLogItem(BaseModel):
     request_id: Optional[str] = None
     trace_id: Optional[str] = None
     client_ip: Optional[str] = None
-    detail: Optional[Dict[str, Any]] = None
+    detail: Optional[AuditLogDetail] = None
 
 
 class AuditLogListResponse(BaseModel):

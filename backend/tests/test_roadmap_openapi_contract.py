@@ -109,6 +109,18 @@ def test_openapi_includes_roadmap_kpis_quality_metrics_and_phase_status() -> Non
     assert set(m_create.get("required") or []) == {"review"}
     assert m_create["properties"]["success"]["const"] is True
 
+    jmap = "#/components/schemas/SystemJsonMap"
+    jrec = "#/components/schemas/SystemJsonRecord"
+    assert schemas["RoadmapKpisReadResponse"]["properties"]["kpis"]["$ref"] == jmap
+    assert schemas["RoadmapKpisUpdateResponse"]["properties"]["kpis"]["$ref"] == jmap
+    assert schemas["RoadmapQualityMetricsReadResponse"]["properties"]["quality_metrics"]["$ref"] == jmap
+    assert schemas["RoadmapPhaseGateStatus"]["properties"]["phases"]["additionalProperties"]["$ref"] == jmap
+    assert schemas["RoadmapPhaseGateStatus"]["properties"]["blocking_capabilities"]["items"]["$ref"] == jrec
+    assert schemas["RoadmapPhaseStatusResponse"]["properties"]["snapshot"]["$ref"] == jmap
+    assert schemas["RoadmapPhaseStatusResponse"]["properties"]["go_no_go_reasons"]["items"]["$ref"] == jrec
+    assert schemas["RoadmapMonthlyReviewListMeta"]["properties"]["page_window"]["$ref"] == "#/components/schemas/SystemStringIntMap"
+    assert schemas["RoadmapMonthlyReviewListResponse"]["properties"]["items"]["items"]["$ref"] == jrec
+
 
 def test_openapi_roadmap_paths_use_named_schema_for_json_200() -> None:
     client = _build_client()

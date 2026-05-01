@@ -40,6 +40,7 @@ from execution_kernel.optimization import (
 )
 from execution_kernel.optimization.scheduler.policy_base import SchedulerPolicy
 
+from core.agent_runtime.definition import agent_model_params_as_dict
 from core.agent_runtime.collaboration import get_collaboration_persist_dict
 from core.agent_runtime.v2.models import Plan, AgentState, ExecutionTrace, StepLog, StepStatus
 from core.agent_runtime.v2.agent_graph_adapter import AgentGraphAdapter
@@ -228,7 +229,7 @@ class ExecutionKernelAdapter:
         """
         base = self._optimization_config or get_optimization_config()
         base_dict = base.to_dict()
-        params = getattr(agent, "model_params", None) or {}
+        params = agent_model_params_as_dict(getattr(agent, "model_params", None))
         override = (
             params.get("execution_kernel_optimization")
             or params.get("optimization_config")

@@ -34,7 +34,15 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import { createAgent, listModels, listKnowledgeBases, listSkills, type CreateAgentRequest, type SkillRecord } from '@/services/api'
+import {
+  createAgent,
+  listModels,
+  listKnowledgeBases,
+  listSkills,
+  type AgentModelParamsJsonMap,
+  type CreateAgentRequest,
+  type SkillRecord,
+} from '@/services/api'
 import {
   buildPlanExecutionPayload,
   defaultPlanExecutionFormState,
@@ -382,7 +390,7 @@ const handleCreateAgent = async () => {
       plan_contract_sources: executionMode.value === 'plan_based'
         ? ['replan_contract_plan', 'plan_contract', 'followup_plan_contract']
         : undefined,
-      model_params: (() => {
+      model_params: ((): AgentModelParamsJsonMap | undefined => {
         const hasIntent = intentRules.value.some(
           (r) => (r.keywords.length > 0 || r.regex) && r.skills.length > 0,
         )

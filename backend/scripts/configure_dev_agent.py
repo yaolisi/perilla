@@ -17,7 +17,12 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent / "backend"
 sys.path.insert(0, str(project_root))
 
-from core.agent_runtime.definition import get_agent_registry, AgentDefinition
+from core.agent_runtime.definition import (
+    AgentDefinition,
+    AgentModelParamsJsonMap,
+    agent_model_params_as_dict,
+    get_agent_registry,
+)
 from log import logger
 
 
@@ -287,14 +292,13 @@ def configure_dev_agent(agent_id: str = None) -> bool:
         logger.info(f"Found agent: {agent.name} ({agent.agent_id})")
 
     # Build model_params
-    if agent.model_params is None:
-        agent.model_params = {}
+    mp = agent_model_params_as_dict(agent.model_params)
 
     # 1. Set system_prompt (stored in agent.system_prompt, not model_params)
     # We'll return the prompt for the user to apply
-    
+
     # 2. Merge intent_rules (avoid duplicates)
-    existing_rules = agent.model_params.get("intent_rules", [])
+    existing_rules = mp.get("intent_rules", [])
     existing_keywords = set()
     for rule in existing_rules:
         existing_keywords.update(rule.get("keywords", []))
@@ -314,10 +318,10 @@ def configure_dev_agent(agent_id: str = None) -> bool:
                 existing_rules.append(rule)
                 added_rules += 1
 
-    agent.model_params["intent_rules"] = existing_rules
+    mp["intent_rules"] = existing_rules
 
     # 3. Merge skill_param_extractors
-    existing_extractors = agent.model_params.get("skill_param_extractors", {})
+    existing_extractors = mp.get("skill_param_extractors", {})
     for skill_id, extractors in DEV_SKILL_PARAM_EXTRACTORS.items():
         if skill_id not in existing_extractors:
             existing_extractors[skill_id] = extractors
@@ -327,7 +331,8 @@ def configure_dev_agent(agent_id: str = None) -> bool:
                 if param_name not in existing_extractors[skill_id]:
                     existing_extractors[skill_id][param_name] = config
 
-    agent.model_params["skill_param_extractors"] = existing_extractors
+    mp["skill_param_extractors"] = existing_extractors
+    agent.model_params = AgentModelParamsJsonMap.model_validate(mp)
 
     # 4. Ensure plan_based mode for best results
     if not agent.execution_mode or agent.execution_mode == "legacy":

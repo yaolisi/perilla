@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from log import logger
 
-from core.agent_runtime.definition import AgentDefinition
+from core.agent_runtime.definition import AgentDefinition, agent_model_params_as_dict
 from core.agent_runtime.session import AgentSession
 from core.agent_runtime.v2.models import Step
 from core.types import Message
@@ -36,7 +36,7 @@ def tool_failure_reflection_enabled(agent: Optional[AgentDefinition]) -> bool:
     """是否启用「工具/技能失败反思」（默认关闭）。"""
     if not agent:
         return False
-    mp = getattr(agent, "model_params", None) or {}
+    mp = agent_model_params_as_dict(getattr(agent, "model_params", None))
     cfg = mp.get("tool_failure_reflection")
     if not isinstance(cfg, dict):
         return False

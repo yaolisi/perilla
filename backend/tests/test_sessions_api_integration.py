@@ -60,7 +60,7 @@ def test_list_messages_unknown_session_returns_structured_404(
     resp = sessions_client.get("/api/sessions/nope/messages")
     assert resp.status_code == 404
     body = resp.json()
-    assert body["detail"] == "session not found"
+    assert body["detail"] == "chat session not found"
     assert body["error"]["code"] == "chat_session_not_found"
     assert body["error"]["details"]["session_id"] == "nope"
     assert fallback_probe == []

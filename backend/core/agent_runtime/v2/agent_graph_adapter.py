@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from core.agent_runtime.definition import AgentDefinition
+from core.agent_runtime.definition import AgentDefinition, agent_model_params_as_dict
 from .models import Plan
 from core.execution.adapters.plan_compiler import PlanCompiler
 from execution_kernel.models.graph_definition import GraphDefinition
@@ -29,14 +29,15 @@ class AgentGraphAdapter:
 
     def resolve_execution_config(self, agent: AgentDefinition) -> AgentGraphExecutionConfig:
         strategy = (getattr(agent, "execution_strategy", None) or "").strip().lower()
-        if not strategy and isinstance(getattr(agent, "model_params", None), dict):
-            strategy = str(agent.model_params.get("execution_strategy") or "").strip().lower()
+        _mp = agent_model_params_as_dict(getattr(agent, "model_params", None))
+        if not strategy and _mp:
+            strategy = str(_mp.get("execution_strategy") or "").strip().lower()
         if strategy not in {"serial", "parallel_kernel"}:
             strategy = "parallel_kernel" if bool(getattr(agent, "use_execution_kernel", False)) else "serial"
 
         max_parallel_nodes = getattr(agent, "max_parallel_nodes", None)
-        if max_parallel_nodes is None and isinstance(getattr(agent, "model_params", None), dict):
-            raw = agent.model_params.get("max_parallel_nodes")
+        if max_parallel_nodes is None and _mp:
+            raw = _mp.get("max_parallel_nodes")
             if isinstance(raw, int):
                 max_parallel_nodes = raw
         if isinstance(max_parallel_nodes, int):

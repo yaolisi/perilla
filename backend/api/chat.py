@@ -18,7 +18,13 @@ from api.errors import raise_api_error
 from api.stream_resume_store import get_stream_resume_store, iter_resume_chunks
 from api.streaming_gzip import gzip_async_str_iterator
 from config.settings import settings
-from core.types import ChatCompletionRequest, ChatCompletionResponse, Message as LLMMessage
+from core.types import (
+    ChatCompletionChoice,
+    ChatCompletionChoiceMessage,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    Message as LLMMessage,
+)
 from core.agents.router import get_router
 from core.inference.router.model_router import ModelRouter
 from core.models.selector import get_model_selector
@@ -393,10 +399,11 @@ def _chat_routing_request_metadata(req: ChatCompletionRequest, request: Request,
     if sid:
         out["session_id"] = sid
     meta = req.metadata
-    if isinstance(meta, dict):
+    if meta is not None:
+        meta_dict = meta.model_dump(mode="python")
         for k in ("routing_key", "request_id", "trace_id", "session_id", "role", "is_admin"):
-            if k in meta and meta[k] is not None:
-                out[k] = meta[k]
+            if k in meta_dict and meta_dict[k] is not None:
+                out[k] = meta_dict[k]
     return out
 
 
@@ -1148,11 +1155,11 @@ async def _handle_nonstream_chat(
         created=created_time,
         model=model_id,
         choices=[
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
-            }
+            ChatCompletionChoice(
+                index=0,
+                message=ChatCompletionChoiceMessage(role="assistant", content=content),
+                finish_reason="stop",
+            )
         ],
         usage=None,
         metadata=routing_meta,

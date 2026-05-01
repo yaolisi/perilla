@@ -27,7 +27,7 @@ from .planner_utils import (
     extract_filename_from_error,
     extract_command_from_context,
 )
-from core.agent_runtime.definition import AgentDefinition
+from core.agent_runtime.definition import AgentDefinition, agent_model_params_as_dict
 from core.types import Message
 from .models import (
     Plan,
@@ -73,18 +73,17 @@ class Planner:
             Plan: 可执行的计划
         """
         context = context or {}
-        
+        agent_mp = agent_model_params_as_dict(agent.model_params)
+
         log_structured("Planner", "plan_create_start", agent_id=agent.agent_id)
         logger.info(f"[Planner] Creating plan for agent {agent.agent_id}")
-        
+
         # 从 model_params 获取 record_file 配置（优先级高），兼容旧版从 system_prompt 提取
-        record_file = None
-        if agent.model_params:
-            record_file = agent.model_params.get("record_file")
+        record_file = agent_mp.get("record_file")
         if not record_file:
             # 兼容旧版：从 system_prompt 中提取
             record_file = extract_record_filename(agent.system_prompt or "")
-        
+
         plan_context = {
             "agent_id": agent.agent_id,
             "model_id": agent.model_id,
@@ -94,9 +93,9 @@ class Planner:
             "user_id": context.get("user_id", "default"),
             "session_id": context.get("session_id", context.get("user_id", "default")),
             "record_file": record_file,
-            "model_params": agent.model_params or {},
+            "model_params": agent_mp,
         }
-        
+
         # 如果有启用的 Skills，使用 Skill-based 计划
         if agent.enabled_skills:
             plan = await self._create_skill_based_plan(agent, user_input, messages, plan_context)
@@ -126,7 +125,7 @@ class Planner:
         from core.skills.registry import SkillRegistry
         
         # 检测意图和技能匹配 - 返回 (skill_id, intent_type) 元组
-        skill_match = self._detect_skill_and_intent(user_input, agent.enabled_skills, agent.model_params, messages)
+        skill_match = self._detect_skill_and_intent(user_input, agent.enabled_skills, context.get("model_params"), messages)
         matched_skill_id, intent_type = skill_match
         
         if not matched_skill_id:
@@ -138,7 +137,7 @@ class Planner:
                 elif "project.analyze" in enabled:
                     matched_skill_id, intent_type = "project.analyze", "feature_fallback"
 
-        if not matched_skill_id and (agent.model_params or {}).get("use_skill_discovery"):
+        if not matched_skill_id and (context.get("model_params") or {}).get("use_skill_discovery"):
             # 运行时语义发现：在 enabled_skills 白名单内按用户输入做向量检索，取 top1
             logger.info(f"[Planner] Trying semantic discovery for: {user_input[:50]}...")
             discovered_id = await self._discover_skill_semantic(agent, user_input, context)
@@ -156,7 +155,7 @@ class Planner:
         logger.info(f"[Planner] Matched skill: {matched_skill_id} (intent={intent_type})")
         
         # Check for skill chain configuration in skill_param_extractors
-        model_params = agent.model_params or {}
+        model_params = context.get("model_params") or {}
         skill_extractors = model_params.get("skill_param_extractors", {})
         matched_skill_config = skill_extractors.get(matched_skill_id, {})
         chain_skills = matched_skill_config.get("chain", [])
@@ -316,7 +315,7 @@ class Planner:
 
         # 性能优化：feature_creation 默认走最小关键链路（analyze -> generate -> write -> read）。
         # 可通过 model_params.feature_creation_enable_extra_checks 显式开启额外 LLM 校验步骤。
-        model_params = agent.model_params or {}
+        model_params = agent_model_params_as_dict(agent.model_params)
         enable_extra_checks = bool(model_params.get("feature_creation_enable_extra_checks", False))
         generate_max_tokens = int(
             model_params.get("agent_v2_codegen_max_tokens")
@@ -525,7 +524,7 @@ class Planner:
                             },
                         ],
                         "temperature": agent.temperature,
-                        "max_tokens": min(int((agent.model_params or {}).get("max_tokens", 1024) or 1024), 1024),
+                        "max_tokens": min(int((model_params.get("max_tokens", 1024) or 1024)), 1024),
                         "_inject_skill_output": True,
                     },
                 )
@@ -602,8 +601,9 @@ class Planner:
 
             engine = get_discovery_engine()
             sd: Dict[str, Any] = {}
-            if isinstance((agent.model_params or {}).get("skill_discovery"), dict):
-                sd = (agent.model_params or {})["skill_discovery"]  # type: ignore[assignment]
+            _mp_sd = agent_model_params_as_dict(agent.model_params)
+            if isinstance(_mp_sd.get("skill_discovery"), dict):
+                sd = _mp_sd["skill_discovery"]  # type: ignore[assignment]
             
             # 步骤 1: 向量检索获取候选（扩大范围）
             results = engine.search(
@@ -884,20 +884,21 @@ class Planner:
                 "inputs": skill_inputs,
             },
         )
+        mp_agent = agent_model_params_as_dict(agent.model_params)
         # V2.2: 失败后重规划（优先 agent 顶层配置，兼容 model_params）
         if getattr(agent, "on_failure_strategy", None) == "replan":
             skill_step.on_failure_replan = (
                 (getattr(agent, "replan_prompt", None) or "").strip()
                 or "上一步失败。请根据错误原因重规划并重试，必要时改用其他可用技能。"
             )
-        elif agent.model_params.get("enable_replan"):
+        elif mp_agent.get("enable_replan"):
             skill_step.on_failure_replan = (
-                agent.model_params.get("on_failure_replan_instruction")
+                mp_agent.get("on_failure_replan_instruction")
                 or "上一步失败。请根据错误原因重规划并重试，必要时改用其他可用技能。"
             )
-        
+
         steps = [skill_step]
-        
+
         # 如果不是静默模式，添加 LLM 响应步骤
         if not silent:
             llm_step = create_atomic_step(
@@ -914,7 +915,7 @@ class Planner:
                         },
                     ],
                     "temperature": agent.temperature,
-                    "max_tokens": agent.model_params.get("max_tokens"),
+                    "max_tokens": mp_agent.get("max_tokens"),
                     "_inject_skill_output": True,  # 注入技能输出
                 },
             )
@@ -1181,13 +1182,14 @@ class Planner:
         """创建纯 LLM 对话计划"""
         # 构建 LLM 消息
         llm_messages = self._build_llm_messages(agent, user_input, messages)
-        
+        _mp_llm_plan = agent_model_params_as_dict(agent.model_params)
+
         step = create_atomic_step(
             executor=ExecutorType.LLM,
             inputs={
                 "messages": [m.model_dump() for m in llm_messages],
                 "temperature": agent.temperature,
-                "max_tokens": agent.model_params.get("max_tokens"),
+                "max_tokens": _mp_llm_plan.get("max_tokens"),
             },
         )
         

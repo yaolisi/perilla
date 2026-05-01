@@ -4,10 +4,12 @@ from types import SimpleNamespace
 
 from api.vlm import (
     VLMGenerateResponse,
+    VlmGenerateRoutingMetadata,
     _routing_submeta_for_persist_vlm,
     _vlm_messages_for_model_selection,
 )
 from core.models.selector import ModelSelector
+from core.types import ChatCompletionUsage
 
 
 def test_vlm_messages_for_model_selection_includes_multimodal_image_url() -> None:
@@ -66,13 +68,14 @@ def test_vlm_generate_response_model_metadata_optional() -> None:
     with_meta = VLMGenerateResponse(
         model="m1",
         text="out",
-        usage={"prompt_tokens": 1, "completion_tokens": 1},
-        metadata={"resolved_model": "m1", "resolved_via": "selector"},
+        usage=ChatCompletionUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        metadata=VlmGenerateRoutingMetadata(resolved_model="m1", resolved_via="selector"),
     )
     d = with_meta.model_dump()
     assert d["model"] == "m1"
     assert d["text"] == "out"
     assert d["metadata"] == {"resolved_model": "m1", "resolved_via": "selector"}
+    assert d["usage"] == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
 
     no_meta = VLMGenerateResponse(model="m1", text="out")
     assert no_meta.model_dump()["metadata"] is None

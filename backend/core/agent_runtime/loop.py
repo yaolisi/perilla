@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from log import logger, log_structured
 from core.types import Message, ChatCompletionRequest
-from .definition import AgentDefinition
-from .session import AgentSession, get_agent_session_store
+from .definition import AgentDefinition, agent_model_params_as_dict
+from .session import AgentSession, AgentSessionStateJsonMap, agent_session_state_as_dict, get_agent_session_store
 from .parser import parse_llm_output, AgentAction
 from .context import build_prompt
 from .trace import AgentTraceEvent, get_agent_trace_store
@@ -328,7 +328,7 @@ class AgentLoop:
         error: Optional[str] = None,
         meta: Optional[Dict[str, Any]] = None,
     ) -> None:
-        state = getattr(session, "state", None) or {}
+        state = agent_session_state_as_dict(getattr(session, "state", None))
         last_map = state.get("last_skill_observation")
         if not isinstance(last_map, dict):
             last_map = {}
@@ -341,7 +341,7 @@ class AgentLoop:
             "meta": meta or {},
         }
         state["last_skill_observation"] = last_map
-        session.state = state
+        session.state = AgentSessionStateJsonMap.model_validate(state)
 
     @staticmethod
     def _image_signature(workspace: str, image_name: str) -> Optional[str]:
@@ -679,7 +679,7 @@ class AgentLoop:
                         model_id=agent.model_id,
                         messages=messages,
                         temperature=agent.temperature,
-                        model_params=getattr(agent, 'model_params', None),
+                        model_params=agent_model_params_as_dict(getattr(agent, "model_params", None)),
                         # V2.8: Pass observability metadata
                         session_id=getattr(session, "session_id", ""),
                         trace_id=session.trace_id,

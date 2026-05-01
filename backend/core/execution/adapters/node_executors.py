@@ -13,6 +13,8 @@ from pathlib import Path
 
 from execution_kernel.models.graph_definition import NodeDefinition
 
+from core.agent_runtime.definition import agent_model_params_as_dict
+
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +119,7 @@ class LLMExecutor(NodeExecutor):
             session_id = getattr(session, "session_id", "") if session is not None else ""
             trace_id = context.get("trace_id", "") or getattr(session, "trace_id", "")
 
-            agent_params = getattr(agent, "model_params", {}) or {}
+            agent_params = agent_model_params_as_dict(getattr(agent, "model_params", None))
             max_tokens = inputs.get("max_tokens") or model_params.get("max_tokens") or agent_params.get("max_tokens") or 2048
             stop = inputs.get("stop") or model_params.get("stop")
 

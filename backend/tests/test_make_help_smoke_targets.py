@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 from typing import Dict, List, TypedDict
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class HelpTargetGroupConfig(TypedDict):
@@ -68,6 +71,7 @@ HELP_TARGET_GROUP_CONFIG: Dict[str, HelpTargetGroupConfig] = {
 def _make_help_output() -> str:
     result = subprocess.run(
         ["make", "help"],
+        cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
     )
@@ -99,6 +103,16 @@ def test_make_help_contains_event_bus_smoke_entrypoints() -> None:
 def test_make_help_contains_cb_entrypoints() -> None:
     output = _make_help_output()
     _assert_targets_present(output, HELP_TARGET_GROUP_CONFIG["continuous_batching"]["targets"])
+
+
+def test_make_help_mentions_frontend_unit_coverage() -> None:
+    output = _make_help_output()
+    assert "make test-frontend-unit-coverage" in output
+    assert "npm run test-frontend-unit-coverage" in output
+    assert (
+        "Vitest + v8 coverage (workflow/logs/useLogs; not part of pr-check)"
+        in output
+    )
 
 
 def test_make_help_mentions_roadmap_exit_code_semantics() -> None:

@@ -11,7 +11,11 @@ export default mergeConfig(
       coverage: {
         provider: 'v8',
         reporter: ['text', 'html'],
-        include: ['src/components/workflow/**/*.{ts,vue}'],
+        include: [
+          'src/components/workflow/**/*.{ts,vue}',
+          'src/components/logs/**/*.{ts,vue}',
+          'src/composables/useLogs.ts',
+        ],
       },
     },
   })

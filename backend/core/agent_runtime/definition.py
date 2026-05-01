@@ -7,12 +7,29 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.dialects.sqlite import insert
 
 from core.data.base import db_session
 from core.data.models.agent import Agent as AgentORM
 from log import logger
+
+
+class AgentModelParamsJsonMap(BaseModel):
+    """Agent model_params：LLM/运行时透传键（intent_rules、skill_discovery、plan_execution 等）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+def agent_model_params_as_dict(value: Any) -> Dict[str, Any]:
+    """model_params 与历史 dict 的统一 dict 视图（持久化、合并、内核读取）。"""
+    if value is None:
+        return {}
+    if isinstance(value, AgentModelParamsJsonMap):
+        return value.model_dump(mode="python")
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
 
 
 class AgentDefinition(BaseModel):
@@ -33,7 +50,7 @@ class AgentDefinition(BaseModel):
     temperature: float = 0.7
 
     # Model parameters (optional, will be passed through to LLM)
-    model_params: Dict[str, Any] = Field(default_factory=dict)
+    model_params: AgentModelParamsJsonMap = Field(default_factory=AgentModelParamsJsonMap)
 
     slug: Optional[str] = None  # URL-friendly identifier
 

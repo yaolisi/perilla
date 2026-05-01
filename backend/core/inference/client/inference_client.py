@@ -17,6 +17,7 @@ from core.inference.models.embedding_request import EmbeddingRequest
 from core.inference.models.embedding_response import EmbeddingResponse
 from core.inference.models.asr_request import ASRRequest
 from core.inference.models.asr_response import ASRResponse
+from core.inference.models.metadata import AsrOptionsJsonMap, InferenceMetadataJsonMap
 from core.inference.router.model_router import RoutingResult
 from core.inference.providers.provider_runtime_adapter import RuntimeCapabilities
 from core.types import Message
@@ -111,7 +112,7 @@ class InferenceClient:
             stream=False,
             stop=stop,
             priority=priority,
-            metadata=metadata or {},
+            metadata=InferenceMetadataJsonMap.model_validate(metadata or {}),
         )
         return await self._gateway.generate(request)
     
@@ -165,7 +166,7 @@ class InferenceClient:
             model_alias=model,
             input=input_text,
             priority=priority,
-            metadata=metadata or {},
+            metadata=InferenceMetadataJsonMap.model_validate(metadata or {}),
         )
         return await self._gateway.embed(req)
 
@@ -184,8 +185,8 @@ class InferenceClient:
             audio=audio,
             workspace=workspace,
             priority=priority,
-            options=options or {},
-            metadata=metadata or {},
+            options=AsrOptionsJsonMap.model_validate(options or {}),
+            metadata=InferenceMetadataJsonMap.model_validate(metadata or {}),
         )
         return await self._gateway.transcribe(req)
     

@@ -4,7 +4,9 @@ V2.8 Inference Gateway Layer - Inference Response Model
 Unified inference response with usage tracking and metadata.
 """
 from pydantic import BaseModel, Field
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
+from core.inference.models.metadata import InferenceMetadataJsonMap
 
 
 class TokenUsage(BaseModel):
@@ -63,9 +65,9 @@ class InferenceResponse(BaseModel):
         default="stop",
         description="Why generation stopped"
     )
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional response metadata"
+    metadata: InferenceMetadataJsonMap = Field(
+        default_factory=InferenceMetadataJsonMap,
+        description="Additional response metadata",
     )
 
     @property
@@ -84,5 +86,5 @@ class InferenceResponse(BaseModel):
             "model": self.model,
             "model_alias": self.model_alias,
             "finish_reason": self.finish_reason,
-            "metadata": self.metadata,
+            "metadata": self.metadata.model_dump(mode="python"),
         }

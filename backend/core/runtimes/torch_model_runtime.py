@@ -16,7 +16,7 @@ except ImportError:
     Image = None
 
 from core.runtimes.base import ModelRuntime
-from core.types import ChatCompletionRequest, Message
+from core.types import ChatCompletionRequest, Message, image_url_part_url
 from core.models.descriptor import ModelDescriptor
 from core.runtimes.vlm_types import VLMRequest, VLMGenerationConfig
 
@@ -43,7 +43,7 @@ def _extract_images_from_messages(messages: List[Message]) -> tuple[List[bytes],
             if getattr(item, "type", None) == "text":
                 new_content.append({"type": "text", "text": getattr(item, "text", "") or ""})
             elif getattr(item, "type", None) == "image_url":
-                url = (getattr(item, "image_url") or {}).get("url", "")
+                url = image_url_part_url(getattr(item, "image_url", None))
                 if url.startswith("data:"):
                     try:
                         b64 = url.split(",", 1)[-1]
@@ -169,7 +169,7 @@ class TorchModelRuntime(ModelRuntime):
             resp = await vlm.generate(vlm_req)
             result = ""
             if resp.choices:
-                msg = resp.choices[0].get("message", {})
+                msg = resp.choices[0].message.model_dump(mode="python")
                 result = msg.get("content", "")
 
         return result

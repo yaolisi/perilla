@@ -7,6 +7,8 @@ VLM 统一请求/响应类型
 from typing import List, Optional, Union, Literal, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.types import ChatCompletionChoice, ChatCompletionUsage
+
 try:
     from PIL import Image
 except ImportError:
@@ -56,5 +58,5 @@ class VLMResponse(BaseModel):
     object: str = Field(default="chat.completion")
     created: int = Field(default=0)
     model: str = Field(default="")
-    choices: List[Dict[str, Any]] = Field(default_factory=list)  # [{"message": {"role":"assistant","content":"..."}, "finish_reason":"stop"}]
-    usage: Optional[Dict[str, int]] = Field(default=None)  # {"prompt_tokens": N, "completion_tokens": M, "total_tokens": N+M}
+    choices: List[ChatCompletionChoice] = Field(default_factory=list)
+    usage: Optional[ChatCompletionUsage] = Field(default=None)

@@ -40,7 +40,7 @@ def test_knowledge_get_not_found_is_structured_without_fallback(
     resp = knowledge_client.get("/api/knowledge-bases/kb_missing")
     assert resp.status_code == 404
     body = resp.json()
-    assert body["detail"] == "Knowledge base not found"
+    assert body["detail"] == "knowledge base not found"
     assert body["error"]["code"] == "knowledge_base_not_found"
     assert body["error"]["details"]["knowledge_base_id"] == "kb_missing"
     assert fallback_probe == []
@@ -53,7 +53,7 @@ def test_images_latest_warmup_not_found_is_structured_without_fallback(
     resp = images_client.get("/api/v1/images/warmup/latest", params={"model": "m1"})
     assert resp.status_code == 404
     body = resp.json()
-    assert body["detail"] == "No warmup record found"
+    assert body["detail"] == "image generation warmup target not found"
     assert body["error"]["code"] == "image_generation_warmup_not_found"
     assert body["error"]["details"]["model"] == "m1"
     assert fallback_probe == []

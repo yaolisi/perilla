@@ -108,6 +108,7 @@ def knowledge_full_flow_client(
         )
 
     def _fake_search_chunks(
+        self,
         knowledge_base_id: str,
         query_embedding,
         limit: int = 5,

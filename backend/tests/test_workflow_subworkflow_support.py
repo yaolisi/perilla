@@ -31,7 +31,7 @@ from execution_kernel.models.graph_definition import (
 )
 from api.workflows import _build_execution_call_chain
 from config.settings import settings
-from core.agent_runtime.session import AgentSession
+from core.agent_runtime.session import AgentSession, agent_session_state_as_dict
 
 
 def _build_version(*, workflow_id: str, version_id: str, nodes: list[WorkflowNode]) -> WorkflowVersion:
@@ -498,7 +498,7 @@ def test_workflow_runtime_records_collaboration_messages_for_agent_attempts() ->
         attempt=1,
         event="attempt_started",
     )
-    collab = updated.state.get("collaboration") if isinstance(updated.state, dict) else {}
+    collab = agent_session_state_as_dict(updated.state).get("collaboration") or {}
     messages = collab.get("messages") if isinstance(collab, dict) else []
     assert isinstance(messages, list)
     assert len(messages) == 1
@@ -900,7 +900,7 @@ def test_build_execution_call_chain_collects_parent_and_child_by_correlation() -
         state=WorkflowExecutionState.COMPLETED,
         global_context={"correlation_id": "cid-2"},
     )
-    chain = _build_execution_call_chain(root, [other, child, root])
-    assert chain["correlation_id"] == "cid-1"
-    ids = [item["execution_id"] for item in chain["items"]]
+    correlation_id, chain_items = _build_execution_call_chain(root, [other, child, root])
+    assert correlation_id == "cid-1"
+    ids = [item.execution_id for item in chain_items]
     assert ids == ["e-root", "e-child"]

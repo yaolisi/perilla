@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Literal, Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 MemoryType = Literal["preference", "profile", "project", "fact"]
 MemoryStatus = Literal["active", "deprecated"]
+
+
+class MemoryItemMetaJsonMap(BaseModel):
+    """记忆条目扩展元数据（OpenAPI 具名 object，避免匿名 dict）。"""
+
+    model_config = ConfigDict(extra="allow")
 
 
 class MemoryCandidate(BaseModel):
@@ -48,5 +54,5 @@ class MemoryItem(BaseModel):
 
     # 可选：来源、模型、元信息
     source: str = "memory_extractor"
-    meta: Optional[dict[str, Any]] = None
+    meta: Optional[MemoryItemMetaJsonMap] = None
 

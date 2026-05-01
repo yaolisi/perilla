@@ -1,15 +1,15 @@
 """
 Skill v1 FastAPI 接口：创建、列表、获取、执行。
 """
-from typing import Any, Dict, List, Optional, cast
+from typing import List, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.errors import raise_api_error
 from middleware.user_context import get_user_id
 from core.skills import create_skill, get_skill, list_skills, SkillExecutor, update_skill, delete_skill
-from core.skills.models import SkillType
+from core.skills.models import Skill, SkillType
 from core.skills.registry import SkillRegistry
 from core.security.deps import require_authenticated_platform_admin
 from core.security.skill_policy import get_blocked_skills
@@ -22,13 +22,71 @@ router = APIRouter(
 MSG_SKILL_NOT_FOUND = "Skill not found"
 
 
+class SkillV1JsonMap(BaseModel):
+    """Skill v1 API 中的 definition / schema / 执行 inputs 等自由 JSON 对象。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class SkillV1ApiRecord(BaseModel):
+    """与 `Skill.to_dict()` 对齐的 API 展示模型（v1 存储）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    description: str
+    category: str
+    type: SkillType
+    definition: SkillV1JsonMap
+    input_schema: SkillV1JsonMap
+    enabled: bool
+    is_mcp: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class SkillListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    object: Literal["list"] = "list"
+    data: List[SkillV1ApiRecord]
+
+
+class SkillDeleteApiResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok"] = "ok"
+
+
+class SkillExecuteSuccessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["success"] = "success"
+    output: SkillV1JsonMap
+
+
+class SkillExecuteErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["error"] = "error"
+    error: str
+
+
+SkillExecuteApiResponse = Union[SkillExecuteSuccessResponse, SkillExecuteErrorResponse]
+
+
+def _skill_record(skill: Skill) -> SkillV1ApiRecord:
+    return SkillV1ApiRecord.model_validate(skill.to_dict())
+
+
 class CreateSkillBody(BaseModel):
     name: str = Field(..., min_length=1)
     description: str = ""
     category: str = ""
     type: SkillType = "prompt"
-    input_schema: Optional[Dict[str, Any]] = None
-    definition: Optional[Dict[str, Any]] = None
+    input_schema: Optional[SkillV1JsonMap] = None
+    definition: Optional[SkillV1JsonMap] = None
     enabled: bool = True
 
 
@@ -37,46 +95,43 @@ class UpdateSkillBody(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
     type: Optional[SkillType] = None
-    input_schema: Optional[Dict[str, Any]] = None
-    definition: Optional[Dict[str, Any]] = None
+    input_schema: Optional[SkillV1JsonMap] = None
+    definition: Optional[SkillV1JsonMap] = None
     enabled: Optional[bool] = None
 
 
 class ExecuteSkillBody(BaseModel):
-    inputs: Dict[str, Any] = Field(default_factory=dict)
+    inputs: SkillV1JsonMap = Field(default_factory=SkillV1JsonMap)
 
 
 @router.post("")
-async def api_create_skill(body: CreateSkillBody) -> Dict[str, Any]:
+async def api_create_skill(body: CreateSkillBody) -> SkillV1ApiRecord:
     """创建 Skill。"""
     skill = create_skill(
         name=body.name,
         description=body.description,
         category=body.category,
         type=body.type,
-        definition=body.definition,
-        input_schema=body.input_schema,
+        definition=body.definition.model_dump(mode="json") if body.definition is not None else None,
+        input_schema=body.input_schema.model_dump(mode="json") if body.input_schema is not None else None,
         enabled=body.enabled,
     )
     if not skill:
         raise_api_error(status_code=500, code="skill_create_failed", message="Failed to create skill")
     assert skill is not None
-    SkillRegistry.register(cast(Any, skill))
-    return cast(Dict[str, Any], skill.to_dict())
+    SkillRegistry.register(skill)
+    return _skill_record(skill)
 
 
 @router.get("")
-async def api_list_skills() -> Dict[str, Any]:
+async def api_list_skills() -> SkillListResponse:
     """列出所有 Skill。"""
     skills = list_skills(enabled_only=False)
-    return {
-        "object": "list",
-        "data": [s.to_dict() for s in skills],
-    }
+    return SkillListResponse(data=[_skill_record(s) for s in skills])
 
 
 @router.get("/{skill_id}")
-async def api_get_skill(skill_id: str) -> Dict[str, Any]:
+async def api_get_skill(skill_id: str) -> SkillV1ApiRecord:
     """获取单个 Skill。"""
     skill = get_skill(skill_id)
     if not skill:
@@ -87,11 +142,11 @@ async def api_get_skill(skill_id: str) -> Dict[str, Any]:
             details={"skill_id": skill_id},
         )
     assert skill is not None
-    return cast(Dict[str, Any], skill.to_dict())
+    return _skill_record(skill)
 
 
 @router.put("/{skill_id}")
-async def api_update_skill(skill_id: str, body: UpdateSkillBody) -> Dict[str, Any]:
+async def api_update_skill(skill_id: str, body: UpdateSkillBody) -> SkillV1ApiRecord:
     """更新 Skill。"""
     if skill_id.startswith("builtin_"):
         raise_api_error(
@@ -114,18 +169,18 @@ async def api_update_skill(skill_id: str, body: UpdateSkillBody) -> Dict[str, An
         description=body.description,
         category=body.category,
         type=body.type,
-        definition=body.definition,
-        input_schema=body.input_schema,
+        definition=body.definition.model_dump(mode="json") if body.definition is not None else None,
+        input_schema=body.input_schema.model_dump(mode="json") if body.input_schema is not None else None,
         enabled=body.enabled,
     )
     if not updated:
         raise_api_error(status_code=500, code="skill_update_failed", message="Failed to update skill")
     assert updated is not None
-    return cast(Dict[str, Any], updated.to_dict())
+    return _skill_record(updated)
 
 
 @router.delete("/{skill_id}")
-async def api_delete_skill(skill_id: str) -> Dict[str, Any]:
+async def api_delete_skill(skill_id: str) -> SkillDeleteApiResponse:
     """删除 Skill。内置 builtin_* 不可删除。"""
     if skill_id.startswith("builtin_"):
         raise_api_error(
@@ -141,13 +196,13 @@ async def api_delete_skill(skill_id: str) -> Dict[str, Any]:
             message=MSG_SKILL_NOT_FOUND,
             details={"skill_id": skill_id},
         )
-    return {"status": "ok"}
+    return SkillDeleteApiResponse()
 
 
 @router.post("/{skill_id}/execute")
 async def api_execute_skill(
     request: Request, skill_id: str, body: ExecuteSkillBody
-) -> Dict[str, Any]:
+) -> SkillExecuteApiResponse:
     """执行 Skill（供 Agent Runtime 使用）。返回 type + output（及可选的 error / prompt）。"""
     from core.skills.contract import SkillExecutionRequest
 
@@ -174,7 +229,7 @@ async def api_execute_skill(
     # 构建执行请求
     request = SkillExecutionRequest(
         skill_id=skill_id,
-        input=body.inputs,
+        input=body.inputs.model_dump(mode="json"),
         trace_id=f"api_{skill_id}",
         caller_id="api",
         metadata={"user_id": user_id} if user_id else {},
@@ -185,10 +240,12 @@ async def api_execute_skill(
     
     # 转换响应格式
     if response.status == "success":
-        return {"type": "success", "output": response.output}
+        raw_out = response.output
+        payload = raw_out if isinstance(raw_out, dict) else {}
+        return SkillExecuteSuccessResponse(output=SkillV1JsonMap.model_validate(payload))
     elif response.status == "timeout":
         error = response.error if isinstance(response.error, dict) else {}
-        return {"type": "error", "error": error.get("message", "Timeout")}
+        return SkillExecuteErrorResponse(error=str(error.get("message", "Timeout")))
     else:
         error = response.error if isinstance(response.error, dict) else {}
-        return {"type": "error", "error": error.get("message", "Unknown error")}
+        return SkillExecuteErrorResponse(error=str(error.get("message", "Unknown error")))

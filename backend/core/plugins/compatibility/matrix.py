@@ -17,7 +17,8 @@ def build_plugin_compatibility_matrix() -> Dict[str, Any]:
             try:
                 import json
 
-                compatible_versions = list(json.loads(row.compatible_gateway_versions))
+                loaded = json.loads(row.compatible_gateway_versions)
+                compatible_versions = [str(v) for v in (loaded if isinstance(loaded, list) else [])]
             except Exception:
                 compatible_versions = []
         is_compatible = True

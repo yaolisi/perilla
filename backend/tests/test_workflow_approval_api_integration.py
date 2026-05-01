@@ -425,7 +425,7 @@ def test_get_execution_not_found_returns_structured_error(tmp_path):
     resp = client.get("/api/v1/workflows/wf_1/executions/exec_not_exists")
     assert resp.status_code == 404
     body = resp.json()
-    assert body.get("detail") == "Execution not found"
+    assert body.get("detail") == "workflow execution not found"
     assert body.get("error", {}).get("code") == "workflow_execution_not_found"
 
 
@@ -438,7 +438,7 @@ def test_get_execution_status_not_found_returns_structured_error(tmp_path):
     resp = client.get("/api/v1/workflows/wf_1/executions/exec_not_exists/status")
     assert resp.status_code == 404
     body = resp.json()
-    assert body.get("detail") == "Execution not found"
+    assert body.get("detail") == "workflow execution not found"
     assert body.get("error", {}).get("code") == "workflow_execution_not_found"
 
 
@@ -451,7 +451,7 @@ def test_list_execution_approvals_not_found_returns_structured_error(tmp_path):
     resp = client.get("/api/v1/workflows/wf_1/executions/exec_not_exists/approvals")
     assert resp.status_code == 404
     body = resp.json()
-    assert body.get("detail") == "Execution not found"
+    assert body.get("detail") == "workflow execution not found"
     assert body.get("error", {}).get("code") == "workflow_execution_not_found"
 
 
@@ -464,7 +464,7 @@ def test_reconcile_execution_not_found_returns_structured_error(tmp_path):
     resp = client.post("/api/v1/workflows/wf_1/executions/exec_not_exists/reconcile")
     assert resp.status_code == 404
     body = resp.json()
-    assert body.get("detail") == "Execution not found"
+    assert body.get("detail") == "workflow execution not found"
     assert body.get("error", {}).get("code") == "workflow_execution_not_found"
 
 
@@ -476,7 +476,7 @@ def test_get_quota_workflow_not_found_returns_structured_error(tmp_path):
     resp = client.get("/api/v1/workflows/wf_not_exists/quota")
     assert resp.status_code == 404
     body = resp.json()
-    assert body.get("detail") == "Workflow not found"
+    assert body.get("detail") == "workflow not found"
     assert body.get("error", {}).get("code") == "workflow_not_found"
 
 
@@ -492,7 +492,7 @@ def test_set_governance_invalid_strategy_returns_structured_error(tmp_path):
     )
     assert resp.status_code == 400
     body = resp.json()
-    assert body.get("detail") == "backpressure_strategy must be wait or reject"
+    assert body.get("detail") == "invalid workflow governance backpressure strategy"
     assert body.get("error", {}).get("code") == "workflow_governance_invalid_backpressure_strategy"
 
 
@@ -504,7 +504,7 @@ def test_get_workflow_not_found_returns_structured_error(tmp_path, fallback_prob
     resp = client.get("/api/v1/workflows/wf_not_exists")
     assert resp.status_code == 404
     body = resp.json()
-    assert body.get("detail") == "Workflow not found"
+    assert body.get("detail") == "workflow not found"
     assert body.get("error", {}).get("code") == "workflow_not_found"
     assert fallback_probe == []
 
@@ -518,7 +518,7 @@ def test_get_version_not_found_returns_structured_error(tmp_path):
     resp = client.get("/api/v1/workflows/wf_1/versions/v_nonexistent")
     assert resp.status_code == 404
     body = resp.json()
-    assert body.get("detail") == "Version not found"
+    assert body.get("detail") == "workflow version not found"
     assert body.get("error", {}).get("code") == "workflow_version_not_found"
 
 
@@ -534,7 +534,7 @@ def test_diff_versions_from_missing_returns_structured_error(tmp_path):
     )
     assert resp.status_code == 404
     body = resp.json()
-    assert body.get("detail") == "from_version not found"
+    assert body.get("detail") == "source workflow version for diff not found"
     assert body.get("error", {}).get("code") == "workflow_diff_from_version_not_found"
 
 
@@ -667,4 +667,5 @@ def test_publish_version_blocks_on_subworkflow_breaking_impact(tmp_path):
     assert resp.status_code == 400
     body = resp.json()
     assert body.get("error", {}).get("code") == "workflow_version_publish_invalid"
-    assert "breaking contract change" in str(body.get("detail") or "").lower()
+    assert body.get("detail") == "invalid workflow version publish request"
+    assert body.get("error", {}).get("details", {}).get("version_id") == "v_target_new"

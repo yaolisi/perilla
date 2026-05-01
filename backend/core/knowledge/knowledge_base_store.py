@@ -711,6 +711,19 @@ class KnowledgeBaseStore:
             if kb_id:
                 self._update_kb_status_from_documents(kb_id)
 
+    def update_document_file_path(self, doc_id: str, file_path: Optional[str]) -> None:
+        """持久化文档本地文件路径（上传保存文件后调用，供重索引等接口使用）"""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE document
+                SET file_path = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (file_path, doc_id),
+            )
+            conn.commit()
+
     def _compute_kb_status(self, kb_id: str) -> str:
         """
         根据所有文档的状态计算知识库状态

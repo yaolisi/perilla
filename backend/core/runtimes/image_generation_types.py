@@ -6,9 +6,15 @@ import base64
 from io import BytesIO
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ImageGenerationMetadataJsonMap(BaseModel):
+    """图像生成结果中附带的 pipeline / 设备等自由 JSON 元数据。"""
+
+    model_config = ConfigDict(extra="allow")
 
 
 class ImageGenerationRequest(BaseModel):
@@ -39,7 +45,7 @@ class ImageGenerationResponse(BaseModel):
     download_url: Optional[str] = None
     thumbnail_path: Optional[str] = None
     thumbnail_url: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: ImageGenerationMetadataJsonMap = Field(default_factory=ImageGenerationMetadataJsonMap)
 
     @staticmethod
     def from_pil_image(
@@ -55,6 +61,7 @@ class ImageGenerationResponse(BaseModel):
         fmt = (image_format or "PNG").upper()
         image.save(buffer, format=fmt)
         mime_type = f"image/{fmt.lower()}"
+        meta_model = ImageGenerationMetadataJsonMap.model_validate(metadata or {})
         return ImageGenerationResponse(
             model=model,
             mime_type=mime_type,
@@ -63,7 +70,7 @@ class ImageGenerationResponse(BaseModel):
             seed=seed,
             latency_ms=latency_ms,
             image_base64=base64.b64encode(buffer.getvalue()).decode("utf-8"),
-            metadata=metadata or {},
+            metadata=meta_model,
         )
 
 
@@ -111,3 +118,23 @@ class ImageGenerationWarmupResponse(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     error: Optional[str] = None
+
+
+class ImageGenerationJobDeleteResponse(BaseModel):
+    """DELETE /api/v1/images/jobs/{job_id} 成功响应"""
+
+    ok: bool = True
+    job_id: str
+
+
+class ImageGenerationWarmupCompletedResponse(BaseModel):
+    """POST /api/v1/images/warmup 成功完成时的响应"""
+
+    ok: bool = True
+    warmup_id: str
+    model: str
+    started_at: datetime
+    elapsed_ms: int
+    output_path: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None

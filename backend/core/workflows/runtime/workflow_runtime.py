@@ -35,7 +35,7 @@ from core.tools.registry import ToolRegistry
 from core.tools.context import ToolContext
 from core.agent_runtime.definition import get_agent_registry
 from core.agent_runtime.executor import get_agent_executor
-from core.agent_runtime.session import AgentSession
+from core.agent_runtime.session import AgentSession, AgentSessionStateJsonMap, agent_session_state_as_dict
 from core.agent_runtime.collaboration import (
     append_collaboration_message_to_state,
     build_collaboration_message,
@@ -1193,11 +1193,13 @@ class WorkflowRuntime:
             call_chain=call_chain,
             agent_id=agent_id,
         )
-        session.state = merge_collaboration_into_state(
-            {
-                "workflow_agent_context": wfc,
-            },
-            collab,
+        session.state = AgentSessionStateJsonMap.model_validate(
+            merge_collaboration_into_state(
+                {
+                    "workflow_agent_context": wfc,
+                },
+                collab,
+            )
         )
         return session
 
@@ -1245,14 +1247,14 @@ class WorkflowRuntime:
 
     @staticmethod
     def _extract_node_role_from_session(result_session: AgentSession) -> str:
-        state = result_session.state if isinstance(result_session.state, dict) else {}
+        state = agent_session_state_as_dict(result_session.state)
         agent_ctx = state.get("workflow_agent_context") if isinstance(state, dict) else {}
         role = str((agent_ctx or {}).get("node_role") or "").strip().lower()
         return role or "agent"
 
     @staticmethod
     def _extract_collaboration_messages_from_session(result_session: AgentSession) -> List[Dict[str, Any]]:
-        state = result_session.state if isinstance(result_session.state, dict) else {}
+        state = agent_session_state_as_dict(result_session.state)
         collab = state.get("collaboration") if isinstance(state, dict) else {}
         if not isinstance(collab, dict):
             return []
@@ -1711,7 +1713,7 @@ class WorkflowRuntime:
         event: str,
         error: Optional[str] = None,
     ) -> AgentSession:
-        state = session.state if isinstance(session.state, dict) else {}
+        state = agent_session_state_as_dict(session.state)
         collab = state.get("collaboration") if isinstance(state, dict) else {}
         collab = collab if isinstance(collab, dict) else {}
         sender = str(collab.get("orchestrator_agent_id") or "workflow_runtime").strip() or "workflow_runtime"
@@ -1737,7 +1739,7 @@ class WorkflowRuntime:
                 "status": status,
             }
         )
-        session.state = append_collaboration_message_to_state(state, message)
+        session.state = AgentSessionStateJsonMap.model_validate(append_collaboration_message_to_state(state, message))
         return session
 
     @staticmethod

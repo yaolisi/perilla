@@ -2,10 +2,10 @@
 V2.6: Observability & Replay Layer - Event API
 提供事件流查询、回放和指标计算的 API
 """
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Dict, List, Optional
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, RootModel
 from log import logger
 
 from api.errors import raise_api_error
@@ -26,6 +26,39 @@ router = APIRouter(prefix="/api/events", tags=["Events & Replay"])
 # Response Models
 # =========================
 
+
+class EventPayload(BaseModel):
+    """事件载荷（按事件类型变化，允许任意 JSON 对象键）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class GraphNodeStateSnapshot(BaseModel):
+    """回放结果中单节点状态字典（结构随节点类型变化）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class ReplayGraphNodesMap(RootModel[Dict[str, GraphNodeStateSnapshot]]):
+    """回放重建结果：节点 ID -> 节点状态快照。"""
+
+
+class ReplayContextSnapshot(BaseModel):
+    """回放结果中的上下文对象。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class MetricsDetailsSnapshot(BaseModel):
+    """指标接口 details 字段（计算器输出的结构化摘要）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class EventTypeBreakdownCounts(RootModel[Dict[str, int]]):
+    """实例内事件类型 -> 出现次数。"""
+
+
 class EventResponse(BaseModel):
     """单个事件响应"""
     event_id: str
@@ -33,8 +66,12 @@ class EventResponse(BaseModel):
     sequence: int
     event_type: str
     timestamp: int
-    payload: Dict[str, Any]
+    payload: EventPayload
     schema_version: int
+
+
+class AgentSessionInstancesMap(RootModel[Dict[str, List[EventResponse]]]):
+    """Agent Session 下各执行实例的事件列表（instance_id -> events）。"""
 
 
 class EventListResponse(BaseModel):
@@ -49,8 +86,8 @@ class RebuiltStateResponse(BaseModel):
     instance_id: str
     graph_id: str
     state: str
-    nodes: Dict[str, Dict[str, Any]]
-    context: Dict[str, Any]
+    nodes: ReplayGraphNodesMap
+    context: ReplayContextSnapshot
     event_count: int
     last_sequence: int
 
@@ -75,7 +112,27 @@ class MetricsResponse(BaseModel):
     total_execution_duration_ms: float
     completed_nodes: int
     failed_nodes: int
-    details: Dict[str, Any]
+    details: MetricsDetailsSnapshot
+
+
+class AgentSessionEventsResponse(BaseModel):
+    """按 Agent Session 聚合的执行事件（instance_id -> 事件列表）"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    instance_count: int
+    instances: AgentSessionInstancesMap
+
+
+class EventTypeBreakdownResponse(BaseModel):
+    """实例内事件类型计数"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    instance_id: str
+    total_events: int
+    breakdown: EventTypeBreakdownCounts
 
 
 # =========================
@@ -95,7 +152,7 @@ def _event_to_response(event: ExecutionEvent) -> EventResponse:
         sequence=event.sequence,
         event_type=event.event_type.value,
         timestamp=event.timestamp,
-        payload=event.payload,
+        payload=EventPayload.model_validate(event.payload),
         schema_version=event.schema_version,
     )
 
@@ -152,7 +209,7 @@ async def get_instance_events(
 async def get_agent_session_events(
     session_id: str,
     limit_instances: Annotated[int, Query(ge=1, le=100, description="最多返回的实例数")] = 20,
-) -> Dict[str, Any]:
+) -> AgentSessionEventsResponse:
     """
     按 Agent Session 聚合查询执行事件。
 
@@ -169,15 +226,15 @@ async def get_agent_session_events(
             )
             instance_ids = [r[0] for r in rows.fetchall() if r and r[0]]
             store = EventStore(session)
-            out: Dict[str, Any] = {}
+            out: Dict[str, List[EventResponse]] = {}
             for instance_id in instance_ids:
                 events = await store.get_events(instance_id=instance_id, start_sequence=1, end_sequence=None)
-                out[instance_id] = [_event_to_response(e).model_dump() for e in events]
-            return {
-                "session_id": session_id,
-                "instance_count": len(instance_ids),
-                "instances": out,
-            }
+                out[instance_id] = [_event_to_response(e) for e in events]
+            return AgentSessionEventsResponse(
+                session_id=session_id,
+                instance_count=len(instance_ids),
+                instances=AgentSessionInstancesMap(out),
+            )
     except Exception as e:
         logger.error(f"Failed to get events by session {session_id}: {e}")
         raise_api_error(
@@ -190,7 +247,7 @@ async def get_agent_session_events(
 
 
 @router.get("/instance/{instance_id}/event-types")
-async def get_event_type_breakdown(instance_id: str) -> Dict[str, Any]:
+async def get_event_type_breakdown(instance_id: str) -> EventTypeBreakdownResponse:
     """
     获取实例的事件类型分布
     
@@ -208,12 +265,12 @@ async def get_event_type_breakdown(instance_id: str) -> Dict[str, Any]:
             for event in events:
                 event_type = event.event_type.value
                 breakdown[event_type] = breakdown.get(event_type, 0) + 1
-            
-            return {
-                "instance_id": instance_id,
-                "total_events": len(events),
-                "breakdown": breakdown,
-            }
+
+            return EventTypeBreakdownResponse(
+                instance_id=instance_id,
+                total_events=len(events),
+                breakdown=EventTypeBreakdownCounts(breakdown),
+            )
     except Exception as e:
         logger.error(f"Failed to get event breakdown for instance {instance_id}: {e}")
         raise_api_error(
@@ -261,8 +318,10 @@ async def replay_instance_state(
                 instance_id=state.instance_id,
                 graph_id=state.graph_id,
                 state=state.state,
-                nodes={k: v.to_dict() for k, v in state.nodes.items()},
-                context=state.context,
+                nodes=ReplayGraphNodesMap(
+                    {k: GraphNodeStateSnapshot.model_validate(v.to_dict()) for k, v in state.nodes.items()}
+                ),
+                context=ReplayContextSnapshot.model_validate(state.context),
                 event_count=state.event_count,
                 last_sequence=state.last_sequence,
             )
@@ -355,7 +414,7 @@ async def get_instance_metrics(instance_id: str) -> MetricsResponse:
                 total_execution_duration_ms=metrics.total_execution_duration_ms,
                 completed_nodes=metrics.completed_nodes,
                 failed_nodes=metrics.failed_nodes,
-                details=metrics.details,
+                details=MetricsDetailsSnapshot.model_validate(metrics.details),
             )
     except Exception as e:
         logger.error(f"Failed to get metrics for instance {instance_id}: {e}")

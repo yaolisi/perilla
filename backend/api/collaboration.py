@@ -3,10 +3,10 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from fastapi import APIRouter, Request, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.errors import raise_api_error
 from core.agent_runtime.collaboration import (
@@ -15,7 +15,11 @@ from core.agent_runtime.collaboration import (
     append_collaboration_message_to_state,
     build_collaboration_message,
 )
-from core.agent_runtime.session import get_agent_session_store
+from core.agent_runtime.session import (
+    AgentSessionStateJsonMap,
+    agent_session_state_as_dict,
+    get_agent_session_store,
+)
 from core.security.deps import require_authenticated_platform_admin
 
 router = APIRouter(
@@ -25,12 +29,44 @@ router = APIRouter(
 )
 
 
+class CollaborationJsonMap(BaseModel):
+    """协作 API 中的自由 JSON 对象（消息 content、meta、invoked_from 等）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class CollaborationMessageRecord(BaseModel):
+    """归一化后的协作消息（与 `build_collaboration_message` 输出一致；允许扩展字段）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    message_id: str
+    sender: str
+    receiver: str
+    task_id: str
+    content: CollaborationJsonMap
+    timestamp: str
+    status: str
+    meta: Optional[CollaborationJsonMap] = None
+
+
+class CollaborationStateBlock(BaseModel):
+    """AgentSession.state['collaboration'] 的快照（含 messages 与扩展字段）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    correlation_id: Optional[str] = None
+    orchestrator_agent_id: Optional[str] = None
+    invoked_from: Optional[CollaborationJsonMap] = None
+    messages: Optional[List[CollaborationMessageRecord]] = None
+
+
 class SessionCollaborationItem(BaseModel):
     session_id: str
     agent_id: str
     status: str
     kernel_instance_id: Optional[str] = None
-    collaboration: Dict[str, Any] = Field(default_factory=dict)
+    collaboration: CollaborationStateBlock
 
 
 class CorrelationSummaryResponse(BaseModel):
@@ -48,17 +84,25 @@ class CollaborationMessageUpsertRequest(BaseModel):
     sender: str = Field(..., min_length=1, max_length=128)
     receiver: str = Field(..., min_length=1, max_length=128)
     task_id: str = Field(..., min_length=1, max_length=128)
-    content: Dict[str, Any] = Field(default_factory=dict)
+    content: CollaborationJsonMap = Field(default_factory=CollaborationJsonMap)
     status: Optional[str] = Field(default=None, max_length=32)
     timestamp: Optional[str] = None
     message_id: Optional[str] = Field(default=None, max_length=128)
-    meta: Optional[Dict[str, Any]] = None
+    meta: Optional[CollaborationJsonMap] = None
 
 
 class CollaborationMessageListResponse(BaseModel):
     correlation_id: str
     total: int
-    messages: List[Dict[str, Any]]
+    messages: List[CollaborationMessageRecord]
+
+
+class CollaborationMessageUpsertResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    correlation_id: str
+    message: CollaborationMessageRecord
 
 
 def _get_user_id(request: Request) -> str:
@@ -75,8 +119,8 @@ def _match_collaboration_sessions(
     cid = (correlation_id or "").strip()
     out: List[SessionCollaborationItem] = []
     for s in rows:
-        st = s.state or {}
-        block = st.get(STATE_KEY_COLLABORATION) if isinstance(st, dict) else None
+        st = agent_session_state_as_dict(getattr(s, "state", None))
+        block = st.get(STATE_KEY_COLLABORATION)
         if not isinstance(block, dict):
             continue
         if (block.get("correlation_id") or "").strip() != cid:
@@ -89,7 +133,7 @@ def _match_collaboration_sessions(
                 agent_id=s.agent_id,
                 status=s.status,
                 kernel_instance_id=getattr(s, "kernel_instance_id", None),
-                collaboration=block,
+                collaboration=CollaborationStateBlock.model_validate(block),
             )
         )
     return out
@@ -101,15 +145,16 @@ def _extract_messages_from_rows(
     correlation_id: str,
     task_id: Optional[str],
     limit_messages: int,
-) -> List[Dict[str, Any]]:
+) -> List[CollaborationMessageRecord]:
     cid = (correlation_id or "").strip()
     task_filter = (task_id or "").strip() or None
-    out: List[Dict[str, Any]] = []
+    raw: List[Dict[str, Any]] = []
     for s in rows:
-        out.extend(_messages_from_session_row(s, correlation_id=cid, task_filter=task_filter))
-    out.sort(key=lambda x: str(x.get("timestamp") or ""))
+        raw.extend(_messages_from_session_row(s, correlation_id=cid, task_filter=task_filter))
+    raw.sort(key=lambda x: str(x.get("timestamp") or ""))
     cap = max(1, min(limit_messages, 2000))
-    return out[-cap:]
+    trimmed = raw[-cap:]
+    return [CollaborationMessageRecord.model_validate(m) for m in trimmed]
 
 
 def _messages_from_session_row(
@@ -118,8 +163,8 @@ def _messages_from_session_row(
     correlation_id: str,
     task_filter: Optional[str],
 ) -> List[Dict[str, Any]]:
-    st = row.state or {}
-    block = st.get(STATE_KEY_COLLABORATION) if isinstance(st, dict) else None
+    st = agent_session_state_as_dict(getattr(row, "state", None))
+    block = st.get(STATE_KEY_COLLABORATION)
     if not isinstance(block, dict):
         return []
     if (block.get("correlation_id") or "").strip() != correlation_id:
@@ -141,6 +186,7 @@ def _messages_from_session_row(
     "/correlation/{correlation_id}",
     summary="按协作 correlation 列出智能体会话",
     response_description="当前用户下、最近 limit 条会话中匹配 collaboration 的记录",
+    response_model=CorrelationSummaryResponse,
 )
 async def get_sessions_by_correlation(
     correlation_id: str,
@@ -164,19 +210,19 @@ async def get_sessions_by_correlation(
     return CorrelationSummaryResponse(correlation_id=cid, sessions=out)
 
 
-@router.post("/messages", summary="写入协作消息")
+@router.post("/messages", summary="写入协作消息", response_model=CollaborationMessageUpsertResponse)
 async def upsert_collaboration_message(
     body: CollaborationMessageUpsertRequest,
     request: Request,
-) -> Dict[str, Any]:
+) -> CollaborationMessageUpsertResponse:
     store = get_agent_session_store()
     user_id = _get_user_id(request)
     session = store.get_session(body.session_id)
     if session is None or session.user_id != user_id:
         raise_api_error(status_code=404, code="collaboration_session_not_found", message="session not found")
 
-    state = session.state if isinstance(session.state, dict) else {}
-    collab = state.get(STATE_KEY_COLLABORATION) if isinstance(state, dict) else None
+    state = agent_session_state_as_dict(session.state)
+    collab = state.get(STATE_KEY_COLLABORATION)
     if not isinstance(collab, dict):
         collab = {"correlation_id": body.correlation_id, "orchestrator_agent_id": body.sender, "invoked_from": {"type": "api"}}
     existing_cid = str(collab.get("correlation_id") or "").strip()
@@ -189,13 +235,16 @@ async def upsert_collaboration_message(
         )
 
     message = build_collaboration_message(body.model_dump(exclude_none=True))
-    session.state = append_collaboration_message_to_state(state, message)
+    session.state = AgentSessionStateJsonMap.model_validate(append_collaboration_message_to_state(state, message))
     if not store.save_session(session):
         raise_api_error(status_code=500, code="collaboration_message_persist_failed", message="failed to save collaboration message")
-    return {"success": True, "correlation_id": body.correlation_id, "message": message}
+    return CollaborationMessageUpsertResponse(
+        correlation_id=body.correlation_id,
+        message=CollaborationMessageRecord.model_validate(message),
+    )
 
 
-@router.get("/correlation/{correlation_id}/messages", summary="回放协作消息")
+@router.get("/correlation/{correlation_id}/messages", summary="回放协作消息", response_model=CollaborationMessageListResponse)
 async def list_collaboration_messages(
     correlation_id: str,
     request: Request,

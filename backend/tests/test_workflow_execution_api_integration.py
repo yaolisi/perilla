@@ -456,9 +456,9 @@ def test_create_execution_wait_true_returns_structured_loop_failure_error(
     )
     assert resp.status_code == 500
     body = resp.json()
-    detail = str(body.get("detail") or "")
-    assert "LOOP_NODE_EXECUTION_FAILED" in detail
-    assert "loop-sync" in detail
+    assert body.get("detail") == "workflow runtime error"
+    assert body.get("error", {}).get("code") == "workflow_runtime_error"
+    assert body.get("error", {}).get("details", {}).get("execution_id") == "exec_wait_true_loop_fail"
     assert fallback_probe == []
 
 

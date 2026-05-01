@@ -4,9 +4,11 @@ V2.8 Inference Gateway Layer - ASR Request Model
 Dedicated request model for ASR transcription (non-chat).
 """
 
-from typing import Any, Dict, Optional, Self, Literal
+from typing import Optional, Self, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from core.inference.models.metadata import AsrOptionsJsonMap, InferenceMetadataJsonMap
 
 
 class ASRRequest(BaseModel):
@@ -28,8 +30,11 @@ class ASRRequest(BaseModel):
         default="medium",
         description="Queue priority for ASR execution"
     )
-    options: Dict[str, Any] = Field(default_factory=dict, description="ASR options")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Observability metadata")
+    options: AsrOptionsJsonMap = Field(default_factory=AsrOptionsJsonMap, description="ASR options")
+    metadata: InferenceMetadataJsonMap = Field(
+        default_factory=InferenceMetadataJsonMap,
+        description="Observability metadata",
+    )
 
     @model_validator(mode="after")
     def validate_audio(self) -> Self:

@@ -23,6 +23,7 @@ from core.inference.models.embedding_request import EmbeddingRequest
 from core.inference.models.embedding_response import EmbeddingResponse
 from core.inference.models.asr_request import ASRRequest
 from core.inference.models.asr_response import ASRResponse
+from core.inference.models.metadata import InferenceMetadataJsonMap, inference_metadata_as_dict
 from core.inference.stats import (
     get_inference_stats,
     record_inference_cache_hit,
@@ -64,11 +65,11 @@ class InferenceGateway:
 
     @staticmethod
     def _apply_request_priority(request: Any) -> None:
-        meta = getattr(request, "metadata", {}) or {}
+        meta = inference_metadata_as_dict(getattr(request, "metadata", None))
         if InferenceGateway._is_admin_request(meta):
             request.priority = "high"
             meta.setdefault("priority_source", "admin")
-            request.metadata = meta
+            request.metadata = InferenceMetadataJsonMap.model_validate(meta)
 
     @staticmethod
     def _hash_payload(payload: dict[str, Any]) -> str:
@@ -107,7 +108,7 @@ class InferenceGateway:
         return ":".join(parts)
 
     def _build_generate_cache_key(self, routing: RoutingResult, request: InferenceRequest) -> str:
-        meta = getattr(request, "metadata", {}) or {}
+        meta = inference_metadata_as_dict(getattr(request, "metadata", None))
         user_id = str(meta.get("user_id") or meta.get("x_user_id") or "anonymous")
         model_signature = self._model_cache_signature(routing.model_id)
         payload: dict[str, Any] = {
@@ -134,7 +135,7 @@ class InferenceGateway:
         return f"{scope_prefix}:h:{payload_hash}"
 
     def _build_embedding_cache_key(self, routing: RoutingResult, request: EmbeddingRequest) -> str:
-        meta = getattr(request, "metadata", {}) or {}
+        meta = inference_metadata_as_dict(getattr(request, "metadata", None))
         user_id = str(meta.get("user_id") or meta.get("x_user_id") or "anonymous")
         model_signature = self._model_cache_signature(routing.model_id)
         embedding_input = request.input if isinstance(request.input, str) else list(request.input)
@@ -210,7 +211,7 @@ class InferenceGateway:
         cache_hit: bool,
     ) -> None:
         try:
-            meta = getattr(request, "metadata", {}) or {}
+            meta = inference_metadata_as_dict(getattr(request, "metadata", None))
             await get_event_bus().publish(
                 event_type="inference.completed",
                 source="inference_gateway",
@@ -334,9 +335,11 @@ class InferenceGateway:
         self.prom_metrics.observe_inference_started(operation=operation)
         provider_name = "unknown"
         try:
-            routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
+            routing = self.router.resolve(
+                request.model_alias, request_metadata=inference_metadata_as_dict(request.metadata)
+            )
             provider_name = routing.provider
-            meta = getattr(request, "metadata", {}) or {}
+            meta = inference_metadata_as_dict(getattr(request, "metadata", None))
             logger.info(
                 "[InferenceGateway] Routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
                 request.model_alias,
@@ -361,12 +364,14 @@ class InferenceGateway:
                     response = InferenceResponse(**cached)
                     saved_latency_ms = max(0.0, (time.time() - generate_started_at) * 1000.0)
                     record_inference_cache_hit(saved_latency_ms=saved_latency_ms)
-                    response.metadata = {
-                        **(response.metadata or {}),
-                        "cache_hit": True,
-                        "cache_layer": "memory_or_redis",
-                        "cache_saved_latency_ms": round(saved_latency_ms, 2),
-                    }
+                    response.metadata = InferenceMetadataJsonMap.model_validate(
+                        {
+                            **inference_metadata_as_dict(response.metadata),
+                            "cache_hit": True,
+                            "cache_layer": "memory_or_redis",
+                            "cache_saved_latency_ms": round(saved_latency_ms, 2),
+                        }
+                    )
                     await self._emit_inference_completed(request=request, routing=routing, cache_hit=True)
                     self.prom_metrics.observe_inference_finished(
                         operation=operation,
@@ -384,7 +389,9 @@ class InferenceGateway:
             else:
                 response = await self.adapter.generate(routing.provider, routing.model_id, request)
 
-            response.metadata = {**(response.metadata or {}), "cache_hit": False}
+            response.metadata = InferenceMetadataJsonMap.model_validate(
+                {**inference_metadata_as_dict(response.metadata), "cache_hit": False}
+            )
             self.memory_cache.set_json(cache_key, response.model_dump(), cache_ttl)
             await self.cache.set_json(cache_key, response.model_dump(), cache_ttl)
             await self._emit_inference_completed(request=request, routing=routing, cache_hit=False)
@@ -406,9 +413,11 @@ class InferenceGateway:
         self.prom_metrics.observe_inference_started(operation=operation)
         provider_name = "unknown"
         try:
-            routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
+            routing = self.router.resolve(
+                request.model_alias, request_metadata=inference_metadata_as_dict(request.metadata)
+            )
             provider_name = routing.provider
-            meta = getattr(request, "metadata", {}) or {}
+            meta = inference_metadata_as_dict(getattr(request, "metadata", None))
             logger.info(
                 "[InferenceGateway] Embed routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
                 request.model_alias,
@@ -430,7 +439,13 @@ class InferenceGateway:
                 try:
                     response = EmbeddingResponse(**cached)
                     record_inference_cache_hit()
-                    response.metadata = {**(response.metadata or {}), "cache_hit": True, "cache_layer": "memory_or_redis"}
+                    response.metadata = InferenceMetadataJsonMap.model_validate(
+                        {
+                            **inference_metadata_as_dict(response.metadata),
+                            "cache_hit": True,
+                            "cache_layer": "memory_or_redis",
+                        }
+                    )
                     self.prom_metrics.observe_inference_finished(
                         operation=operation,
                         provider=routing.provider,
@@ -446,7 +461,9 @@ class InferenceGateway:
                 response = await self.adapter.embed("auto", request.model_alias, request)
             else:
                 response = await self.adapter.embed(routing.provider, routing.model_id, request)
-            response.metadata = {**(response.metadata or {}), "cache_hit": False}
+            response.metadata = InferenceMetadataJsonMap.model_validate(
+                {**inference_metadata_as_dict(response.metadata), "cache_hit": False}
+            )
             self.memory_cache.set_json(cache_key, response.model_dump(), cache_ttl)
             await self.cache.set_json(cache_key, response.model_dump(), cache_ttl)
             self.prom_metrics.observe_inference_finished(
@@ -468,10 +485,10 @@ class InferenceGateway:
         try:
             routing = self.router.resolve(
                 request.model_alias,
-                request_metadata=getattr(request, "metadata", {}) or {},
+                request_metadata=inference_metadata_as_dict(request.metadata),
             )
             provider_name = routing.provider
-            meta = getattr(request, "metadata", {}) or {}
+            meta = inference_metadata_as_dict(getattr(request, "metadata", None))
             logger.info(
                 "[InferenceGateway] ASR routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
                 request.model_alias,
@@ -512,9 +529,11 @@ class InferenceGateway:
         operation = "stream"
         started_at = time.perf_counter()
         self.prom_metrics.observe_inference_started(operation=operation)
-        routing = self.router.resolve(request.model_alias, request_metadata=request.metadata)
-        
-        meta = getattr(request, "metadata", {}) or {}
+        routing = self.router.resolve(
+            request.model_alias, request_metadata=inference_metadata_as_dict(request.metadata)
+        )
+
+        meta = inference_metadata_as_dict(getattr(request, "metadata", None))
         logger.info(
             "[InferenceGateway] Stream routing alias=%s -> %s/%s via=%s session_id=%s trace_id=%s agent_id=%s",
             request.model_alias,

@@ -16,3 +16,9 @@ def test_root_package_json_includes_roadmap_acceptance_scripts() -> None:
     assert scripts.get("roadmap-acceptance-run-validated") == "bash scripts/acceptance/roadmap_run_validated.sh"
     assert scripts.get("roadmap-acceptance-validate-output") == "bash scripts/acceptance/roadmap_validate_output.sh"
     assert scripts.get("roadmap-release-gate") == "bash scripts/acceptance/roadmap_release_gate.sh"
+    assert scripts.get("test-frontend-unit") == (
+        "npm run check-nvmrc-align && npm --prefix frontend run test:unit"
+    )
+    assert scripts.get("test-frontend-unit-coverage") == (
+        "npm run check-nvmrc-align && npm --prefix frontend run test:unit:coverage"
+    )

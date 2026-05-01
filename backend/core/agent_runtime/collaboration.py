@@ -11,6 +11,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
+from core.agent_runtime.session import agent_session_state_as_dict
+
 # session.state 中协作上下文的键（与方案文档一致）
 STATE_KEY_COLLABORATION = "collaboration"
 STATE_KEY_COLLABORATION_MESSAGES = "messages"
@@ -97,8 +99,8 @@ def get_collaboration_persist_dict(session: Any) -> Dict[str, Any]:
     供 ExecutionKernelAdapter.persisted_context 使用的可 JSON 序列化片段。
     只包含协作相关标量/字典，无 ORM 对象。
     """
-    st = getattr(session, "state", None) or {}
-    if not isinstance(st, dict):
+    st = agent_session_state_as_dict(getattr(session, "state", None))
+    if not st:
         return {}
     raw = st.get(STATE_KEY_COLLABORATION)
     if not isinstance(raw, dict) or not raw:

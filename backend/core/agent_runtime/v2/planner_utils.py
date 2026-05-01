@@ -7,6 +7,8 @@ Planner Utilities - 静态工具函数
 import re
 from typing import Any, Dict, List, Optional
 
+from core.agent_runtime.definition import agent_model_params_as_dict
+
 
 def _sanitize_path_candidate(path: str) -> str:
     """清理自然语言中提取的路径，去除尾随中文标点/配对符号。"""
@@ -347,7 +349,7 @@ def match_configured_intent_rules(
 
 def get_replan_direct_skill_config(agent: Any) -> Dict[str, Any]:
     """获取 RePlan 直接技能配置"""
-    model_params = getattr(agent, "model_params", {}) or {}
+    model_params = agent_model_params_as_dict(getattr(agent, "model_params", None))
     cfg = model_params.get("replan_direct_skill")
     # backward compatibility: old boolean toggle
     if cfg is None:

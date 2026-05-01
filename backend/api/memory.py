@@ -12,15 +12,38 @@ user_id 约定从 Header: X-User-Id 读取；无则 default
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import List, Literal
 
 from fastapi import APIRouter, Request
+from pydantic import BaseModel, ConfigDict
 
 from api.errors import raise_api_error
 from config.settings import settings
+from core.memory.memory_item import MemoryItem
 from core.memory.memory_store import MemoryStore, MemoryStoreConfig
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
+
+
+class MemoryListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    object: Literal["list"] = "list"
+    data: List[MemoryItem]
+
+
+class MemoryDeleteResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    deleted: Literal[True] = True
+    id: str
+
+
+class MemoryClearResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cleared: Literal[True] = True
+    deleted_count: int
 
 
 def _get_user_id(request: Request) -> str:
@@ -54,15 +77,15 @@ _store = MemoryStore(
 @router.get("")
 async def list_memory(
     request: Request, limit: int = 50, include_deprecated: bool = False
-) -> Dict[str, Any]:
+) -> MemoryListResponse:
     """列出当前用户的记忆（最近优先）"""
     user_id = _get_user_id(request)
     items = _store.list(user_id=user_id, limit=limit, include_deprecated=include_deprecated)
-    return {"object": "list", "data": [i.model_dump() for i in items]}
+    return MemoryListResponse(data=items)
 
 
 @router.delete("/{memory_id}")
-async def delete_memory(memory_id: str, request: Request) -> Dict[str, Any]:
+async def delete_memory(memory_id: str, request: Request) -> MemoryDeleteResponse:
     """删除一条记忆"""
     user_id = _get_user_id(request)
     ok = _store.delete(user_id=user_id, memory_id=memory_id)
@@ -73,13 +96,13 @@ async def delete_memory(memory_id: str, request: Request) -> Dict[str, Any]:
             message="memory not found",
             details={"memory_id": memory_id},
         )
-    return {"deleted": True, "id": memory_id}
+    return MemoryDeleteResponse(id=memory_id)
 
 
 @router.post("/clear")
-async def clear_memory(request: Request) -> Dict[str, Any]:
+async def clear_memory(request: Request) -> MemoryClearResponse:
     """清空当前用户的所有记忆"""
     user_id = _get_user_id(request)
     n = _store.clear(user_id=user_id)
-    return {"cleared": True, "deleted_count": n}
+    return MemoryClearResponse(deleted_count=n)
 

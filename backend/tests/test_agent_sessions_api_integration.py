@@ -143,7 +143,9 @@ def test_get_agent_session_file_invalid_path_returns_structured_error(
     assert resp.status_code == 400
     body = resp.json()
     _assert_structured(
-        body, code="agent_invalid_workspace_path", message_substr="outside workspace"
+        body,
+        code="agent_invalid_workspace_path",
+        message_substr="invalid workspace path",
     )
 
 

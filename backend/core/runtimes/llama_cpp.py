@@ -4,7 +4,7 @@ import copy
 from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
 from log import logger
 from core.runtimes.base import ModelRuntime
-from core.types import ChatCompletionRequest, Message as LLMMessage
+from core.types import ChatCompletionRequest, Message as LLMMessage, image_url_part_url
 from core.models.descriptor import ModelDescriptor
 from core.utils.async_rwlock import AsyncRWLock
 
@@ -407,7 +407,7 @@ class LlamaCppRuntime(ModelRuntime):
         else:
             itype = getattr(item, "type", None)
             text = getattr(item, "text", "") or ""
-            url = (getattr(item, "image_url", None) or {}).get("url", "")
+            url = image_url_part_url(getattr(item, "image_url", None))
         if not itype:
             return None
         return {"type": itype, "text": text, "url": url}

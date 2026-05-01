@@ -31,6 +31,7 @@
     "roadmap-acceptance-smoke": "make roadmap-acceptance-smoke",
     "roadmap-acceptance-unit": "make roadmap-acceptance-unit",
     "test-frontend-unit": "npm run check-nvmrc-align && npm --prefix frontend run test:unit",
+    "test-frontend-unit-coverage": "npm run check-nvmrc-align && npm --prefix frontend run test:unit:coverage",
     "test-no-fallback": "bash scripts/test-no-fallback.sh"
   }
 }

@@ -2,10 +2,10 @@
 数据库备份 API
 """
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from api.errors import APIException, raise_api_error
 from config.settings import settings
@@ -101,6 +101,67 @@ class DatabaseStatusResponse(BaseModel):
     backup_status: str  # 'enabled' | 'disabled'
 
 
+class BackupConfigReadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    frequency: str
+    retention_count: int
+    backup_directory: str
+    auto_delete: bool = True
+    mode: str
+    database_type: str
+
+
+class BackupConfigUpdateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+
+
+class BackupCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    backup_id: str
+    backup_path: str
+    size: Optional[int] = None
+    size_mb: Optional[float] = None
+    duration_seconds: Optional[float] = None
+
+
+class BackupRestoreResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+    status: str
+    duration_seconds: Optional[float] = None
+
+
+class BackupHistoryEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    date: str
+    size: str
+    size_bytes: int
+    type: str
+    status: str
+    error_message: Optional[str] = None
+
+
+class BackupDeleteResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: Literal[True] = True
+
+
+class BackupBrowseDirectoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Optional[str] = None
+
+
 @router.get("/status")
 async def get_database_status() -> DatabaseStatusResponse:
     """获取数据库状态"""
@@ -137,21 +198,21 @@ async def get_database_status() -> DatabaseStatusResponse:
 
 
 @router.get("/config")
-async def get_backup_config() -> Dict[str, Any]:
+async def get_backup_config() -> BackupConfigReadResponse:
     """获取备份配置"""
     try:
         manager = get_backup_manager()
         config = manager.config
 
-        return {
-            "enabled": config.enabled,
-            "frequency": config.frequency.value,
-            "retention_count": config.retention_count,
-            "backup_directory": config.backup_directory,
-            "auto_delete": True,  # 始终为 True，通过 retention_count 控制
-            "mode": config.backup_mode.value,
-            "database_type": config.database_type.value,
-        }
+        return BackupConfigReadResponse(
+            enabled=config.enabled,
+            frequency=config.frequency.value,
+            retention_count=config.retention_count,
+            backup_directory=config.backup_directory,
+            auto_delete=True,
+            mode=config.backup_mode.value,
+            database_type=config.database_type.value,
+        )
     except Exception as e:
         logger.error(f"[BackupAPI] Failed to get backup config: {e}", exc_info=True)
         raise_api_error(status_code=500, code="backup_internal_error", message=str(e))
@@ -159,7 +220,7 @@ async def get_backup_config() -> Dict[str, Any]:
 
 
 @router.post("/config")
-async def update_backup_config(config_data: BackupConfigRequest) -> Dict[str, Any]:
+async def update_backup_config(config_data: BackupConfigRequest) -> BackupConfigUpdateResponse:
     """更新备份配置"""
     try:
         manager = get_backup_manager()
@@ -185,7 +246,7 @@ async def update_backup_config(config_data: BackupConfigRequest) -> Dict[str, An
 
         logger.info(f"[BackupAPI] Backup config updated: {config_data.dict()}")
 
-        return {"success": True}
+        return BackupConfigUpdateResponse()
     except Exception as e:
         logger.error(
             f"[BackupAPI] Failed to update backup config: {e}", exc_info=True
@@ -195,21 +256,22 @@ async def update_backup_config(config_data: BackupConfigRequest) -> Dict[str, An
 
 
 @router.post("/create")
-async def create_backup() -> Dict[str, Any]:
+async def create_backup() -> BackupCreateResponse:
     """手动创建备份"""
     try:
         manager = get_backup_manager()
         result = manager.create_backup(BackupType.MANUAL)
 
         if result.success:
-            return {
-                "success": True,
-                "backup_id": result.backup_id,
-                "backup_path": str(result.backup_path),
-                "size": result.size,
-                "size_mb": round(result.size / (1024 * 1024), 2) if result.size else None,
-                "duration_seconds": result.duration_seconds,
-            }
+            bid = result.backup_id or ""
+            bpath = str(result.backup_path) if result.backup_path else ""
+            return BackupCreateResponse(
+                backup_id=bid,
+                backup_path=bpath,
+                size=result.size,
+                size_mb=round(result.size / (1024 * 1024), 2) if result.size else None,
+                duration_seconds=result.duration_seconds,
+            )
         else:
             raise_api_error(
                 status_code=500,
@@ -226,18 +288,17 @@ async def create_backup() -> Dict[str, Any]:
 
 
 @router.post("/restore/{backup_id}")
-async def restore_backup(backup_id: str) -> Dict[str, Any]:
+async def restore_backup(backup_id: str) -> BackupRestoreResponse:
     """恢复备份"""
     try:
         manager = get_backup_manager()
         result = manager.restore_backup(backup_id)
 
         if result.success:
-            return {
-                "success": True,
-                "status": result.status.value,
-                "duration_seconds": result.duration_seconds,
-            }
+            return BackupRestoreResponse(
+                status=result.status.value,
+                duration_seconds=result.duration_seconds,
+            )
         else:
             raise_api_error(
                 status_code=500,
@@ -256,22 +317,22 @@ async def restore_backup(backup_id: str) -> Dict[str, Any]:
 
 
 @router.get("/history")
-async def list_backups() -> List[Dict[str, Any]]:
+async def list_backups() -> List[BackupHistoryEntry]:
     """列出备份历史"""
     try:
         manager = get_backup_manager()
         backups = manager.list_backups()
 
         return [
-            {
-                "id": backup.id,
-                "date": backup.created_at.isoformat(),
-                "size": f"{round(backup.size / (1024 * 1024), 2)} MB",
-                "size_bytes": backup.size,
-                "type": backup.type.value,
-                "status": backup.status.value,
-                "error_message": backup.error_message,
-            }
+            BackupHistoryEntry(
+                id=backup.id,
+                date=backup.created_at.isoformat(),
+                size=f"{round(backup.size / (1024 * 1024), 2)} MB",
+                size_bytes=backup.size,
+                type=backup.type.value,
+                status=backup.status.value,
+                error_message=backup.error_message,
+            )
             for backup in backups
         ]
     except Exception as e:
@@ -281,14 +342,14 @@ async def list_backups() -> List[Dict[str, Any]]:
 
 
 @router.delete("/{backup_id}")
-async def delete_backup(backup_id: str) -> Dict[str, Any]:
+async def delete_backup(backup_id: str) -> BackupDeleteResponse:
     """删除备份"""
     try:
         manager = get_backup_manager()
         success = manager.delete_backup(backup_id)
 
         if success:
-            return {"success": True}
+            return BackupDeleteResponse()
         else:
             raise_api_error(
                 status_code=404,
@@ -308,7 +369,7 @@ async def delete_backup(backup_id: str) -> Dict[str, Any]:
 
 
 @router.post("/browse-directory")
-async def browse_directory() -> Dict[str, Optional[str]]:
+async def browse_directory() -> BackupBrowseDirectoryResponse:
     """浏览备份目录（复用系统 API 的逻辑）"""
     import platform
     import subprocess
@@ -325,7 +386,7 @@ async def browse_directory() -> Dict[str, Optional[str]]:
             )
             stdout, stderr = await proc.communicate()
             if proc.returncode == 0:
-                return {"path": stdout.decode().strip()}
+                return BackupBrowseDirectoryResponse(path=stdout.decode().strip())
         elif system == "Windows":
             cmd = 'powershell.exe -NoProfile -Command "& { $app = New-Object -ComObject Shell.Application; $folder = $app.BrowseForFolder(0, \'Select Backup Directory\', 0); if ($folder) { $folder.Self.Path } }"'
             proc = await asyncio.create_subprocess_shell(
@@ -335,8 +396,8 @@ async def browse_directory() -> Dict[str, Optional[str]]:
             )
             stdout, stderr = await proc.communicate()
             if proc.returncode == 0:
-                return {"path": stdout.decode().strip()}
+                return BackupBrowseDirectoryResponse(path=stdout.decode().strip())
     except Exception as e:
         logger.error(f"[BackupAPI] Browse directory failed: {e}")
 
-    return {"path": None}
+    return BackupBrowseDirectoryResponse(path=None)

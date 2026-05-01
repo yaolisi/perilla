@@ -2,8 +2,8 @@
 Knowledge Base API 端点
 """
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, Request
-from pydantic import BaseModel, Field
-from typing import Annotated, Any, Dict, List, Optional, cast
+from pydantic import BaseModel, ConfigDict, Field, RootModel
+from typing import Annotated, Dict, List, Literal, Optional
 from pathlib import Path
 import uuid
 import shutil
@@ -19,7 +19,6 @@ from core.knowledge.status import DocumentStatus
 from core.utils.user_context import get_user_id, UserAccessDeniedError, ResourceNotFoundError
 
 router = APIRouter(prefix="/api", tags=["knowledge"])
-JSONDict = Dict[str, Any]
 MSG_KB_NOT_FOUND = "Knowledge base not found"
 MSG_DOC_NOT_FOUND = "Document not found"
 MSG_DOC_WRONG_KB = "Document does not belong to this knowledge base"
@@ -41,13 +40,23 @@ _kb_store = KnowledgeBaseStore(
 )
 
 
+class KnowledgeJsonMap(BaseModel):
+    """知识库 API 中的 disk_size、chunk metadata 等自由 JSON 对象。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class KnowledgeStringIntMap(RootModel[Dict[str, int]]):
+    """字符串键到整数的映射（如 chunk_size_overrides、文档状态计数）。"""
+
+
 class CreateKnowledgeBaseRequest(BaseModel):
     name: str
     description: Optional[str] = None
     embedding_model_id: str
     chunk_size: int = 512
     chunk_overlap: int = 50
-    chunk_size_overrides: Dict[str, int] = Field(default_factory=dict)
+    chunk_size_overrides: KnowledgeStringIntMap = Field(default_factory=lambda: KnowledgeStringIntMap({}))
 
 
 class SearchRequest(BaseModel):
@@ -69,8 +78,186 @@ class GraphSearchRequest(BaseModel):
     version_id: Optional[str] = None
 
 
-@router.post("/knowledge-bases")
-async def create_knowledge_base(req: CreateKnowledgeBaseRequest, request: Request) -> JSONDict:
+# --- Response models (OpenAPI named schemas) ---
+
+
+class KnowledgeBaseCreatedResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    embedding_model_id: str
+    chunk_size: int
+    chunk_overlap: int
+    chunk_size_overrides: KnowledgeStringIntMap = Field(default_factory=lambda: KnowledgeStringIntMap({}))
+
+
+class KnowledgeBaseRecordResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    name: str
+    description: Optional[str] = None
+    embedding_model_id: str
+    status: Optional[str] = None
+    chunk_size: Optional[int] = None
+    chunk_overlap: Optional[int] = None
+    chunk_size_overrides_json: Optional[str] = None
+    created_at: Optional[str] = None
+    user_id: Optional[str] = None
+    disk_size: Optional[KnowledgeJsonMap] = None
+
+
+class KnowledgeBaseListEnvelope(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[KnowledgeBaseRecordResponse]
+
+
+class KnowledgeBaseDeleteResponse(BaseModel):
+    deleted: bool = True
+    id: str
+
+
+class EmbeddingModelInfo(BaseModel):
+    id: str
+    name: str
+    embedding_dim: int
+
+
+class EmbeddingModelListEnvelope(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[EmbeddingModelInfo]
+
+
+class KnowledgeBaseStatsResponse(BaseModel):
+    knowledge_base_id: str
+    document_count: int
+    document_status_breakdown: KnowledgeStringIntMap
+    chunk_count: int
+    vector_count: int
+    disk_size: KnowledgeJsonMap
+    embedding_model_id: str
+
+
+class KnowledgeDocumentRecordResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    knowledge_base_id: str
+    source: str
+    doc_type: Optional[str] = None
+    status: str = "UPLOADED"
+    chunks_count: Optional[int] = 0
+    chunks: Optional[int] = None
+    file_path: Optional[str] = None
+    error_message: Optional[str] = None
+    content_hash: Optional[str] = None
+    current_version_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+class KnowledgeDocumentListEnvelope(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[KnowledgeDocumentRecordResponse]
+
+
+class DocumentUploadResponse(BaseModel):
+    id: str
+    knowledge_base_id: str
+    source: str
+    status: str
+
+
+class DocumentDeleteResponse(BaseModel):
+    deleted: bool = True
+    id: str
+
+
+class DocumentReindexResponse(BaseModel):
+    id: str
+    knowledge_base_id: str
+    status: str
+    message: str
+
+
+class KnowledgeChunkItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    chunk_id: str
+    document_id: str
+    content: str
+    index: int
+    metadata: Optional[KnowledgeJsonMap] = None
+
+
+class KnowledgeChunkListEnvelope(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[KnowledgeChunkItem]
+    total: int
+
+
+class KnowledgeSearchHit(BaseModel):
+    content: str
+    distance: Optional[float] = None
+    score: float
+    version_id: Optional[str] = None
+    document_id: Optional[str] = None
+    chunk_id: Optional[str] = None
+    doc_source: Optional[str] = None
+
+
+class KnowledgeSearchResponse(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[KnowledgeSearchHit]
+
+
+class KbVersionCreatedResponse(BaseModel):
+    id: str
+    knowledge_base_id: str
+    version_label: str
+    notes: Optional[str] = None
+
+
+class KbVersionRecordResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: Optional[str] = None
+    knowledge_base_id: Optional[str] = None
+    version_label: Optional[str] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class KbVersionListEnvelope(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[KbVersionRecordResponse]
+
+
+class KnowledgeGraphRelationRow(BaseModel):
+    """图谱检索行（字段依抽取结果变化；允许部分字段缺失）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: Optional[str] = None
+    knowledge_base_id: Optional[str] = None
+    version_id: Optional[str] = None
+    source_entity: Optional[str] = None
+    relation: Optional[str] = None
+    target_entity: Optional[str] = None
+    confidence: Optional[float] = None
+    source_doc_id: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class KnowledgeGraphSearchEnvelope(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[KnowledgeGraphRelationRow]
+
+
+@router.post("/knowledge-bases", response_model=KnowledgeBaseCreatedResponse)
+async def create_knowledge_base(req: CreateKnowledgeBaseRequest, request: Request) -> KnowledgeBaseCreatedResponse:
     """创建知识库"""
     try:
         user_id = get_user_id(request)
@@ -82,38 +269,44 @@ async def create_knowledge_base(req: CreateKnowledgeBaseRequest, request: Reques
             user_id=user_id,
             chunk_size=req.chunk_size,
             chunk_overlap=req.chunk_overlap,
-            chunk_size_overrides_json=json.dumps(req.chunk_size_overrides or {}, ensure_ascii=False),
+            chunk_size_overrides_json=json.dumps(
+                req.chunk_size_overrides.model_dump(mode="json"),
+                ensure_ascii=False,
+            ),
         )
-        return {
-            "id": kb_id,
-            "name": req.name,
-            "description": req.description,
-            "embedding_model_id": req.embedding_model_id,
-            "chunk_size": req.chunk_size,
-            "chunk_overlap": req.chunk_overlap,
-            "chunk_size_overrides": req.chunk_size_overrides or {},
-        }
+        return KnowledgeBaseCreatedResponse(
+            id=kb_id,
+            name=req.name,
+            description=req.description,
+            embedding_model_id=req.embedding_model_id,
+            chunk_size=req.chunk_size,
+            chunk_overlap=req.chunk_overlap,
+            chunk_size_overrides=req.chunk_size_overrides,
+        )
     except Exception as e:
         logger.error(f"Failed to create knowledge base: {e}", exc_info=True)
         raise_api_error(status_code=500, code="knowledge_internal_error", message=str(e))
         raise AssertionError("unreachable")
 
 
-@router.get("/knowledge-bases")
-async def list_knowledge_bases(request: Request) -> JSONDict:
+@router.get("/knowledge-bases", response_model=KnowledgeBaseListEnvelope)
+async def list_knowledge_bases(request: Request) -> KnowledgeBaseListEnvelope:
     """列出用户的所有知识库"""
     try:
         user_id = get_user_id(request)
         kbs = _kb_store.list_knowledge_bases(user_id=user_id)
-        return {"object": "list", "data": kbs}
+        return KnowledgeBaseListEnvelope(
+            object="list",
+            data=[KnowledgeBaseRecordResponse.model_validate(k) for k in kbs],
+        )
     except Exception as e:
         logger.error(f"Failed to list knowledge bases: {e}", exc_info=True)
         raise_api_error(status_code=500, code="knowledge_internal_error", message=str(e))
         raise AssertionError("unreachable")
 
 
-@router.get("/knowledge-bases/{kb_id}")
-async def get_knowledge_base(kb_id: str, request: Request) -> JSONDict:
+@router.get("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseRecordResponse)
+async def get_knowledge_base(kb_id: str, request: Request) -> KnowledgeBaseRecordResponse:
     """获取知识库信息"""
     try:
         user_id = get_user_id(request)
@@ -130,8 +323,8 @@ async def get_knowledge_base(kb_id: str, request: Request) -> JSONDict:
         # 计算磁盘使用量
         disk_size_info = _kb_store.get_knowledge_base_disk_size(kb_id)
         kb["disk_size"] = disk_size_info
-        
-        return cast(JSONDict, kb)
+
+        return KnowledgeBaseRecordResponse.model_validate(kb)
     except APIException:
         raise
     except Exception as e:
@@ -145,15 +338,15 @@ class UpdateKnowledgeBaseRequest(BaseModel):
     description: Optional[str] = None
     chunk_size: Optional[int] = None
     chunk_overlap: Optional[int] = None
-    chunk_size_overrides: Optional[Dict[str, int]] = None
+    chunk_size_overrides: Optional[KnowledgeStringIntMap] = None
 
 
-@router.patch("/knowledge-bases/{kb_id}")
+@router.patch("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseRecordResponse)
 async def update_knowledge_base(
     kb_id: str,
     req: UpdateKnowledgeBaseRequest,
     request: Request,
-) -> JSONDict:
+) -> KnowledgeBaseRecordResponse:
     """更新知识库信息"""
     try:
         user_id = get_user_id(request)
@@ -177,7 +370,7 @@ async def update_knowledge_base(
             chunk_size=req.chunk_size,
             chunk_overlap=req.chunk_overlap,
             chunk_size_overrides_json=(
-                json.dumps(req.chunk_size_overrides, ensure_ascii=False)
+                json.dumps(req.chunk_size_overrides.model_dump(mode="json"), ensure_ascii=False)
                 if req.chunk_size_overrides is not None
                 else None
             ),
@@ -193,7 +386,8 @@ async def update_knowledge_base(
         
         # 返回更新后的知识库信息
         updated_kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        return cast(JSONDict, updated_kb)
+        assert updated_kb is not None
+        return KnowledgeBaseRecordResponse.model_validate(updated_kb)
     except APIException:
         raise
     except Exception as e:
@@ -202,8 +396,8 @@ async def update_knowledge_base(
         raise AssertionError("unreachable")
 
 
-@router.delete("/knowledge-bases/{kb_id}")
-async def delete_knowledge_base(kb_id: str, request: Request) -> JSONDict:
+@router.delete("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseDeleteResponse)
+async def delete_knowledge_base(kb_id: str, request: Request) -> KnowledgeBaseDeleteResponse:
     """删除知识库（包含物理文件删除）"""
     try:
         user_id = get_user_id(request)
@@ -237,7 +431,7 @@ async def delete_knowledge_base(kb_id: str, request: Request) -> JSONDict:
         _kb_store.delete_knowledge_base(kb_id, user_id=user_id)
         
         logger.info(f"Deleted knowledge base: {kb_id}")
-        return {"deleted": True, "id": kb_id}
+        return KnowledgeBaseDeleteResponse(deleted=True, id=kb_id)
     except UserAccessDeniedError as e:
         logger.warning(f"Access denied: {e}")
         raise_api_error(status_code=403, code="knowledge_access_denied", message=str(e))
@@ -253,8 +447,8 @@ async def delete_knowledge_base(kb_id: str, request: Request) -> JSONDict:
         raise AssertionError("unreachable")
 
 
-@router.get("/models/embedding")
-async def list_embedding_models() -> JSONDict:
+@router.get("/models/embedding", response_model=EmbeddingModelListEnvelope)
+async def list_embedding_models() -> EmbeddingModelListEnvelope:
     """列出所有 embedding 模型"""
     try:
         from core.models.registry import get_model_registry
@@ -263,24 +457,24 @@ async def list_embedding_models() -> JSONDict:
         
         # 过滤出 embedding 模型
         embedding_models = [
-            {
-                "id": m.id,
-                "name": m.name,
-                "embedding_dim": m.metadata.get("embedding_dim", 512),
-            }
+            EmbeddingModelInfo(
+                id=m.id,
+                name=m.name,
+                embedding_dim=int(m.metadata.get("embedding_dim", 512)),
+            )
             for m in all_models
             if m.model_type == "embedding"
         ]
-        
-        return {"object": "list", "data": embedding_models}
+
+        return EmbeddingModelListEnvelope(object="list", data=embedding_models)
     except Exception as e:
         logger.error(f"Failed to list embedding models: {e}", exc_info=True)
         raise_api_error(status_code=500, code="knowledge_internal_error", message=str(e))
         raise AssertionError("unreachable")
 
 
-@router.get("/knowledge-bases/{kb_id}/stats")
-async def get_knowledge_base_stats(kb_id: str, request: Request) -> JSONDict:
+@router.get("/knowledge-bases/{kb_id}/stats", response_model=KnowledgeBaseStatsResponse)
+async def get_knowledge_base_stats(kb_id: str, request: Request) -> KnowledgeBaseStatsResponse:
     """获取知识库统计信息"""
     try:
         user_id = get_user_id(request)
@@ -312,15 +506,15 @@ async def get_knowledge_base_stats(kb_id: str, request: Request) -> JSONDict:
         # 获取磁盘使用量
         disk_size_info = _kb_store.get_knowledge_base_disk_size(kb_id)
         
-        return {
-            "knowledge_base_id": kb_id,
-            "document_count": doc_count,
-            "document_status_breakdown": status_counts,
-            "chunk_count": chunk_count,
-            "vector_count": chunk_count,
-            "disk_size": disk_size_info,
-            "embedding_model_id": kb["embedding_model_id"],
-        }
+        return KnowledgeBaseStatsResponse(
+            knowledge_base_id=kb_id,
+            document_count=doc_count,
+            document_status_breakdown=KnowledgeStringIntMap(status_counts),
+            chunk_count=chunk_count,
+            vector_count=chunk_count,
+            disk_size=KnowledgeJsonMap.model_validate(disk_size_info),
+            embedding_model_id=str(kb["embedding_model_id"]),
+        )
     except APIException:
         raise
     except Exception as e:
@@ -329,8 +523,8 @@ async def get_knowledge_base_stats(kb_id: str, request: Request) -> JSONDict:
         raise AssertionError("unreachable")
 
 
-@router.get("/knowledge-bases/{kb_id}/documents")
-async def list_documents(kb_id: str, request: Request) -> JSONDict:
+@router.get("/knowledge-bases/{kb_id}/documents", response_model=KnowledgeDocumentListEnvelope)
+async def list_documents(kb_id: str, request: Request) -> KnowledgeDocumentListEnvelope:
     """列出知识库下的所有文档"""
     try:
         user_id = get_user_id(request)
@@ -341,15 +535,18 @@ async def list_documents(kb_id: str, request: Request) -> JSONDict:
                 continue
             doc["status"] = doc.get("status", "UPLOADED")
             doc["chunks"] = doc.get("chunks_count", 0)
-        return {"object": "list", "data": docs}
+        return KnowledgeDocumentListEnvelope(
+            object="list",
+            data=[KnowledgeDocumentRecordResponse.model_validate(d) for d in docs if isinstance(d, dict)],
+        )
     except Exception as e:
         logger.error(f"Failed to list documents: {e}", exc_info=True)
         raise_api_error(status_code=500, code="knowledge_internal_error", message=str(e))
         raise AssertionError("unreachable")
 
 
-@router.get("/knowledge-bases/{kb_id}/documents/{doc_id}")
-async def get_document(kb_id: str, doc_id: str, request: Request) -> JSONDict:
+@router.get("/knowledge-bases/{kb_id}/documents/{doc_id}", response_model=KnowledgeDocumentRecordResponse)
+async def get_document(kb_id: str, doc_id: str, request: Request) -> KnowledgeDocumentRecordResponse:
     """获取文档详细信息"""
     try:
         user_id = get_user_id(request)
@@ -387,8 +584,8 @@ async def get_document(kb_id: str, doc_id: str, request: Request) -> JSONDict:
         # 添加额外统计信息
         doc["status"] = doc.get("status", "UPLOADED")
         doc["chunks"] = doc.get("chunks_count", 0)
-        
-        return cast(JSONDict, doc)
+
+        return KnowledgeDocumentRecordResponse.model_validate(doc)
     except APIException:
         raise
     except Exception as e:
@@ -480,13 +677,13 @@ def index_document_background(
         )
 
 
-@router.post("/knowledge-bases/{kb_id}/documents")
+@router.post("/knowledge-bases/{kb_id}/documents", response_model=DocumentUploadResponse)
 async def upload_document(
     kb_id: str,
     file: Annotated[UploadFile, File(...)],
     background_tasks: BackgroundTasks,
     request: Request,
-) -> JSONDict:
+) -> DocumentUploadResponse:
     """上传文档到知识库并启动索引流程"""
     try:
         user_id = get_user_id(request)
@@ -540,8 +737,7 @@ async def upload_document(
         
         # 保存文件到本地存储
         file_path = FileStorage.save_file(kb_id, doc_id, content, filename)
-        
-        # 更新文档记录中的文件路径
+        _kb_store.update_document_file_path(doc_id, str(file_path))
         _kb_store.update_document_status(doc_id, DocumentStatus.UPLOADED)
         
         # 使用 BackgroundTasks 启动索引流程（不阻塞响应）
@@ -557,12 +753,12 @@ async def upload_document(
         
         logger.info(f"Document uploaded: {doc_id} to KB {kb_id}, indexing started")
         
-        return {
-            "id": doc_id,
-            "knowledge_base_id": kb_id,
-            "source": filename,
-            "status": DocumentStatus.UPLOADED,
-        }
+        return DocumentUploadResponse(
+            id=doc_id,
+            knowledge_base_id=kb_id,
+            source=filename,
+            status=str(DocumentStatus.UPLOADED),
+        )
     except APIException:
         raise
     except Exception as e:
@@ -571,8 +767,8 @@ async def upload_document(
         raise AssertionError("unreachable")
 
 
-@router.delete("/knowledge-bases/{kb_id}/documents/{doc_id}")
-async def delete_document(kb_id: str, doc_id: str, request: Request) -> JSONDict:
+@router.delete("/knowledge-bases/{kb_id}/documents/{doc_id}", response_model=DocumentDeleteResponse)
+async def delete_document(kb_id: str, doc_id: str, request: Request) -> DocumentDeleteResponse:
     """删除文档"""
     try:
         user_id = get_user_id(request)
@@ -634,10 +830,7 @@ async def delete_document(kb_id: str, doc_id: str, request: Request) -> JSONDict
         
         logger.info(f"Deleted document: {doc_id} from KB {kb_id}")
         
-        return {
-            "deleted": True,
-            "id": doc_id,
-        }
+        return DocumentDeleteResponse(deleted=True, id=doc_id)
     except APIException:
         raise
     except Exception as e:
@@ -646,14 +839,14 @@ async def delete_document(kb_id: str, doc_id: str, request: Request) -> JSONDict
         raise AssertionError("unreachable")
 
 
-@router.post("/knowledge-bases/{kb_id}/documents/{doc_id}/reindex")
+@router.post("/knowledge-bases/{kb_id}/documents/{doc_id}/reindex", response_model=DocumentReindexResponse)
 async def reindex_document(
     kb_id: str,
     doc_id: str,
     background_tasks: BackgroundTasks,
     request: Request,
     force: bool = False,
-) -> JSONDict:
+) -> DocumentReindexResponse:
     """重新索引文档"""
     try:
         user_id = get_user_id(request)
@@ -709,12 +902,12 @@ async def reindex_document(
         # 增量更新：hash 未变化则跳过（除非 force=true）
         content_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
         if not force and not _kb_store.should_reindex_document(doc_id, content_hash):
-            return {
-                "id": doc_id,
-                "knowledge_base_id": kb_id,
-                "status": doc.get("status", DocumentStatus.INDEXED),
-                "message": "Skipped re-indexing: no content change detected",
-            }
+            return DocumentReindexResponse(
+                id=doc_id,
+                knowledge_base_id=kb_id,
+                status=str(doc.get("status", DocumentStatus.INDEXED)),
+                message="Skipped re-indexing: no content change detected",
+            )
         
         # 1. 删除旧的 chunks
         logger.info(f"Deleting old chunks for document {doc_id}")
@@ -741,12 +934,12 @@ async def reindex_document(
         
         logger.info(f"Re-indexing started for document {doc_id}")
         
-        return {
-            "id": doc_id,
-            "knowledge_base_id": kb_id,
-            "status": DocumentStatus.UPLOADED,
-            "message": "Re-indexing started",
-        }
+        return DocumentReindexResponse(
+            id=doc_id,
+            knowledge_base_id=kb_id,
+            status=str(DocumentStatus.UPLOADED),
+            message="Re-indexing started",
+        )
     except APIException:
         raise
     except Exception as e:
@@ -755,14 +948,14 @@ async def reindex_document(
         raise AssertionError("unreachable")
 
 
-@router.get("/knowledge-bases/{kb_id}/chunks")
+@router.get("/knowledge-bases/{kb_id}/chunks", response_model=KnowledgeChunkListEnvelope)
 async def list_chunks(
     kb_id: str,
     request: Request,
     limit: int = 50,
     offset: int = 0,
     document_id: Optional[str] = None,
-) -> JSONDict:
+) -> KnowledgeChunkListEnvelope:
     """列出知识库下的所有 chunks"""
     try:
         user_id = get_user_id(request)
@@ -788,11 +981,11 @@ async def list_chunks(
             offset=offset,
         )
         
-        return {
-            "object": "list",
-            "data": chunks,
-            "total": total,
-        }
+        return KnowledgeChunkListEnvelope(
+            object="list",
+            data=[KnowledgeChunkItem.model_validate(c) for c in chunks],
+            total=total,
+        )
     except APIException:
         raise
     except Exception as e:
@@ -801,12 +994,12 @@ async def list_chunks(
         raise AssertionError("unreachable")
 
 
-@router.post("/knowledge-bases/{kb_id}/search")
+@router.post("/knowledge-bases/{kb_id}/search", response_model=KnowledgeSearchResponse)
 async def search_knowledge_base(
     kb_id: str,
     req: SearchRequest,
     request: Request,
-) -> JSONDict:
+) -> KnowledgeSearchResponse:
     """检索知识库"""
     try:
         user_id = get_user_id(request)
@@ -904,21 +1097,19 @@ async def search_knowledge_base(
             version_id=resolved_version_id,
         )
         
-        return {
-            "object": "list",
-            "data": [
-                {
-                    "content": item.get("content", ""),
-                    "distance": item.get("distance"),
-                    "score": 1.0 - float(item.get("distance", 1.0)),
-                    "version_id": item.get("version_id"),
-                    "document_id": item.get("document_id"),
-                    "chunk_id": item.get("chunk_id"),
-                    "doc_source": item.get("doc_source"),
-                }
-                for item in results
-            ],
-        }
+        hits = [
+            KnowledgeSearchHit(
+                content=item.get("content", ""),
+                distance=item.get("distance"),
+                score=1.0 - float(item.get("distance", 1.0)),
+                version_id=item.get("version_id"),
+                document_id=item.get("document_id"),
+                chunk_id=item.get("chunk_id"),
+                doc_source=item.get("doc_source"),
+            )
+            for item in results
+        ]
+        return KnowledgeSearchResponse(object="list", data=hits)
     except APIException:
         raise
     except Exception as e:
@@ -927,12 +1118,12 @@ async def search_knowledge_base(
         raise AssertionError("unreachable")
 
 
-@router.post("/knowledge-bases/{kb_id}/versions")
+@router.post("/knowledge-bases/{kb_id}/versions", response_model=KbVersionCreatedResponse)
 async def create_kb_version(
     kb_id: str,
     req: CreateKnowledgeBaseVersionRequest,
     request: Request,
-) -> JSONDict:
+) -> KbVersionCreatedResponse:
     user_id = get_user_id(request)
     kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
     if not kb:
@@ -943,25 +1134,33 @@ async def create_kb_version(
         notes=req.notes,
         status="ACTIVE",
     )
-    return {"id": version_id, "knowledge_base_id": kb_id, "version_label": req.version_label, "notes": req.notes}
+    return KbVersionCreatedResponse(
+        id=version_id,
+        knowledge_base_id=kb_id,
+        version_label=req.version_label,
+        notes=req.notes,
+    )
 
 
-@router.get("/knowledge-bases/{kb_id}/versions")
-async def list_kb_versions(kb_id: str, request: Request) -> JSONDict:
+@router.get("/knowledge-bases/{kb_id}/versions", response_model=KbVersionListEnvelope)
+async def list_kb_versions(kb_id: str, request: Request) -> KbVersionListEnvelope:
     user_id = get_user_id(request)
     kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
     if not kb:
         raise_api_error(status_code=404, code="knowledge_base_not_found", message=MSG_KB_NOT_FOUND)
     versions = _kb_store.list_kb_versions(kb_id)
-    return {"object": "list", "data": versions}
+    return KbVersionListEnvelope(
+        object="list",
+        data=[KbVersionRecordResponse.model_validate(v) for v in versions],
+    )
 
 
-@router.post("/knowledge-bases/{kb_id}/graph/search")
+@router.post("/knowledge-bases/{kb_id}/graph/search", response_model=KnowledgeGraphSearchEnvelope)
 async def search_kb_graph(
     kb_id: str,
     req: GraphSearchRequest,
     request: Request,
-) -> JSONDict:
+) -> KnowledgeGraphSearchEnvelope:
     user_id = get_user_id(request)
     kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
     if not kb:
@@ -972,4 +1171,7 @@ async def search_kb_graph(
         limit=req.top_k,
         version_id=req.version_id,
     )
-    return {"object": "list", "data": results}
+    return KnowledgeGraphSearchEnvelope(
+        object="list",
+        data=[KnowledgeGraphRelationRow.model_validate(r) for r in results],
+    )

@@ -18,6 +18,7 @@ try:
 except ImportError:
     Image = None
 
+from core.types import ChatCompletionChoice, ChatCompletionChoiceMessage
 from core.runtimes.vlm_runtime import VLMRuntime
 from core.utils.async_rwlock import AsyncRWLock
 from core.runtimes.vlm_types import VLMRequest, VLMResponse, VLMGenerationConfig
@@ -164,11 +165,10 @@ class TorchVLMRuntime(VLMRuntime):
         )
         resp = await self.generate(req)
         if resp.choices:
-            msg = resp.choices[0].get("message", {})
-            if isinstance(msg, dict):
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    return content
+            msg = resp.choices[0].message.model_dump(mode="python")
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                return content
         return ""
 
     async def generate(self, req: VLMRequest) -> VLMResponse:
@@ -207,7 +207,13 @@ class TorchVLMRuntime(VLMRuntime):
                 object="chat.completion",
                 created=int(time.time()),
                 model=self._manifest.get("model_name", "torch-vlm"),
-                choices=[{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+                choices=[
+                    ChatCompletionChoice(
+                        index=0,
+                        message=ChatCompletionChoiceMessage(role="assistant", content=text),
+                        finish_reason="stop",
+                    )
+                ],
                 usage=None,
             )
 

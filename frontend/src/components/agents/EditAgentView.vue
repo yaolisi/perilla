@@ -41,6 +41,7 @@ import {
   listModels,
   listKnowledgeBases,
   listSkills,
+  type AgentModelParamsJsonMap,
   type CreateAgentRequest,
   type SkillRecord,
 } from '@/services/api'
@@ -368,9 +369,13 @@ const fetchAgentData = async () => {
     planContractStrict.value = agent.plan_contract_strict ?? false
     // Intent Rules
     currentAgent.value = agent
-    intentRules.value = normalizeIntentRules((agent.model_params || {}).intent_rules)
-    useSkillDiscovery.value = (agent.model_params || {}).use_skill_discovery ?? false
-    const rawSd = (agent.model_params || {}) as { skill_discovery?: Record<string, number> }
+    const mpForm = agent.model_params ?? {}
+    intentRules.value = normalizeIntentRules((mpForm as AgentModelParamsJsonMap).intent_rules)
+    {
+      const v = (mpForm as AgentModelParamsJsonMap).use_skill_discovery
+      useSkillDiscovery.value = v === true || v === 'true'
+    }
+    const rawSd = mpForm as { skill_discovery?: Record<string, number> }
     const sd = rawSd.skill_discovery
     if (sd && typeof sd === 'object' && (sd.tag_match_weight != null || sd.min_semantic_similarity != null || sd.min_hybrid_score != null)) {
       skillDiscoveryOverride.value = true
@@ -383,7 +388,7 @@ const fetchAgentData = async () => {
       sdMinSemantic.value = 0
       sdMinHybrid.value = 0
     }
-    const modelParams = agent.model_params || {}
+    const modelParams = mpForm
     const hasDirectResponseSkills = Array.isArray(modelParams.skill_direct_response_ids) && modelParams.skill_direct_response_ids.length > 0
     responseMode.value = modelParams.response_mode === 'direct_tool_result' || hasDirectResponseSkills
       ? 'direct_tool_result'
@@ -391,7 +396,7 @@ const fetchAgentData = async () => {
     Object.assign(
       planExecutionForm,
       loadPlanExecutionFormFromModelParams(
-        (agent as { model_params?: Record<string, unknown> | null })?.model_params,
+        (agent as { model_params?: AgentModelParamsJsonMap | null })?.model_params,
       ),
     )
     const tfr = (modelParams as { tool_failure_reflection?: { enabled?: boolean } })?.tool_failure_reflection
@@ -496,7 +501,7 @@ const handleUpdateAgent = async () => {
         : undefined,
       // Intent Rules + 语义发现（仅 plan_based 时生效）：深度合并，保留所有现有 model_params 字段
       model_params: (() => {
-        const next: Record<string, unknown> = { ...(currentAgent.value?.model_params || {}) }
+        const next: AgentModelParamsJsonMap = { ...(currentAgent.value?.model_params || {}) }
         next.intent_rules = normalizeIntentRules(intentRules.value).filter(
           (r) => ((r.keywords?.length || 0) > 0 || !!r.regex) && (r.skills?.length || 0) > 0,
         )

@@ -145,7 +145,7 @@ def test_run_agent_not_found_returns_structured_error(agent_run_client: TestClie
     )
     assert resp.status_code == 404
     body = resp.json()
-    assert body.get("detail") == "Agent not found"
+    assert body.get("detail") == "agent not found"
     assert body.get("error", {}).get("code") == "agent_not_found"
     assert fallback_probe == []
 

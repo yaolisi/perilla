@@ -4,7 +4,7 @@ Workflow API Endpoints
 Workflow Control Plane 的 REST API 接口。
 """
 
-from typing import Annotated, List, Optional, Dict, Any, Union, AsyncIterator, Callable, cast
+from typing import Annotated, List, Literal, Optional, Dict, Any, Union, AsyncIterator, Callable, cast
 import asyncio
 import io
 import json
@@ -13,7 +13,7 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, Query, status, BackgroundTasks, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
@@ -107,6 +107,48 @@ def _ensure_workflow_tenant(workflow: Optional[Workflow], tenant_id: str) -> Wor
     return workflow
 
 
+class WorkflowJsonMap(BaseModel):
+    """工作流 API 中的自由 JSON 对象（参数、上下文、配置片段等）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class WorkflowJsonRecord(BaseModel):
+    """工作流 API 中的自由 JSON 对象列表项（时间线行、节点摘要等）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
+def _as_workflow_json_map(data: Any) -> WorkflowJsonMap:
+    if isinstance(data, WorkflowJsonMap):
+        return data
+    if isinstance(data, dict):
+        return WorkflowJsonMap.model_validate(data)
+    return WorkflowJsonMap()
+
+
+def _as_optional_workflow_json_map(data: Any) -> Optional[WorkflowJsonMap]:
+    if data is None:
+        return None
+    if isinstance(data, WorkflowJsonMap):
+        return data
+    if isinstance(data, dict):
+        return WorkflowJsonMap.model_validate(data)
+    return None
+
+
+def _as_workflow_json_records(items: Optional[List[Any]]) -> List[WorkflowJsonRecord]:
+    out: List[WorkflowJsonRecord] = []
+    if not items:
+        return out
+    for it in items:
+        if isinstance(it, WorkflowJsonRecord):
+            out.append(it)
+        elif isinstance(it, dict):
+            out.append(WorkflowJsonRecord.model_validate(it))
+    return out
+
+
 # ==================== Response Models ====================
 
 class WorkflowResponse(BaseModel):
@@ -141,13 +183,13 @@ class WorkflowExecutionResponse(BaseModel):
     version_id: str
     state: str
     graph_instance_id: Optional[str] = None
-    input_data: Dict[str, Any]
-    output_data: Optional[Dict[str, Any]] = None
-    global_context: Dict[str, Any] = Field(default_factory=dict)
+    input_data: WorkflowJsonMap
+    output_data: Optional[WorkflowJsonMap] = None
+    global_context: WorkflowJsonMap = Field(default_factory=WorkflowJsonMap)
     trigger_type: str = "manual"
     triggered_by: Optional[str] = None
     error_message: Optional[str] = None
-    error_details: Optional[Dict[str, Any]] = None
+    error_details: Optional[WorkflowJsonMap] = None
     created_at: str
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
@@ -155,10 +197,10 @@ class WorkflowExecutionResponse(BaseModel):
     queue_position: Optional[int] = None
     queued_at: Optional[str] = None
     wait_duration_ms: Optional[int] = None
-    node_states: List[Dict[str, Any]] = Field(default_factory=list)
-    node_timeline: List[Dict[str, Any]] = Field(default_factory=list)
-    replay: Dict[str, Any] = Field(default_factory=dict)
-    agent_summaries: List[Dict[str, Any]] = Field(default_factory=list)
+    node_states: List[WorkflowJsonRecord] = Field(default_factory=list)
+    node_timeline: List[WorkflowJsonRecord] = Field(default_factory=list)
+    replay: WorkflowJsonMap = Field(default_factory=WorkflowJsonMap)
+    agent_summaries: List[WorkflowJsonRecord] = Field(default_factory=list)
 
 
 class WorkflowExecutionStatusResponse(BaseModel):
@@ -171,7 +213,7 @@ class WorkflowExecutionStatusResponse(BaseModel):
     duration_ms: Optional[int] = None
     queue_position: Optional[int] = None
     wait_duration_ms: Optional[int] = None
-    node_timeline: List[Dict[str, Any]] = Field(default_factory=list)
+    node_timeline: List[WorkflowJsonRecord] = Field(default_factory=list)
 
 
 class WorkflowApprovalTaskResponse(BaseModel):
@@ -181,7 +223,7 @@ class WorkflowApprovalTaskResponse(BaseModel):
     node_id: str
     title: Optional[str] = None
     reason: Optional[str] = None
-    payload: Dict[str, Any] = Field(default_factory=dict)
+    payload: WorkflowJsonMap = Field(default_factory=WorkflowJsonMap)
     status: str
     requested_by: Optional[str] = None
     decided_by: Optional[str] = None
@@ -206,16 +248,251 @@ class ToolCompositionUsageRequest(BaseModel):
     tool_sequence: List[str] = Field(default_factory=list, max_length=200)
 
 
+class ToolCompositionRecommendItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    name: str
+    description: str
+    tools: List[str]
+    score: int
+    signals: WorkflowJsonMap
+
+
 class ToolCompositionRecommendResponse(BaseModel):
-    items: List[Dict[str, Any]]
+    items: List[ToolCompositionRecommendItem]
     total: int
 
 
-class ListResponse(BaseModel):
-    items: List[Dict[str, Any]]
+class WorkflowListEnvelope(BaseModel):
+    items: List[WorkflowResponse]
     total: int
     limit: int
     offset: int
+
+
+class WorkflowVersionListEnvelope(BaseModel):
+    items: List[WorkflowVersionResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class WorkflowExecutionListEnvelope(BaseModel):
+    items: List[WorkflowExecutionResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class WorkflowExecutionErrorLogRow(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    execution_id: str
+    event_id: str
+    sequence: int
+    timestamp: str
+    node_id: str
+    event_type: str
+    error_message: Optional[str] = None
+    error_type: Optional[str] = None
+    error_stack: Optional[str] = None
+    failure_strategy: Optional[str] = None
+    retry_count: int = 0
+
+
+class WorkflowExecutionErrorLogsListEnvelope(BaseModel):
+    items: List[WorkflowExecutionErrorLogRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class WorkflowGovernanceAuditEntry(BaseModel):
+    id: str
+    workflow_id: str
+    changed_by: Optional[str] = None
+    old_config: WorkflowJsonMap = Field(default_factory=WorkflowJsonMap)
+    new_config: WorkflowJsonMap = Field(default_factory=WorkflowJsonMap)
+    created_at: Optional[str] = None
+
+
+class WorkflowGovernanceAuditListEnvelope(BaseModel):
+    items: List[WorkflowGovernanceAuditEntry]
+    total: int
+    limit: int
+    offset: int
+
+
+class WorkflowContractDiffPolicy(BaseModel):
+    required_input_added_breaking: bool
+    output_added_risky: bool
+    block_publish_on_breaking: bool
+
+
+class WorkflowContractDiffResponse(BaseModel):
+    breaking_changes: List[str]
+    risky_changes: List[str]
+    info_changes: List[str]
+    exempt_fields: List[str]
+    policy: WorkflowContractDiffPolicy
+
+
+class WorkflowSubworkflowImpactRow(BaseModel):
+    workflow_id: str
+    version_id: str
+    version_number: str
+    version_state: str
+    node_id: str
+    reference_mode: str
+    reference_version_id: Optional[str] = None
+    reference_version: Optional[str] = None
+    impact_kind: str
+    risk_level: str
+    impact_reason: str
+
+
+class WorkflowSubworkflowRiskSummary(RootModel[Dict[str, int]]):
+    """子工作流影响分析的风险等级计数（breaking / compatible / risky / info 等可扩展键）。"""
+
+
+class WorkflowSubworkflowImpactResponse(BaseModel):
+    target_workflow_id: str
+    target_version_id: Optional[str] = None
+    target_version_number: Optional[str] = None
+    baseline_version_id: Optional[str] = None
+    baseline_version_number: Optional[str] = None
+    include_only_published: bool
+    contract_diff: WorkflowContractDiffResponse
+    total_impacted: int
+    risk_summary: WorkflowSubworkflowRiskSummary
+    impacted: List[WorkflowSubworkflowImpactRow]
+
+
+class WorkflowVersionsDiffSummaryCounts(BaseModel):
+    node_added: int
+    node_removed: int
+    node_changed: int
+    edge_added: int
+    edge_removed: int
+
+
+class WorkflowVersionsCompareNodesDiff(BaseModel):
+    added: List[str]
+    removed: List[str]
+    changed: List[str]
+
+
+class WorkflowVersionsCompareEdgesDiff(BaseModel):
+    added: List[str]
+    removed: List[str]
+
+
+class WorkflowVersionsCompareResponse(BaseModel):
+    workflow_id: str
+    from_version_id: str
+    to_version_id: str
+    summary: WorkflowVersionsDiffSummaryCounts
+    nodes: WorkflowVersionsCompareNodesDiff
+    edges: WorkflowVersionsCompareEdgesDiff
+
+
+class WorkflowVersionDetailResponse(WorkflowVersionResponse):
+    dag: WorkflowDAG
+    checksum: str
+
+
+class WorkflowFailureReportFilterSnapshot(BaseModel):
+    selected_node_id: Optional[str] = None
+    error_type: Optional[str] = None
+    failure_strategy: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+
+
+class WorkflowExecutionFailureReportResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    report_schema_version: str
+    exported_at: str
+    workflow_id: str
+    execution_id: str
+    execution_state: str
+    trigger_type: str
+    triggered_by: Optional[str] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    duration_ms: Optional[int] = None
+    queue_position: Optional[int] = None
+    wait_duration_ms: Optional[int] = None
+    global_context: WorkflowJsonMap = Field(default_factory=WorkflowJsonMap)
+    global_error_details: Optional[WorkflowJsonMap] = None
+    recovery_actions: List[WorkflowJsonRecord] = Field(default_factory=list)
+    node_timeline: List[WorkflowJsonRecord] = Field(default_factory=list)
+    node_states: List[WorkflowJsonRecord] = Field(default_factory=list)
+    filtered_error_logs: List[WorkflowJsonRecord] = Field(default_factory=list)
+    filter_snapshot: WorkflowFailureReportFilterSnapshot
+    execution: WorkflowExecutionResponse
+    redaction_applied: bool = False
+    redacted_key_count: int = 0
+    report_sha256: Optional[str] = None
+
+
+class WorkflowExecutionCallChainItem(BaseModel):
+    execution_id: str
+    workflow_id: str
+    version_id: str
+    state: str
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    parent_execution_id: Optional[str] = None
+    parent_node_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+    recovery_summaries: List[WorkflowJsonRecord] = Field(default_factory=list)
+    collaboration_summaries: List[WorkflowJsonRecord] = Field(default_factory=list)
+
+
+class WorkflowExecutionCallChainResponse(BaseModel):
+    root_execution_id: str
+    correlation_id: str
+    items: List[WorkflowExecutionCallChainItem]
+    total: int
+
+
+class WorkflowExecutionDebugBundle(BaseModel):
+    graph_instance_id: Optional[str] = None
+    replay_hint: str = ""
+
+
+class WorkflowExecutionDebugResponse(BaseModel):
+    execution: WorkflowExecutionResponse
+    kernel_snapshot: Optional[WorkflowJsonMap] = None
+    recent_events: List[WorkflowJsonRecord] = Field(default_factory=list)
+    debug: WorkflowExecutionDebugBundle
+
+
+class WorkflowGovernanceConcurrencyStatus(BaseModel):
+    active_slots: int
+
+
+class WorkflowGovernanceQueueStatus(BaseModel):
+    queued_executions: int
+    max_queue_size: int
+    backpressure_strategy: str
+    recent_reject_count: int
+    average_wait_ms: Optional[int] = None
+
+
+class WorkflowGovernanceStatusResponse(BaseModel):
+    quota: WorkflowJsonMap
+    concurrency: WorkflowGovernanceConcurrencyStatus
+    queue: WorkflowGovernanceQueueStatus
+
+
+class ToolCompositionUsageRecordedResponse(BaseModel):
+    ok: Literal[True] = True
 
 
 def _extract_idempotency_key(http_request: Request) -> Optional[str]:
@@ -243,7 +520,7 @@ def _approval_task_to_response(row: Any, execution_state_after_decision: Optiona
         node_id=row.node_id,
         title=row.title,
         reason=row.reason,
-        payload=row.payload or {},
+        payload=_as_workflow_json_map(row.payload or {}),
         status=row.status,
         requested_by=row.requested_by,
         decided_by=row.decided_by,
@@ -318,7 +595,7 @@ async def get_workflow(
     return _workflow_to_response(workflow)
 
 
-@router.get("", response_model=ListResponse)
+@router.get("", response_model=WorkflowListEnvelope)
 async def list_workflows(
     http_request: Request,
     namespace: Optional[str] = None,
@@ -328,7 +605,7 @@ async def list_workflows(
     *,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)]
-) -> ListResponse:
+) -> WorkflowListEnvelope:
     """列出工作流"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     if namespace and namespace != tenant_id:
@@ -355,11 +632,11 @@ async def list_workflows(
         lifecycle_state=lifecycle_state,
     )
     
-    return ListResponse(
-        items=[_workflow_to_response(w).model_dump() for w in workflows],
+    return WorkflowListEnvelope(
+        items=[_workflow_to_response(w) for w in workflows],
         total=total,
         limit=limit,
-        offset=offset
+        offset=offset,
     )
 
 
@@ -558,7 +835,7 @@ async def create_version(
         raise AssertionError("unreachable")
 
 
-@router.get("/{workflow_id}/versions", response_model=ListResponse)
+@router.get("/{workflow_id}/versions", response_model=WorkflowVersionListEnvelope)
 async def list_versions(
     http_request: Request,
     workflow_id: str,
@@ -568,7 +845,7 @@ async def list_versions(
     *,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)]
-) -> ListResponse:
+) -> WorkflowVersionListEnvelope:
     """列出工作流版本"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     # 检查权限
@@ -603,16 +880,16 @@ async def list_versions(
         state=state,
     )
     
-    return ListResponse(
-        items=[_version_to_response(v).model_dump() for v in versions],
+    return WorkflowVersionListEnvelope(
+        items=[_version_to_response(v) for v in versions],
         total=total,
         limit=limit,
-        offset=offset
+        offset=offset,
     )
 
 
 # 必须在 /{version_id} 之前注册，避免与版本详情路由冲突。
-@router.get("/{workflow_id}/impact", response_model=Dict[str, Any])
+@router.get("/{workflow_id}/impact", response_model=WorkflowSubworkflowImpactResponse)
 async def get_workflow_impact(
     http_request: Request,
     workflow_id: str,
@@ -622,7 +899,7 @@ async def get_workflow_impact(
     *,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
-) -> Dict[str, Any]:
+) -> WorkflowSubworkflowImpactResponse:
     """分析该 workflow（子工作流）被哪些父工作流版本引用。"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     workflow_service = WorkflowService(db)
@@ -655,16 +932,17 @@ async def get_workflow_impact(
                 details={"workflow_id": workflow_id, "version_id": target_version_id},
             )
             raise AssertionError("unreachable")
-    return version_service.analyze_subworkflow_impact(
+    raw = version_service.analyze_subworkflow_impact(
         target_workflow_id=workflow_id,
         target_version_id=target_version_id,
         include_only_published=published_only,
         baseline_version_id=baseline_version_id,
     )
+    return WorkflowSubworkflowImpactResponse.model_validate(raw)
 
 
 # 必须在 /{version_id} 之前注册，否则路径 .../versions/compare 会被当成 version_id="compare"
-@router.get("/{workflow_id}/versions/compare", response_model=Dict[str, Any])
+@router.get("/{workflow_id}/versions/compare", response_model=WorkflowVersionsCompareResponse)
 async def diff_versions(
     http_request: Request,
     workflow_id: str,
@@ -672,7 +950,7 @@ async def diff_versions(
     to_version_id: Annotated[str, Query(description="Target version id")],
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
-) -> Dict[str, Any]:
+) -> WorkflowVersionsCompareResponse:
     """比较两个版本的 DAG 差异"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     workflow_service = WorkflowService(db)
@@ -745,37 +1023,37 @@ async def diff_versions(
     added_edges = sorted(to_edge_keys - from_edge_keys)
     removed_edges = sorted(from_edge_keys - to_edge_keys)
 
-    return {
-        "workflow_id": workflow_id,
-        "from_version_id": from_version_id,
-        "to_version_id": to_version_id,
-        "summary": {
-            "node_added": len(added_nodes),
-            "node_removed": len(removed_nodes),
-            "node_changed": len(changed_nodes),
-            "edge_added": len(added_edges),
-            "edge_removed": len(removed_edges),
-        },
-        "nodes": {
-            "added": added_nodes,
-            "removed": removed_nodes,
-            "changed": changed_nodes,
-        },
-        "edges": {
-            "added": added_edges,
-            "removed": removed_edges,
-        },
-    }
+    return WorkflowVersionsCompareResponse(
+        workflow_id=workflow_id,
+        from_version_id=from_version_id,
+        to_version_id=to_version_id,
+        summary=WorkflowVersionsDiffSummaryCounts(
+            node_added=len(added_nodes),
+            node_removed=len(removed_nodes),
+            node_changed=len(changed_nodes),
+            edge_added=len(added_edges),
+            edge_removed=len(removed_edges),
+        ),
+        nodes=WorkflowVersionsCompareNodesDiff(
+            added=added_nodes,
+            removed=removed_nodes,
+            changed=changed_nodes,
+        ),
+        edges=WorkflowVersionsCompareEdgesDiff(
+            added=added_edges,
+            removed=removed_edges,
+        ),
+    )
 
 
-@router.get("/{workflow_id}/versions/{version_id}", response_model=Dict[str, Any])
+@router.get("/{workflow_id}/versions/{version_id}", response_model=WorkflowVersionDetailResponse)
 async def get_version(
     http_request: Request,
     workflow_id: str,
     version_id: str,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)]
-) -> Dict[str, Any]:
+) -> WorkflowVersionDetailResponse:
     """获取版本详情（包含 DAG）"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     # 检查权限
@@ -810,11 +1088,11 @@ async def get_version(
         )
         raise AssertionError("unreachable")
 
-    return {
+    return WorkflowVersionDetailResponse(
         **_version_to_response(version).model_dump(),
-        "dag": version.dag.model_dump(),
-        "checksum": version.checksum
-    }
+        dag=version.dag,
+        checksum=version.checksum,
+    )
 
 
 @router.post("/{workflow_id}/versions/{version_id}/publish", response_model=WorkflowVersionResponse)
@@ -1250,7 +1528,7 @@ async def create_execution(
     return _execution_to_response(execution)
 
 
-@router.get("/{workflow_id}/executions", response_model=ListResponse)
+@router.get("/{workflow_id}/executions", response_model=WorkflowExecutionListEnvelope)
 async def list_executions(
     http_request: Request,
     workflow_id: str,
@@ -1261,7 +1539,7 @@ async def list_executions(
     *,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)]
-) -> ListResponse:
+) -> WorkflowExecutionListEnvelope:
     """列出执行记录"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     # 检查权限
@@ -1310,11 +1588,11 @@ async def list_executions(
             hydrated.append(item)
         executions = hydrated
     
-    return ListResponse(
-        items=[_execution_to_response(e).model_dump() for e in executions],
+    return WorkflowExecutionListEnvelope(
+        items=[_execution_to_response(e) for e in executions],
         total=total,
         limit=limit,
-        offset=offset
+        offset=offset,
     )
 
 
@@ -1370,7 +1648,7 @@ async def get_execution(
     return _execution_to_response(execution, node_timeline_override=node_timeline_override)
 
 
-@router.get("/{workflow_id}/executions/{execution_id}/errors", response_model=ListResponse)
+@router.get("/{workflow_id}/executions/{execution_id}/errors", response_model=WorkflowExecutionErrorLogsListEnvelope)
 async def list_execution_errors(
     http_request: Request,
     workflow_id: str,
@@ -1385,7 +1663,7 @@ async def list_execution_errors(
     *,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
-) -> ListResponse:
+) -> WorkflowExecutionErrorLogsListEnvelope:
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -1414,7 +1692,7 @@ async def list_execution_errors(
         )
         raise AssertionError("unreachable")
     if not execution.graph_instance_id:
-        return ListResponse(items=[], total=0, limit=limit, offset=offset)
+        return WorkflowExecutionErrorLogsListEnvelope(items=[], total=0, limit=limit, offset=offset)
     start_dt = _parse_query_iso_datetime(start_time)
     end_dt = _parse_query_iso_datetime(end_time)
     if start_time and start_dt is None:
@@ -1449,10 +1727,11 @@ async def list_execution_errors(
     )
     total = len(rows)
     sliced = rows[offset : offset + limit]
-    return ListResponse(items=sliced, total=total, limit=limit, offset=offset)
+    parsed = [WorkflowExecutionErrorLogRow.model_validate(r) for r in sliced]
+    return WorkflowExecutionErrorLogsListEnvelope(items=parsed, total=total, limit=limit, offset=offset)
 
 
-@router.get("/{workflow_id}/executions/{execution_id}/failure-report", response_model=Dict[str, Any])
+@router.get("/{workflow_id}/executions/{execution_id}/failure-report", response_model=WorkflowExecutionFailureReportResponse)
 async def get_execution_failure_report(
     http_request: Request,
     workflow_id: str,
@@ -1466,7 +1745,7 @@ async def get_execution_failure_report(
     *,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
-) -> Dict[str, Any]:
+) -> WorkflowExecutionFailureReportResponse:
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -1557,11 +1836,11 @@ async def get_execution_failure_report(
             redacted_report["redaction_applied"] = True
             redacted_report["redacted_key_count"] = redacted_count
             redacted_report["report_sha256"] = _compute_report_sha256(redacted_report)
-        return cast(Dict[str, Any], redacted_report)
+        return WorkflowExecutionFailureReportResponse.model_validate(cast(Dict[str, Any], redacted_report))
     report["redaction_applied"] = False
     report["redacted_key_count"] = 0
     report["report_sha256"] = _compute_report_sha256(report)
-    return report
+    return WorkflowExecutionFailureReportResponse.model_validate(report)
 
 
 @router.get("/{workflow_id}/executions/{execution_id}/failure-report/archive")
@@ -1579,7 +1858,7 @@ async def download_execution_failure_report_archive(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> Response:
-    report = await get_execution_failure_report(
+    report_model = await get_execution_failure_report(
         http_request=http_request,
         workflow_id=workflow_id,
         execution_id=execution_id,
@@ -1592,6 +1871,7 @@ async def download_execution_failure_report_archive(
         db=db,
         current_user=current_user,
     )
+    report = report_model.model_dump(mode="json")
     events: List[Dict[str, Any]] = []
     graph_instance_id = report.get("execution", {}).get("graph_instance_id")
     if isinstance(graph_instance_id, str) and graph_instance_id.strip():
@@ -1619,7 +1899,7 @@ async def download_execution_failure_report_archive(
     )
 
 
-@router.get("/{workflow_id}/executions/{execution_id}/call-chain", response_model=Dict[str, Any])
+@router.get("/{workflow_id}/executions/{execution_id}/call-chain", response_model=WorkflowExecutionCallChainResponse)
 async def get_execution_call_chain(
     http_request: Request,
     workflow_id: str,
@@ -1628,7 +1908,7 @@ async def get_execution_call_chain(
     *,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
-) -> Dict[str, Any]:
+) -> WorkflowExecutionCallChainResponse:
     """查询执行调用链（父子工作流）。"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     workflow_service = WorkflowService(db)
@@ -1667,13 +1947,13 @@ async def get_execution_call_chain(
         limit=limit,
         offset=0,
     )
-    chain = _build_execution_call_chain(root_execution, candidate_executions)
-    return {
-        "root_execution_id": root_execution.execution_id,
-        "correlation_id": chain["correlation_id"],
-        "items": chain["items"],
-        "total": len(chain["items"]),
-    }
+    correlation_id, chain_items = _build_execution_call_chain(root_execution, candidate_executions)
+    return WorkflowExecutionCallChainResponse(
+        root_execution_id=root_execution.execution_id,
+        correlation_id=correlation_id,
+        items=chain_items,
+        total=len(chain_items),
+    )
 
 
 async def _kernel_debug_snapshot(graph_instance_id: str) -> Dict[str, Any]:
@@ -1712,7 +1992,7 @@ async def _recent_events_debug(instance_id: Optional[str], limit: int = 80) -> A
         return [{"_error": str(e)}]
 
 
-@router.get("/{workflow_id}/executions/{execution_id}/debug")
+@router.get("/{workflow_id}/executions/{execution_id}/debug", response_model=WorkflowExecutionDebugResponse)
 async def get_execution_debug(
     http_request: Request,
     workflow_id: str,
@@ -1721,7 +2001,7 @@ async def get_execution_debug(
     *,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
-) -> Dict[str, Any]:
+) -> WorkflowExecutionDebugResponse:
     """
     工作流调试视图：聚合 hydrated 执行详情、内核快照与 execution_kernel 近期事件。
     需对工作流具有 read 权限。
@@ -1767,17 +2047,19 @@ async def get_execution_debug(
 
     recent_events = await _recent_events_debug_helper(execution.graph_instance_id, limit=event_limit)
 
-    return {
-        "execution": _execution_to_response(
+    return WorkflowExecutionDebugResponse(
+        execution=_execution_to_response(
             execution, node_timeline_override=node_timeline_override
-        ).model_dump(),
-        "kernel_snapshot": kernel_snapshot,
-        "recent_events": recent_events,
-        "debug": {
-            "graph_instance_id": execution.graph_instance_id,
-            "replay_hint": execution.graph_instance_id or execution.execution_id,
-        },
-    }
+        ),
+        kernel_snapshot=_as_optional_workflow_json_map(kernel_snapshot)
+        if isinstance(kernel_snapshot, dict)
+        else None,
+        recent_events=_as_workflow_json_records(recent_events if isinstance(recent_events, list) else []),
+        debug=WorkflowExecutionDebugBundle(
+            graph_instance_id=execution.graph_instance_id,
+            replay_hint=execution.graph_instance_id or execution.execution_id,
+        ),
+    )
 
 
 @router.delete("/{workflow_id}/executions/{execution_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -2433,13 +2715,13 @@ async def reject_execution_approval(
 
 # ==================== Quota Endpoints ====================
 
-@router.get("/{workflow_id}/quota", response_model=Dict[str, Any])
+@router.get("/{workflow_id}/quota", response_model=WorkflowGovernanceStatusResponse)
 async def get_quota_status(
     http_request: Request,
     workflow_id: str,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)]
-) -> Dict[str, Any]:
+) -> WorkflowGovernanceStatusResponse:
     """获取配额状态"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     # 检查权限
@@ -2462,17 +2744,17 @@ async def get_quota_status(
         )
     
     execution_manager = get_execution_manager()
-    return execution_manager.get_workflow_status(workflow_id)
+    return WorkflowGovernanceStatusResponse.model_validate(execution_manager.get_workflow_status(workflow_id))
 
 
-@router.put("/{workflow_id}/quota", response_model=Dict[str, Any])
+@router.put("/{workflow_id}/quota", response_model=WorkflowGovernanceStatusResponse)
 async def set_quota(
     http_request: Request,
     workflow_id: str,
     config: QuotaConfig,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)]
-) -> Dict[str, Any]:
+) -> WorkflowGovernanceStatusResponse:
     """设置配额"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     # 检查权限
@@ -2496,17 +2778,17 @@ async def set_quota(
     
     execution_manager = get_execution_manager()
     execution_manager.set_quota(workflow_id, config)
-    
-    return execution_manager.get_workflow_status(workflow_id)
+
+    return WorkflowGovernanceStatusResponse.model_validate(execution_manager.get_workflow_status(workflow_id))
 
 
-@router.get("/{workflow_id}/governance", response_model=Dict[str, Any])
+@router.get("/{workflow_id}/governance", response_model=WorkflowGovernanceStatusResponse)
 async def get_governance_config(
     http_request: Request,
     workflow_id: str,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
-) -> Dict[str, Any]:
+) -> WorkflowGovernanceStatusResponse:
     """获取 workflow 执行治理参数与状态（队列/背压/并发）"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     workflow_service = WorkflowService(db)
@@ -2527,17 +2809,17 @@ async def get_governance_config(
             details={"workflow_id": workflow_id, "action": "read"},
         )
     execution_manager = get_execution_manager()
-    return execution_manager.get_workflow_status(workflow_id)
+    return WorkflowGovernanceStatusResponse.model_validate(execution_manager.get_workflow_status(workflow_id))
 
 
-@router.put("/{workflow_id}/governance", response_model=Dict[str, Any])
+@router.put("/{workflow_id}/governance", response_model=WorkflowGovernanceStatusResponse)
 async def set_governance_config(
     http_request: Request,
     workflow_id: str,
     config: WorkflowGovernanceConfigRequest,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
-) -> Dict[str, Any]:
+) -> WorkflowGovernanceStatusResponse:
     """设置 workflow 执行治理参数（队列/背压）"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     workflow_service = WorkflowService(db)
@@ -2588,10 +2870,10 @@ async def set_governance_config(
             "backpressure_strategy": new_queue_cfg.get("backpressure_strategy"),
         },
     )
-    return new_status
+    return WorkflowGovernanceStatusResponse.model_validate(new_status)
 
 
-@router.get("/{workflow_id}/governance/audits", response_model=ListResponse)
+@router.get("/{workflow_id}/governance/audits", response_model=WorkflowGovernanceAuditListEnvelope)
 async def list_governance_audits(
     http_request: Request,
     workflow_id: str,
@@ -2600,7 +2882,7 @@ async def list_governance_audits(
     *,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
-) -> ListResponse:
+) -> WorkflowGovernanceAuditListEnvelope:
     """获取 workflow 治理配置变更审计记录"""
     tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
     workflow_service = WorkflowService(db)
@@ -2622,14 +2904,15 @@ async def list_governance_audits(
         )
 
     audit_repo = WorkflowGovernanceAuditRepository(db)
-    items = audit_repo.list_audits(workflow_id, limit=limit, offset=offset)
+    raw_items = audit_repo.list_audits(workflow_id, limit=limit, offset=offset)
     total = audit_repo.count_audits(workflow_id)
-    return ListResponse(items=items, total=total, limit=limit, offset=offset)
+    items = [WorkflowGovernanceAuditEntry.model_validate(x) for x in raw_items]
+    return WorkflowGovernanceAuditListEnvelope(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.post(
     "/{workflow_id}/tool-composition/usage",
-    response_model=Dict[str, Any],
+    response_model=ToolCompositionUsageRecordedResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def record_tool_composition_usage(
@@ -2638,7 +2921,7 @@ async def record_tool_composition_usage(
     request: ToolCompositionUsageRequest,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
-) -> Dict[str, Any]:
+) -> ToolCompositionUsageRecordedResponse:
     """记录工具组合使用行为（用于推荐学习）"""
     tenant_id = resolve_tenant_id(
         http_request, default_tenant=getattr(settings, "tenant_default_id", "default")
@@ -2668,7 +2951,7 @@ async def record_tool_composition_usage(
         template_id=request.template_id.strip(),
         tool_sequence=request.tool_sequence or [],
     )
-    return {"ok": True}
+    return ToolCompositionUsageRecordedResponse(ok=True)
 
 
 @router.get(
@@ -2714,7 +2997,8 @@ async def recommend_tool_composition_templates(
         current_tools=tools,
         limit=limit,
     )
-    return ToolCompositionRecommendResponse(items=items, total=len(items))
+    parsed = [ToolCompositionRecommendItem.model_validate(x) for x in items]
+    return ToolCompositionRecommendResponse(items=parsed, total=len(parsed))
 
 
 # ==================== Helper Functions ====================
@@ -3005,6 +3289,14 @@ def _parse_query_iso_datetime(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _workflow_error_log_optional_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 def _build_error_row_from_event(ev: ExecutionEvent, execution_id: str) -> Optional[Dict[str, Any]]:
     payload = ev.payload or {}
     node = str(payload.get("node_id") or "").strip()
@@ -3018,10 +3310,10 @@ def _build_error_row_from_event(ev: ExecutionEvent, execution_id: str) -> Option
         "timestamp": ts_iso,
         "node_id": node,
         "event_type": ev.event_type.value if hasattr(ev.event_type, "value") else str(ev.event_type),
-        "error_message": payload.get("error_message"),
-        "error_type": payload.get("error_type"),
-        "error_stack": payload.get("stack_trace"),
-        "failure_strategy": payload.get("failure_strategy"),
+        "error_message": _workflow_error_log_optional_str(payload.get("error_message")),
+        "error_type": _workflow_error_log_optional_str(payload.get("error_type")),
+        "error_stack": _workflow_error_log_optional_str(payload.get("stack_trace")),
+        "failure_strategy": _workflow_error_log_optional_str(payload.get("failure_strategy")),
         "retry_count": int(payload.get("retry_count") or 0),
     }
 
@@ -3341,25 +3633,28 @@ def _should_include_execution_in_call_chain(
 def _collect_node_timeline_and_agent_summaries(
     execution: WorkflowExecution,
     node_timeline_override: Optional[List[Dict[str, Any]]],
-) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    node_timeline: List[Dict[str, Any]]
+) -> tuple[List[WorkflowJsonRecord], List[WorkflowJsonRecord]]:
+    node_timeline_raw: List[Dict[str, Any]]
     if node_timeline_override:
-        node_timeline = _merge_timeline_with_node_states(node_timeline_override, execution)
+        node_timeline_raw = _merge_timeline_with_node_states(node_timeline_override, execution)
     else:
-        node_timeline = [_node_timeline_row(node) for node in (execution.node_states or [])]
+        node_timeline_raw = [_node_timeline_row(node) for node in (execution.node_states or [])]
 
-    agent_summaries: List[Dict[str, Any]] = []
+    agent_summaries_raw: List[Dict[str, Any]] = []
     for node in execution.node_states or []:
         summary = _agent_summary_from_node_output(node, _node_duration_ms(node))
         if summary is not None:
-            agent_summaries.append(summary)
+            agent_summaries_raw.append(summary)
 
-    if not agent_summaries and isinstance(execution.output_data, dict):
+    if not agent_summaries_raw and isinstance(execution.output_data, dict):
         fallback = execution.output_data.get("agent_summaries")
         if isinstance(fallback, list):
-            agent_summaries = fallback
+            agent_summaries_raw = [x for x in fallback if isinstance(x, dict)]
 
-    return node_timeline, agent_summaries
+    return (
+        _as_workflow_json_records(node_timeline_raw),
+        _as_workflow_json_records(agent_summaries_raw),
+    )
 
 
 def _execution_to_response(
@@ -3367,11 +3662,19 @@ def _execution_to_response(
     node_timeline_override: Optional[List[Dict[str, Any]]] = None,
 ) -> WorkflowExecutionResponse:
     """转换 WorkflowExecution 为响应格式；node_timeline_override 非空时以事件流为主，并与 node_states 合并补全缺失节点。"""
-    node_states = [n.model_dump(mode="json") for n in (execution.node_states or [])]
+    node_states = _as_workflow_json_records([n.model_dump(mode="json") for n in (execution.node_states or [])])
     node_timeline, agent_summaries = _collect_node_timeline_and_agent_summaries(
         execution=execution,
         node_timeline_override=node_timeline_override,
     )
+
+    od = execution.output_data
+    if od is None:
+        output_data = None
+    elif isinstance(od, dict):
+        output_data = _as_workflow_json_map(od)
+    else:
+        output_data = None
 
     return WorkflowExecutionResponse(
         execution_id=execution.execution_id,
@@ -3379,13 +3682,13 @@ def _execution_to_response(
         version_id=execution.version_id,
         state=execution.state.value,
         graph_instance_id=execution.graph_instance_id,
-        input_data=execution.input_data,
-        output_data=execution.output_data,
-        global_context=execution.global_context or {},
+        input_data=_as_workflow_json_map(execution.input_data),
+        output_data=output_data,
+        global_context=_as_workflow_json_map(execution.global_context or {}),
         trigger_type=execution.trigger_type,
         triggered_by=execution.triggered_by,
         error_message=execution.error_message,
-        error_details=execution.error_details,
+        error_details=_as_optional_workflow_json_map(execution.error_details),
         created_at=execution.created_at.isoformat() if execution.created_at else "",
         started_at=execution.started_at.isoformat() if execution.started_at else None,
         finished_at=execution.finished_at.isoformat() if execution.finished_at else None,
@@ -3395,11 +3698,13 @@ def _execution_to_response(
         wait_duration_ms=execution.wait_duration_ms,
         node_states=node_states,
         node_timeline=node_timeline,
-        replay={
-            "execution_id": execution.execution_id,
-            "graph_instance_id": execution.graph_instance_id,
-            "replay_key": execution.graph_instance_id or execution.execution_id,
-        },
+        replay=_as_workflow_json_map(
+            {
+                "execution_id": execution.execution_id,
+                "graph_instance_id": execution.graph_instance_id,
+                "replay_key": execution.graph_instance_id or execution.execution_id,
+            }
+        ),
         agent_summaries=agent_summaries,
     )
 
@@ -3453,11 +3758,12 @@ def _execution_to_status_response(
     execution: WorkflowExecution,
     node_timeline_override: Optional[List[Dict[str, Any]]] = None,
 ) -> WorkflowExecutionStatusResponse:
-    node_timeline: List[Dict[str, Any]] = []
+    node_timeline_raw: List[Dict[str, Any]]
     if node_timeline_override:
-        node_timeline = _merge_timeline_with_node_states(node_timeline_override, execution)
+        node_timeline_raw = _merge_timeline_with_node_states(node_timeline_override, execution)
     else:
-        node_timeline = [_node_timeline_row(n) for n in (execution.node_states or [])]
+        node_timeline_raw = [_node_timeline_row(n) for n in (execution.node_states or [])]
+    node_timeline = _as_workflow_json_records(node_timeline_raw)
     return WorkflowExecutionStatusResponse(
         execution_id=execution.execution_id,
         workflow_id=execution.workflow_id,
@@ -3475,7 +3781,7 @@ def _execution_to_status_response(
 def _build_execution_call_chain(
     root_execution: WorkflowExecution,
     candidates: List[WorkflowExecution],
-) -> Dict[str, Any]:
+) -> tuple[str, List[WorkflowExecutionCallChainItem]]:
     root_ctx = root_execution.global_context or {}
     correlation_id = str(root_ctx.get("correlation_id") or f"wfex_{root_execution.execution_id}").strip()
     scoped: List[WorkflowExecution] = [
@@ -3494,26 +3800,26 @@ def _build_execution_call_chain(
             ex.execution_id,
         )
     )
-    items: List[Dict[str, Any]] = []
+    items: List[WorkflowExecutionCallChainItem] = []
     for ex in scoped:
         ctx = ex.global_context or {}
         items.append(
-            {
-                "execution_id": ex.execution_id,
-                "workflow_id": ex.workflow_id,
-                "version_id": ex.version_id,
-                "state": ex.state.value,
-                "created_at": ex.created_at.isoformat() if ex.created_at else None,
-                "started_at": ex.started_at.isoformat() if ex.started_at else None,
-                "finished_at": ex.finished_at.isoformat() if ex.finished_at else None,
-                "parent_execution_id": ctx.get("parent_execution_id"),
-                "parent_node_id": ctx.get("parent_node_id"),
-                "correlation_id": ctx.get("correlation_id"),
-                "recovery_summaries": _execution_recovery_summaries(ex),
-                "collaboration_summaries": _execution_collaboration_summaries(ex),
-            }
+            WorkflowExecutionCallChainItem(
+                execution_id=ex.execution_id,
+                workflow_id=ex.workflow_id,
+                version_id=ex.version_id,
+                state=ex.state.value,
+                created_at=ex.created_at.isoformat() if ex.created_at else None,
+                started_at=ex.started_at.isoformat() if ex.started_at else None,
+                finished_at=ex.finished_at.isoformat() if ex.finished_at else None,
+                parent_execution_id=ctx.get("parent_execution_id"),
+                parent_node_id=ctx.get("parent_node_id"),
+                correlation_id=ctx.get("correlation_id"),
+                recovery_summaries=_as_workflow_json_records(_execution_recovery_summaries(ex)),
+                collaboration_summaries=_as_workflow_json_records(_execution_collaboration_summaries(ex)),
+            )
         )
-    return {"correlation_id": correlation_id, "items": items}
+    return correlation_id, items
 
 
 def _map_kernel_graph_state_to_workflow_state(kernel_state: str) -> Optional[str]:

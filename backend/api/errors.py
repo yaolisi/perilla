@@ -4,16 +4,22 @@ from typing import Any, Callable, Dict, Mapping, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.error_i18n import localize_error_message
 from log import logger
 
 
+class ApiErrorDetailsJsonMap(BaseModel):
+    """统一错误响应 error.details 中的自由 JSON 对象。"""
+
+    model_config = ConfigDict(extra="allow")
+
+
 class APIError(BaseModel):
     code: str = Field(default="api_error")
     message: str
-    details: Optional[Dict[str, Any]] = None
+    details: Optional[ApiErrorDetailsJsonMap] = None
     request_id: Optional[str] = None
     trace_id: Optional[str] = None
 

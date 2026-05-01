@@ -22,6 +22,7 @@ from core.inference.models.embedding_request import EmbeddingRequest
 from core.inference.models.embedding_response import EmbeddingResponse
 from core.inference.models.asr_request import ASRRequest
 from core.inference.models.asr_response import ASRResponse
+from core.inference.models.metadata import AsrSegmentJsonMap, inference_metadata_as_dict
 from core.inference.stats.tracker import record_inference, estimate_tokens
 
 from core.runtime import (
@@ -288,7 +289,7 @@ class ProviderRuntimeAdapter:
         # Explicit multimodal compatibility check (no silent degradation).
         self._validate_multimodal_support(descriptor, messages)
 
-        meta = getattr(request, "metadata", {}) or {}
+        meta = inference_metadata_as_dict(getattr(request, "metadata", None))
         logger.info(
             "[ProviderRuntimeAdapter] generate provider=%s model=%s runtime=%s session_id=%s trace_id=%s agent_id=%s",
             getattr(descriptor, "provider", provider),
@@ -417,7 +418,7 @@ class ProviderRuntimeAdapter:
         # Explicit multimodal compatibility check (no silent degradation).
         self._validate_multimodal_support(descriptor, messages)
 
-        meta = getattr(request, "metadata", {}) or {}
+        meta = inference_metadata_as_dict(getattr(request, "metadata", None))
         logger.info(
             "[ProviderRuntimeAdapter] stream provider=%s model=%s runtime=%s session_id=%s trace_id=%s agent_id=%s",
             getattr(descriptor, "provider", provider),
@@ -526,7 +527,7 @@ class ProviderRuntimeAdapter:
 
         queue = queue_manager.get_queue(model_id_key, runtime_type)
         texts = [request.input] if isinstance(request.input, str) else list(request.input)
-        meta = getattr(request, "metadata", {}) or {}
+        meta = inference_metadata_as_dict(getattr(request, "metadata", None))
         logger.info(
             "[ProviderRuntimeAdapter] embed provider=%s model=%s runtime=%s batch=%s session_id=%s trace_id=%s agent_id=%s",
             getattr(descriptor, "provider", provider),
@@ -588,7 +589,7 @@ class ProviderRuntimeAdapter:
         if model_type != "asr":
             raise ValueError(f"Model {descriptor.id} is not an ASR model (model_type={model_type})")
 
-        meta = getattr(request, "metadata", {}) or {}
+        meta = inference_metadata_as_dict(getattr(request, "metadata", None))
         logger.info(
             "[ProviderRuntimeAdapter] transcribe provider=%s model=%s runtime=%s session_id=%s trace_id=%s agent_id=%s",
             getattr(descriptor, "provider", provider),
@@ -658,7 +659,9 @@ class ProviderRuntimeAdapter:
                 audio_path = str(Path(resolved).resolve())
 
             async def _transcribe_coro() -> Any:
-                return await runtime.transcribe(audio_path, options=request.options or {})
+                return await runtime.transcribe(
+                    audio_path, options=inference_metadata_as_dict(request.options)
+                )
             try:
                 result = await self._run_with_preemption_retry(
                     lambda: queue.run(
@@ -680,7 +683,9 @@ class ProviderRuntimeAdapter:
             return ASRResponse(
                 text=str(result.get("text", "") or ""),
                 language=str(result.get("language", "unknown") or "unknown"),
-                segments=result.get("segments") or [],
+                segments=[
+                    AsrSegmentJsonMap.model_validate(s) for s in (result.get("segments") or [])
+                ],
                 provider=getattr(descriptor, "provider", ""),
                 model=getattr(descriptor, "id", model_id),
                 model_alias=request.model_alias,

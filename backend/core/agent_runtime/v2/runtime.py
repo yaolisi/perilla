@@ -12,8 +12,8 @@ from pathlib import Path
 
 from log import logger, log_structured
 from .observability import AgentV2Metrics
-from core.agent_runtime.definition import AgentDefinition
-from core.agent_runtime.session import AgentSession
+from core.agent_runtime.definition import AgentDefinition, agent_model_params_as_dict
+from core.agent_runtime.session import AgentSession, AgentSessionStateJsonMap, agent_session_state_as_dict
 from core.agent_runtime.loop import AgentLoop as LegacyAgentLoop
 from core.agent_runtime.executor import AgentExecutor
 from .models import AgentState, ExecutionMode, Plan, ExecutionTrace
@@ -36,7 +36,7 @@ def _apply_agent_plan_execution_defaults(plan: Plan, agent: AgentDefinition) -> 
     "default_max_retries": 2, "default_retry_interval_seconds": 1.0, "default_on_timeout_strategy": "continue"}}
     前端与类型说明见 `frontend/src/utils/planExecutionConfig.ts`。
     """
-    pe = (agent.model_params or {}).get("plan_execution")
+    pe = agent_model_params_as_dict(agent.model_params).get("plan_execution")
     if not isinstance(pe, dict):
         return
     if plan.max_parallel_in_group is None and pe.get("max_parallel_in_group") is not None:
@@ -122,8 +122,9 @@ class AgentRuntime:
 
     def _resolve_execution_strategy(self, agent: AgentDefinition) -> str:
         strategy = (getattr(agent, "execution_strategy", None) or "").strip().lower()
-        if not strategy and isinstance(getattr(agent, "model_params", None), dict):
-            strategy = str(agent.model_params.get("execution_strategy") or "").strip().lower()
+        _mp = agent_model_params_as_dict(getattr(agent, "model_params", None))
+        if not strategy and _mp:
+            strategy = str(_mp.get("execution_strategy") or "").strip().lower()
         if strategy in {"serial", "parallel_kernel"}:
             return strategy
         return "parallel_kernel" if self._should_use_kernel(agent) else "serial"
@@ -308,8 +309,9 @@ class AgentRuntime:
             "user_id": user_id,
             "session_id": session.session_id,
         }
-        if session.state and isinstance(session.state, dict) and "project_info" in session.state:
-            plan_context["project_info"] = session.state.get("project_info")
+        _persist_snapshot = agent_session_state_as_dict(session.state)
+        if _persist_snapshot.get("project_info") is not None:
+            plan_context["project_info"] = _persist_snapshot.get("project_info")
         plan_creation_start = time.perf_counter()
         plan = await self.planner.create_plan(
             agent=agent,
@@ -324,7 +326,7 @@ class AgentRuntime:
         # 3. 初始化 State
         state = AgentState(
             agent_id=agent.agent_id,
-            persistent_state=session.state or {},
+            persistent_state=agent_session_state_as_dict(session.state),
             runtime_state={},
         )
         
@@ -551,7 +553,7 @@ class AgentRuntime:
             session.status = "finished"
         
         # 更新 session state
-        session.state = state.persistent_state
+        session.state = AgentSessionStateJsonMap.model_validate(dict(state.persistent_state))
 
         model_params = (getattr(plan, "context", None) or {}).get("model_params") or {}
         show_intermediate = bool(model_params.get("skill_chain_show_intermediate"))

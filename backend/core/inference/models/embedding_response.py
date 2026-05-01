@@ -2,9 +2,11 @@
 V2.8 Inference Gateway Layer - Embedding Response Model
 """
 
-from typing import Any, Dict, List
+from typing import List
 
 from pydantic import BaseModel, Field
+
+from core.inference.models.metadata import InferenceMetadataJsonMap
 
 
 class EmbeddingResponse(BaseModel):
@@ -23,7 +25,10 @@ class EmbeddingResponse(BaseModel):
     provider: str = Field(default="", description="Provider name")
     model: str = Field(default="", description="Actual model used")
     model_alias: str = Field(default="", description="Original alias requested")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    metadata: InferenceMetadataJsonMap = Field(
+        default_factory=InferenceMetadataJsonMap,
+        description="Additional metadata",
+    )
 
     @property
     def success(self) -> bool:

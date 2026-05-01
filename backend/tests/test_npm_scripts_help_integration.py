@@ -67,6 +67,12 @@ def test_npm_scripts_json_prints_hint_to_stderr_and_stdout_is_json() -> None:
     assert "POST /api/system/roadmap/monthly-review" in result.stderr
     payload = json.loads(result.stdout)
     assert isinstance(payload, dict)
+    assert payload.get("test-frontend-unit") == (
+        "npm run check-nvmrc-align && npm --prefix frontend run test:unit"
+    )
+    assert payload.get("test-frontend-unit-coverage") == (
+        "npm run check-nvmrc-align && npm --prefix frontend run test:unit:coverage"
+    )
 
 
 def test_npm_scripts_missing_package_json_prints_followups_to_stderr(tmp_path: Path) -> None:
