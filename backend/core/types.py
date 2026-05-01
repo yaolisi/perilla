@@ -107,7 +107,15 @@ class RAGConfig(BaseModel):
     # embedding 默认做了 L2 normalize（单位向量），因此常见距离范围大致在 0~2
     score_threshold: Optional[float] = Field(default=1.2, ge=0, le=2, description="距离阈值（distance<=threshold 才返回；默认1.2，范围0-2）")
     max_context_tokens: int = Field(default=2000, ge=100, le=10000, description="RAG 上下文最大 token 数（用于截断）")
-    
+    multi_hop_enabled: bool = Field(default=False, description="运行时多跳检索：首轮不足时扩展查询再检索并合并")
+    multi_hop_max_rounds: int = Field(default=3, ge=2, le=5, description="多跳检索最大轮数（含首轮）")
+    multi_hop_min_chunks: int = Field(default=2, ge=0, le=50, description="合并后 chunk 数低于该值则继续下一轮；0 表示不按数量触发")
+    multi_hop_min_best_relevance: float = Field(
+        default=0.0, ge=0, le=1, description="最佳 relevance 低于该值则继续下一轮；0 表示不按分数触发"
+    )
+    multi_hop_relax_relevance: bool = Field(default=True, description="第二轮及以后温和放宽 min_relevance_score")
+    multi_hop_feedback_chars: int = Field(default=320, ge=80, le=2000, description="相关性反馈拼接时从高分 chunk 抽取的最大总字符数")
+
     @model_validator(mode='after')
     def validate_knowledge_base(self) -> Self:
         """验证至少提供一个知识库 ID"""

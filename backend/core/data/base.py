@@ -13,9 +13,13 @@ from sqlalchemy import create_engine, MetaData, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session, declarative_base
 from sqlalchemy.exc import OperationalError
+from starlette.requests import HTTPConnection
 
 from config.settings import settings
 from log import logger
+
+# 与 middleware/audit_log 等约定：请求级 Session 的 bind，用于响应后写库与 Depends(get_db) 对齐（含测试 override）
+DB_ENGINE_STATE_KEY = "sqlalchemy_engine"
 
 Base = declarative_base()
 metadata = MetaData()
@@ -113,6 +117,16 @@ def get_engine() -> Engine:
     return _engine
 
 
+def sessionmaker_for_engine(engine: Engine) -> sessionmaker:
+    """与 SessionLocal 相同选项；后台任务 / SSE 等可从现有 Session 的 engine（含测试 override）开新连接。"""
+    return sessionmaker(
+        bind=engine,
+        autocommit=False,
+        autoflush=False,
+        expire_on_commit=False,
+    )
+
+
 class _SessionLocalFactory:
     """与历史 sessionmaker 用法兼容：SessionLocal() 返回 Session。"""
 
@@ -120,21 +134,17 @@ class _SessionLocalFactory:
 
     def __call__(self, **kwargs: Any) -> Session:
         if self._maker is None:
-            self._maker = sessionmaker(
-                autocommit=False,
-                autoflush=False,
-                bind=get_engine(),
-                expire_on_commit=False,
-            )
+            self._maker = sessionmaker_for_engine(get_engine())
         return self._maker(**kwargs)
 
 
 SessionLocal = _SessionLocalFactory()
 
 
-def get_db() -> Generator[Session, None, None]:
+def get_db(conn: HTTPConnection) -> Generator[Session, None, None]:
     """获取数据库会话（依赖注入）。用法：FastAPI Depends(get_db)"""
     db = SessionLocal()
+    setattr(conn.state, DB_ENGINE_STATE_KEY, db.get_bind())
     try:
         yield db
     finally:

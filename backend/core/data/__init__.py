@@ -3,6 +3,7 @@
 """
 from core.data.base import (
     Base,
+    DB_ENGINE_STATE_KEY,
     SessionLocal,
     get_db,
     db_session,
@@ -15,6 +16,7 @@ from core.data.vector_search import VectorSearchProvider, get_vector_provider
 
 __all__ = [
     "Base",
+    "DB_ENGINE_STATE_KEY",
     "SessionLocal",
     "get_db",
     "db_session",

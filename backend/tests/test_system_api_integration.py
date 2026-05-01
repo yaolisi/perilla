@@ -1,24 +1,32 @@
 from __future__ import annotations
 
 import asyncio
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
+from starlette.requests import Request
 
 from api import system as system_api
-from api.errors import register_error_handlers
+
+from tests.helpers import make_fastapi_app_router_only
+
+
+def _override_get_db_with_fake(client: TestClient, fake_db: object) -> None:
+    """让 event-bus replay 等路由使用与集成测试一致的 fake Session（替代已移除的 SessionLocal monkeypatch）。"""
+
+    def _gen(_request: Request):
+        yield fake_db  # type: ignore[misc]
+
+    client.app.dependency_overrides[system_api.get_db] = _gen
 
 
 def _build_client() -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
+    app = make_fastapi_app_router_only(system_api)
 
     @app.middleware("http")
     async def _inject_test_user(request, call_next):  # type: ignore[no-untyped-def]
         request.state.user_id = request.headers.get("X-User-Id")
         return await call_next(request)
 
-    app.include_router(system_api.router)
     app.dependency_overrides[system_api.require_authenticated_platform_admin] = lambda: None
     app.dependency_overrides[system_api.require_platform_admin] = lambda: None
     return TestClient(app)
@@ -524,7 +532,7 @@ def test_event_bus_dlq_replay_idempotency_hit_returns_cached_result(monkeypatch)
         calls["n"] += 1
         return {"dry_run": False, "candidate": 1, "replayed": 1, "failed": 0, "grouped": {"x": {"total": 1, "replayed": 1, "failed": 0}}}
 
-    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    _override_get_db_with_fake(client, _FakeDB())
     monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
     monkeypatch.setattr(system_api, "replay_event_bus_dlq", _fake_replay)
 
@@ -583,7 +591,7 @@ def test_event_bus_dlq_replay_idempotency_conflict(monkeypatch):
         await asyncio.sleep(0)
         return {"dry_run": False, "candidate": 1, "replayed": 1, "failed": 0, "grouped": {}}
 
-    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    _override_get_db_with_fake(client, _FakeDB())
     monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
     monkeypatch.setattr(system_api, "replay_event_bus_dlq", _fake_replay)
 
@@ -715,7 +723,7 @@ def test_event_bus_dlq_replay_accepts_multiple_idempotency_headers(monkeypatch, 
         calls["n"] += 1
         return {"dry_run": False, "candidate": 1, "replayed": 1, "failed": 0, "grouped": {}}
 
-    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    _override_get_db_with_fake(client, _FakeDB())
     monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
     monkeypatch.setattr(system_api, "replay_event_bus_dlq", _fake_replay)
 
@@ -767,7 +775,7 @@ def test_event_bus_dlq_replay_idempotency_header_priority(monkeypatch):
         await asyncio.sleep(0)
         return {"dry_run": False, "candidate": 1, "replayed": 1, "failed": 0, "grouped": {}}
 
-    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    _override_get_db_with_fake(client, _FakeDB())
     monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
     monkeypatch.setattr(system_api, "replay_event_bus_dlq", _fake_replay)
 
@@ -816,7 +824,7 @@ def test_event_bus_dlq_replay_idempotency_in_progress(monkeypatch):
             _ = kwargs
             return _FakeClaim(_FakeRecord(), is_new=False, conflict=False)
 
-    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    _override_get_db_with_fake(client, _FakeDB())
     monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
 
     resp = client.post(
@@ -860,7 +868,7 @@ def test_event_bus_dlq_replay_idempotency_previous_failed(monkeypatch):
             _ = kwargs
             return _FakeClaim(_FakeRecord(), is_new=False, conflict=False)
 
-    monkeypatch.setattr(system_api, "SessionLocal", lambda: _FakeDB())
+    _override_get_db_with_fake(client, _FakeDB())
     monkeypatch.setattr(system_api, "IdempotencyService", _FakeIdempotencyService)
 
     resp = client.post(

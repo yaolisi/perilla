@@ -92,8 +92,15 @@ const ragTrace = ref<RAGTraceResponse | null>(null)
 
 const ragUsed = computed(() => {
   const rag = (props.meta as any)?.rag
-  // 只有当 retrieved_count > 0 时才认为"真正使用了知识库"
-  return Boolean(rag?.used && rag?.retrieved_count > 0)
+  if (!rag?.used) return false
+  const mh = rag?.multi_hop as { rounds?: number } | undefined
+  if (mh?.rounds != null && mh.rounds >= 1) return true
+  return Boolean(rag?.retrieved_count > 0)
+})
+
+const ragMultiHopInfo = computed(() => {
+  const rag = (props.meta as { rag?: { multi_hop?: { rounds?: number; queries?: string[] } } })?.rag
+  return rag?.multi_hop ?? null
 })
 
 async function toggleRag() {
@@ -268,6 +275,19 @@ const vFocus = {
           </div>
 
           <template v-if="!ragLoading && !ragError && ragTrace?.rag_used && ragTrace?.trace">
+            <div
+              v-if="ragMultiHopInfo?.rounds != null"
+              class="rounded-lg border border-border/50 bg-background/50 px-2 py-1.5 text-[11px] space-y-1"
+            >
+              <div class="text-muted-foreground">
+                <span class="font-medium text-foreground">{{ t('chat.message.multi_hop_label') }}:</span>
+                {{ ragMultiHopInfo.rounds }} {{ t('chat.message.multi_hop_rounds') }}
+              </div>
+              <div v-if="ragMultiHopInfo.queries?.length" class="text-muted-foreground/90 font-mono break-all whitespace-pre-wrap max-h-28 overflow-y-auto">
+                <span class="font-medium text-foreground font-sans">{{ t('chat.message.multi_hop_queries') }}:</span>
+                {{ ragMultiHopInfo.queries.join(' → ') }}
+              </div>
+            </div>
             <div class="text-muted-foreground">
               <span class="font-medium text-foreground">{{ t('chat.message.rag_name') }}:</span>
               {{ ragTrace.trace.rag_type }} / {{ ragTrace.trace.rag_id }}

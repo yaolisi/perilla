@@ -1,25 +1,19 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import memory as memory_api
 from api import sessions as sessions_api
-from api.errors import register_error_handlers
+
+from tests.helpers import build_minimal_router_test_client
 
 
 def _memory_client() -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(memory_api.router)
-    return TestClient(app)
+    return build_minimal_router_test_client(memory_api)
 
 
 def _sessions_client() -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(sessions_api.router)
-    return TestClient(app)
+    return build_minimal_router_test_client(sessions_api)
 
 
 def test_openapi_memory_named_schemas() -> None:

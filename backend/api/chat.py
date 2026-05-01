@@ -539,9 +539,9 @@ async def _apply_rag_plugin_if_needed(
     session_id: Optional[str],
     user_id: str,
     message_id: str,
-) -> tuple[Optional[str], int]:
+) -> tuple[Optional[str], int, Optional[dict[str, Any]]]:
     if not req.rag:
-        return None, 0
+        return None, 0, None
     try:
         from core.knowledge.knowledge_base_store import KnowledgeBaseStore, KnowledgeBaseConfig
         from core.models.registry import get_model_registry
@@ -567,10 +567,15 @@ async def _apply_rag_plugin_if_needed(
         metadata = rag_result.get("metadata", {}) if isinstance(rag_result, dict) else {}
         trace_id = metadata.get("trace_id") if isinstance(metadata, dict) else None
         retrieved_count = metadata.get("retrieved_chunks", 0) if isinstance(metadata, dict) else 0
-        return cast(Optional[str], trace_id), int(retrieved_count or 0)
+        rag_extra: dict[str, Any] = {}
+        if isinstance(metadata, dict):
+            mh = metadata.get("multi_hop")
+            if mh:
+                rag_extra["multi_hop"] = mh
+        return cast(Optional[str], trace_id), int(retrieved_count or 0), (rag_extra if rag_extra else None)
     except Exception as e:
         logger.error(f"RAG Plugin execution failed: {e}", exc_info=True)
-        return None, 0
+        return None, 0, None
 
 
 def _prepare_chat_request_state(
@@ -699,6 +704,8 @@ def _handle_streaming_chat(
     completion_id: str,
     created_time: int,
     trace_id: Optional[str],
+    retrieved_count: int,
+    rag_extra: Optional[dict[str, Any]],
     user_text: str,
     user_id: str,
     persistence_mode: str,
@@ -727,6 +734,8 @@ def _handle_streaming_chat(
         completion_id=completion_id,
         created_time=created_time,
         trace_id=trace_id,
+        retrieved_count=retrieved_count,
+        rag_extra=rag_extra,
         user_text=user_text,
         user_id=user_id,
         persistence_mode=persistence_mode,
@@ -941,6 +950,8 @@ async def _stream_event_generator(
     completion_id: str,
     created_time: int,
     trace_id: Optional[str],
+    retrieved_count: int,
+    rag_extra: Optional[dict[str, Any]],
     user_text: str,
     user_id: str,
     persistence_mode: str,
@@ -1020,14 +1031,32 @@ async def _stream_event_generator(
             persist_success_turn=persist_success_turn,
         )
         routing_meta = getattr(request.state, "chat_routing_metadata", None)
-        if routing_meta and not disconnected:
+        final_metadata: dict[str, Any] = {}
+        if isinstance(routing_meta, dict):
+            final_metadata.update(routing_meta)
+        elif routing_meta is not None:
+            try:
+                final_metadata.update(dict(routing_meta))
+            except Exception:
+                pass
+        if req.rag is not None:
+            rag_dict: dict[str, Any] = {
+                "used": bool(trace_id),
+                "trace_id": trace_id,
+                "retrieved_count": int(retrieved_count or 0),
+            }
+            if rag_extra:
+                rag_dict.update(rag_extra)
+            final_metadata["rag"] = rag_dict
+
+        if final_metadata and not disconnected:
             if stream_format == "openai":
-                final_chunk: dict[str, Any] = {
+                final_chunk = {
                     "id": completion_id,
                     "object": "chat.completion.chunk",
                     "created": created_time,
                     "model": model_id,
-                    "metadata": routing_meta,
+                    "metadata": final_metadata,
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 }
                 final_sse = _stream_sse_data(final_chunk)
@@ -1036,7 +1065,7 @@ async def _stream_event_generator(
                     {
                         "object": "perilla.stream.jsonl",
                         "d": True,
-                        "metadata": routing_meta,
+                        "metadata": final_metadata,
                         "finish_reason": "stop",
                     }
                 )
@@ -1045,7 +1074,7 @@ async def _stream_event_generator(
                     {
                         "object": "perilla.stream.md",
                         "d": True,
-                        "metadata": routing_meta,
+                        "metadata": final_metadata,
                     }
                 )
             if resume_enabled and stream_id and resume_store:
@@ -1092,6 +1121,8 @@ async def _handle_nonstream_chat(
     completion_id: str,
     created_time: int,
     trace_id: Optional[str],
+    retrieved_count: int,
+    rag_extra: Optional[dict[str, Any]],
     user_text: str,
     user_id: str,
     persist_success_turn: Callable[[str, bool], Optional[Any]],
@@ -1149,6 +1180,16 @@ async def _handle_nonstream_chat(
         getattr(request.state, "chat_routing_metadata", None)
         or {"resolved_model": model_id, "resolved_via": "unknown"},
     )
+    response_meta = dict(routing_meta)
+    if req.rag is not None:
+        rag_dict: dict[str, Any] = {
+            "used": bool(trace_id),
+            "trace_id": trace_id,
+            "retrieved_count": int(retrieved_count or 0),
+        }
+        if rag_extra:
+            rag_dict.update(rag_extra)
+        response_meta["rag"] = rag_dict
 
     return ChatCompletionResponse(
         id=completion_id,
@@ -1162,7 +1203,7 @@ async def _handle_nonstream_chat(
             )
         ],
         usage=None,
-        metadata=routing_meta,
+        metadata=response_meta,
     )
 
 
@@ -1177,7 +1218,7 @@ async def _prepare_chat_runtime_context(
     last_user_msg: Optional[LLMMessage],
     request_id: Optional[str],
     message_id: str,
-) -> tuple[Optional[str], int]:
+) -> tuple[Optional[str], int, Optional[dict[str, Any]]]:
     await _prepare_chat_model_runtime(user_id=user_id, session_id=session_id, actual_model_id=actual_model_id)
     _persist_full_user_turn(
         user_id=user_id,
@@ -1301,6 +1342,7 @@ def _build_persist_success_turn(
     completion_id: str,
     trace_id: Optional[str],
     retrieved_count: int,
+    rag_extra: Optional[dict[str, Any]] = None,
 ) -> Callable[[str, bool], Optional[Any]]:
     model_id = cast(str, req.model)
 
@@ -1315,10 +1357,17 @@ def _build_persist_success_turn(
             user_text=user_text,
             last_user_msg=last_user_msg,
         )
+        rag_meta: dict[str, Any] = {
+            "used": bool(trace_id),
+            "trace_id": trace_id,
+            "retrieved_count": retrieved_count if trace_id else 0,
+        }
+        if rag_extra:
+            rag_meta.update(rag_extra)
         msg_meta: dict[str, Any] = {
             "completion_id": completion_id,
             "stream": is_stream,
-            "rag": {"used": bool(trace_id), "trace_id": trace_id, "retrieved_count": retrieved_count if trace_id else 0},
+            "rag": rag_meta,
             "params": {
                 "temperature": req.temperature,
                 "top_p": req.top_p,
@@ -1390,7 +1439,7 @@ async def chat_completions(
     completion_id = f"chatcmpl-{uuid.uuid4()}"
     message_id = f"msg_{uuid.uuid4().hex[:16]}"
 
-    trace_id, retrieved_count = await _prepare_chat_runtime_context(
+    trace_id, retrieved_count, rag_extra = await _prepare_chat_runtime_context(
         req=req,
         user_id=user_id,
         session_id=session_id,
@@ -1419,6 +1468,7 @@ async def chat_completions(
         completion_id=completion_id,
         trace_id=trace_id,
         retrieved_count=retrieved_count,
+        rag_extra=rag_extra,
     )
 
     if req.stream:
@@ -1430,6 +1480,8 @@ async def chat_completions(
             completion_id=completion_id,
             created_time=created_time,
             trace_id=trace_id,
+            retrieved_count=retrieved_count,
+            rag_extra=rag_extra,
             user_text=user_text,
             user_id=user_id,
             persistence_mode=persistence_mode,
@@ -1446,6 +1498,8 @@ async def chat_completions(
         completion_id=completion_id,
         created_time=created_time,
         trace_id=trace_id,
+        retrieved_count=retrieved_count,
+        rag_extra=rag_extra,
         user_text=user_text,
         user_id=user_id,
         persist_success_turn=_persist_success_turn,

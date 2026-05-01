@@ -10,8 +10,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import asyncio
 
+from sqlalchemy.engine import Engine
+
 from config.settings import settings
-from core.data.base import SessionLocal
+from core.data.base import get_engine, sessionmaker_for_engine
 from core.data.models.workflow import WorkflowExecutionQueueORM
 from core.workflows.repository import WorkflowExecutionQueueRepository
 from core.workflows.governance.concurrency_limiter import ConcurrencyLimiter
@@ -57,7 +59,15 @@ class ExecutionManager:
         backpressure_strategy: Literal["wait", "reject"] = "wait",
         pending_warn_seconds: float = 8.0,
         pending_warn_interval_seconds: float = 5.0,
+        *,
+        persist_engine: Optional[Engine] = None,
     ):
+        """
+        persist_engine:
+            队列 ORM 持久化使用的引擎；默认 None 时回落 get_engine()。
+            测试或与 Depends(get_db) 同库时可注入，避免单独 monkeypatch get_engine。
+        """
+        self._persist_engine = persist_engine
         self.concurrency_limiter = ConcurrencyLimiter(
             global_limit=global_concurrency_limit,
             per_workflow_limit=per_workflow_concurrency_limit
@@ -85,6 +95,9 @@ class ExecutionManager:
         self._pending_warn_interval_seconds: float = max(1.0, float(pending_warn_interval_seconds))
         self._lease_owner: str = f"exec-manager-{id(self)}"
         self._recover_persisted_queue()
+
+    def _persist_bind(self) -> Engine:
+        return self._persist_engine if self._persist_engine is not None else get_engine()
 
     async def request_execution(
         self,
@@ -527,7 +540,7 @@ class ExecutionManager:
             del samples[: len(samples) - 100]
 
     def _persist_enqueue(self, request: ExecutionRequest, queue_order: int) -> None:
-        with SessionLocal() as db:
+        with sessionmaker_for_engine(self._persist_bind())() as db:
             repo = WorkflowExecutionQueueRepository(db)
             repo.enqueue(
                 execution_id=request.execution_id,
@@ -538,20 +551,20 @@ class ExecutionManager:
             )
 
     def _persist_mark_done(self, execution_id: str) -> None:
-        with SessionLocal() as db:
+        with sessionmaker_for_engine(self._persist_bind())() as db:
             WorkflowExecutionQueueRepository(db).mark_done(execution_id)
 
     def _persist_mark_cancelled(self, execution_id: str) -> None:
-        with SessionLocal() as db:
+        with sessionmaker_for_engine(self._persist_bind())() as db:
             WorkflowExecutionQueueRepository(db).mark_cancelled(execution_id)
 
     def _lease_next(self) -> Optional[WorkflowExecutionQueueORM]:
-        with SessionLocal() as db:
+        with sessionmaker_for_engine(self._persist_bind())() as db:
             return WorkflowExecutionQueueRepository(db).lease_next(lease_owner=self._lease_owner, lease_seconds=30)
 
     def _recover_persisted_queue(self) -> None:
         try:
-            with SessionLocal() as db:
+            with sessionmaker_for_engine(self._persist_bind())() as db:
                 rows = WorkflowExecutionQueueRepository(db).list_active()
             for row in rows:
                 row_any = cast(Any, row)
@@ -583,6 +596,12 @@ class ExecutionManager:
 _execution_manager: Optional["ExecutionManager"] = None
 
 
+def reset_execution_manager_singleton() -> None:
+    """清空全局 ExecutionManager 单例（主要用于测试在同进程内切换 persist_engine / 隔离用例）。"""
+    global _execution_manager
+    _execution_manager = None
+
+
 def get_execution_manager(
     global_concurrency_limit: int = 10,
     per_workflow_concurrency_limit: int = 3,
@@ -590,6 +609,8 @@ def get_execution_manager(
     backpressure_strategy: Literal["wait", "reject"] = "wait",
     pending_warn_seconds: Optional[float] = None,
     pending_warn_interval_seconds: Optional[float] = None,
+    *,
+    persist_engine: Optional[Engine] = None,
 ) -> "ExecutionManager":
     """
     获取全局 ExecutionManager 单例。
@@ -597,6 +618,8 @@ def get_execution_manager(
     Workflow API/Runtime 需要共享同一份治理状态，否则每个请求都 new 一个 Manager 会导致：
     - 并发控制失效（每个请求都有独立 semaphore）
     - 队列/背压无法生效
+
+    persist_engine 仅在首次创建单例时生效；后续调用传入会被忽略。
     """
     global _execution_manager
     if _execution_manager is None:
@@ -617,5 +640,10 @@ def get_execution_manager(
             backpressure_strategy=backpressure_strategy,
             pending_warn_seconds=warn_seconds,
             pending_warn_interval_seconds=warn_interval_seconds,
+            persist_engine=persist_engine,
+        )
+    elif persist_engine is not None:
+        logger.debug(
+            "[ExecutionManager] persist_engine ignored (singleton already initialized)"
         )
     return _execution_manager

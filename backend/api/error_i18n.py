@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
+
+from starlette.requests import Request
 
 
 # Grouped by API domain for maintainability; merged into _ERROR_MESSAGES below.
@@ -318,6 +320,10 @@ AGENT_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
     "agent_invalid_tool_failure_reflection": {
         "en": "invalid tool failure reflection config",
         "zh": "工具失败反思配置不合法",
+    },
+    "agent_invalid_model_params_rag": {
+        "en": "invalid RAG parameters in model_params",
+        "zh": "model_params 中 RAG 检索参数不合法",
     },
     "agent_invalid_workspace_path": {
         "en": "invalid workspace path",
@@ -754,6 +760,20 @@ _ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
     **SESSION_ERROR_MESSAGES,
     **MISC_ERROR_MESSAGES,
 }
+
+
+def resolve_accept_language_for_sse(request: Request, lang_query: Optional[str]) -> Optional[str]:
+    """
+    EventSource 无法设置自定义请求头，SPA 通过 ?lang=zh|en 传递界面语言。
+    优先使用该参数，否则回退到 Accept-Language。
+    """
+    if lang_query is not None:
+        raw = str(lang_query).strip().lower()
+        if raw.startswith("zh"):
+            return "zh-CN, zh;q=0.9"
+        if raw.startswith("en"):
+            return "en-US, en;q=0.9"
+    return request.headers.get("accept-language")
 
 
 def _resolve_locale(accept_language: str | None) -> str:

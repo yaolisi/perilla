@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, reactive } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, reactive, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
@@ -36,6 +36,7 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import {
+  AgentApiError,
   updateAgent,
   getAgent,
   listModels,
@@ -53,6 +54,16 @@ import {
 import { TOOL_FAILURE_REFLECTION_MAX_PER_PLAN_RUN } from '@/constants/agentRuntime'
 import { isMcpSkillRecord, mergeEnabledSkillsMetaIntoSkillList } from '@/utils/skillMeta'
 import { useSystemConfigWithDebounce } from '@/composables/useSystemConfigWithDebounce'
+import {
+  buildRagModelParamsPayload,
+  defaultAgentRagFormState,
+  loadAgentRagFormFromModelParams,
+  stripRagModelParamsFromAgent,
+  validateAgentRagFormClient,
+} from '@/utils/agentRagModelParams'
+import { Switch } from '@/components/ui/switch'
+import { formatAgentMutationErrorMessage } from '@/utils/agentMutationMessages'
+import { pulseAgentKnowledgeOrRagOnMutationError } from '@/utils/agentRagUi'
 
 const route = useRoute()
 const router = useRouter()
@@ -93,6 +104,9 @@ const sdTagWeight = ref(0.3)
 const sdMinSemantic = ref(0)
 const sdMinHybrid = ref(0)
 
+const ragRetrievalForm = reactive(defaultAgentRagFormState())
+const kbSectionRef = ref<HTMLElement | null>(null)
+const ragSettingsSectionRef = ref<HTMLElement | null>(null)
 
 // Loading and data states
 const loadingAgent = ref(true)
@@ -404,10 +418,16 @@ const fetchAgentData = async () => {
       tfr && typeof tfr === 'object' && tfr.enabled === true,
     )
 
+    Object.assign(
+      ragRetrievalForm,
+      loadAgentRagFormFromModelParams(mpForm as Record<string, unknown>),
+    )
+
     mergeEnabledSkillsMetaIntoSkillList(availableSkills.value, agent.enabled_skills_meta)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
-    submitError.value = error instanceof Error ? error.message : 'Failed to load agent'
+    submitError.value =
+      formatAgentMutationErrorMessage(error, t) || t('agents.edit.load_failed')
   } finally {
     loadingAgent.value = false
   }
@@ -467,6 +487,20 @@ const handleUpdateAgent = async () => {
   if (!selectedModel.value) {
     submitError.value = t('agents.create.err_model_req')
     return
+  }
+
+  if (selectedKnowledgeBases.value.length > 0) {
+    const ragIssue = validateAgentRagFormClient(ragRetrievalForm)
+    if (ragIssue) {
+      submitError.value = t(`agents.create.${ragIssue}`)
+      await nextTick()
+      pulseAgentKnowledgeOrRagOnMutationError(
+        'agent_invalid_model_params_rag',
+        ragSettingsSectionRef.value,
+        kbSectionRef.value,
+      )
+      return
+    }
   }
 
   isSubmitting.value = true
@@ -533,6 +567,12 @@ const handleUpdateAgent = async () => {
           delete next.plan_execution
           delete next.tool_failure_reflection
         }
+        if (selectedKnowledgeBases.value.length > 0) {
+          const rp = buildRagModelParamsPayload(true, ragRetrievalForm)
+          if (rp) Object.assign(next, rp)
+        } else {
+          stripRagModelParamsFromAgent(next as Record<string, unknown>)
+        }
         return next
       })(),
     }
@@ -548,7 +588,13 @@ const handleUpdateAgent = async () => {
     }, 5000)
   } catch (error) {
     console.error('Failed to update agent:', error)
-    submitError.value = error instanceof Error ? error.message : t('agents.create.update_failed')
+    submitError.value = formatAgentMutationErrorMessage(error, t) || t('agents.create.update_failed')
+    await nextTick()
+    pulseAgentKnowledgeOrRagOnMutationError(
+      error instanceof AgentApiError ? error.code : undefined,
+      ragSettingsSectionRef.value,
+      kbSectionRef.value,
+    )
   } finally {
     isSubmitting.value = false
   }
@@ -684,7 +730,7 @@ onMounted(async () => {
         </section>
 
         <!-- 03. Knowledge Bases (RAG) -->
-        <section class="space-y-6 mb-12">
+        <section ref="kbSectionRef" class="space-y-6 mb-12">
           <h2 class="text-sm font-black text-blue-500 tracking-widest uppercase flex items-center gap-2">
             <Database class="w-4 h-4" />
             {{ t('agents.create.section_kb') }}
@@ -709,6 +755,131 @@ onMounted(async () => {
             </button>
             <div v-if="availableKnowledgeBases.length === 0" class="text-sm text-muted-foreground">
               {{ t('agents.create.no_kbs') }}
+            </div>
+          </div>
+
+          <div
+            v-if="!loadingKBs && selectedKnowledgeBases.length > 0"
+            ref="ragSettingsSectionRef"
+            class="mt-6 rounded-xl border border-border bg-muted/20 p-5 space-y-4 transition-shadow duration-300"
+          >
+            <div>
+              <h4 class="text-xs font-black text-muted-foreground uppercase tracking-wider">
+                {{ t('agents.create.rag_settings_title') }}
+              </h4>
+              <p class="text-xs text-muted-foreground/80 mt-1">{{ t('agents.create.rag_settings_hint') }}</p>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div class="space-y-2">
+                <label class="text-xs font-bold text-muted-foreground">{{ t('agents.create.rag_top_k_label') }}</label>
+                <Input
+                  v-model.number="ragRetrievalForm.rag_top_k"
+                  type="number"
+                  min="1"
+                  max="50"
+                  class="h-10 bg-background border-border"
+                />
+                <p class="text-[10px] text-muted-foreground">{{ t('agents.create.rag_top_k_hint') }}</p>
+              </div>
+              <div class="space-y-2">
+                <label class="text-xs font-bold text-muted-foreground">{{ t('agents.create.rag_threshold_label') }}</label>
+                <Input
+                  v-model="ragRetrievalForm.rag_score_threshold"
+                  type="text"
+                  inputmode="decimal"
+                  :placeholder="t('agents.create.rag_threshold_placeholder')"
+                  class="h-10 bg-background border-border"
+                />
+              </div>
+              <div class="space-y-2 sm:col-span-2">
+                <label class="text-xs font-bold text-muted-foreground">{{ t('agents.create.rag_mode_label') }}</label>
+                <Select v-model="ragRetrievalForm.rag_retrieval_mode">
+                  <SelectTrigger class="h-10 bg-background border-border">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="hybrid">{{ t('agents.create.rag_mode_hybrid') }}</SelectItem>
+                    <SelectItem value="vector">{{ t('agents.create.rag_mode_vector') }}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div class="space-y-2 sm:col-span-2">
+                <label class="text-xs font-bold text-muted-foreground">{{ t('agents.create.rag_min_rel_label') }}</label>
+                <Input
+                  v-model.number="ragRetrievalForm.rag_min_relevance_score"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  class="h-10 bg-background border-border max-w-[200px]"
+                />
+                <p class="text-[10px] text-muted-foreground">{{ t('agents.create.rag_min_rel_hint') }}</p>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4 space-y-3">
+              <div class="flex items-start justify-between gap-4">
+                <div>
+                  <p class="text-xs font-bold text-foreground">{{ t('agents.create.rag_mh_title') }}</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('agents.create.rag_mh_hint') }}</p>
+                </div>
+                <Switch
+                  :checked="ragRetrievalForm.rag_multi_hop_enabled"
+                  @update:checked="(v: boolean) => { ragRetrievalForm.rag_multi_hop_enabled = v }"
+                />
+              </div>
+              <div
+                v-if="ragRetrievalForm.rag_multi_hop_enabled"
+                class="grid grid-cols-1 sm:grid-cols-2 gap-4"
+              >
+                <div class="space-y-2">
+                  <label class="text-xs font-bold text-muted-foreground">{{ t('agents.create.rag_mh_rounds') }}</label>
+                  <Input
+                    v-model.number="ragRetrievalForm.rag_multi_hop_max_rounds"
+                    type="number"
+                    min="2"
+                    max="5"
+                    class="h-10 bg-background border-border"
+                  />
+                </div>
+                <div class="space-y-2">
+                  <label class="text-xs font-bold text-muted-foreground">{{ t('agents.create.rag_mh_min_chunks') }}</label>
+                  <Input
+                    v-model.number="ragRetrievalForm.rag_multi_hop_min_chunks"
+                    type="number"
+                    min="0"
+                    max="50"
+                    class="h-10 bg-background border-border"
+                  />
+                </div>
+                <div class="space-y-2">
+                  <label class="text-xs font-bold text-muted-foreground">{{ t('agents.create.rag_mh_min_best') }}</label>
+                  <Input
+                    v-model.number="ragRetrievalForm.rag_multi_hop_min_best_relevance"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    class="h-10 bg-background border-border"
+                  />
+                </div>
+                <div class="space-y-2">
+                  <label class="text-xs font-bold text-muted-foreground">{{ t('agents.create.rag_mh_feedback') }}</label>
+                  <Input
+                    v-model.number="ragRetrievalForm.rag_multi_hop_feedback_chars"
+                    type="number"
+                    min="80"
+                    max="2000"
+                    class="h-10 bg-background border-border"
+                  />
+                </div>
+                <div class="flex items-center justify-between sm:col-span-2 rounded-lg border border-border bg-background/50 px-3 py-2">
+                  <span class="text-xs text-muted-foreground">{{ t('agents.create.rag_mh_relax') }}</span>
+                  <Switch
+                    :checked="ragRetrievalForm.rag_multi_hop_relax_relevance"
+                    @update:checked="(v: boolean) => { ragRetrievalForm.rag_multi_hop_relax_relevance = v }"
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </section>

@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, Query, status, BackgroundTasks, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, RootModel
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
@@ -52,8 +53,9 @@ from core.workflows.tenant_guard import resolve_tenant_id, namespace_matches_ten
 from core.workflows.runtime.graph_runtime_adapter import GraphRuntimeAdapter
 from config.settings import settings
 from middleware.user_context import get_current_user
-from core.data.base import get_db, SessionLocal
+from core.data.base import get_db, get_engine, sessionmaker_for_engine
 from core.idempotency.service import IdempotencyService
+from api.error_i18n import localize_error_message, resolve_accept_language_for_sse
 from api.errors import raise_api_error
 from log import logger
 from execution_kernel.persistence.db import Database
@@ -1250,9 +1252,10 @@ def _resolve_wait_timeout_seconds(wait_timeout_seconds: Optional[int]) -> int:
     return max(1, min(requested_timeout, max_timeout))
 
 
-async def _run_execution_background(exec_id: str) -> None:
+async def _run_execution_background(exec_id: str, *, bind: Optional[Engine] = None) -> None:
     logger.info(f"[WorkflowAPI] Background run start: execution_id={exec_id}")
-    db_bg: Session = SessionLocal()
+    engine = bind if bind is not None else get_engine()
+    db_bg: Session = sessionmaker_for_engine(engine)()
     try:
         execution_service_bg = WorkflowExecutionService(db_bg)
         exec_obj = execution_service_bg.get_execution(exec_id)
@@ -1289,10 +1292,12 @@ async def _run_execution_background(exec_id: str) -> None:
 def _schedule_background_execution_task(
     execution_id: str,
     background_tasks: Optional[BackgroundTasks],
+    *,
+    bind: Optional[Engine] = None,
 ) -> None:
     # 优先直接投递事件循环，避免依赖 BackgroundTasks 触发时机导致 execution 长期停留 pending。
     try:
-        task = asyncio.create_task(_run_execution_background(execution_id))
+        task = asyncio.create_task(_run_execution_background(execution_id, bind=bind))
         _WORKFLOW_BG_TASKS.add(task)
         _WORKFLOW_BG_TASK_BY_EXECUTION[execution_id] = task
 
@@ -1306,7 +1311,7 @@ def _schedule_background_execution_task(
         # 兜底：无 running loop 时退回 Starlette BackgroundTasks。
         if background_tasks is None:
             raise
-        background_tasks.add_task(_run_execution_background, execution_id)
+        background_tasks.add_task(_run_execution_background, execution_id, bind=bind)
 
 
 async def _resolve_idempotent_execution_hit(
@@ -1523,6 +1528,7 @@ async def create_execution(
         _schedule_background_execution_task(
             execution_id=execution.execution_id,
             background_tasks=background_tasks,
+            bind=db.get_bind(),
         )
     
     return _execution_to_response(execution)
@@ -2273,14 +2279,17 @@ def _validate_stream_access(
 
 async def _stream_status_tick(
     *,
+    db: Session,
     workflow_id: str,
     execution_id: str,
     last_hash: Optional[str],
     heartbeat_at: datetime,
     heartbeat_every: int,
     compact: bool = False,
+    sse_accept_language: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str], datetime, bool]:
-    loop_db = SessionLocal()
+    # 每轮独立 Session 以便读到最新执行状态；bind 与 Depends(get_db) 一致（测试 override 同引擎）
+    loop_db = sessionmaker_for_engine(db.get_bind())()
     try:
         loop_exec_svc = WorkflowExecutionService(loop_db)
         status_payload, is_terminal, error_message = await _load_execution_status_payload(
@@ -2289,12 +2298,19 @@ async def _stream_status_tick(
             loop_exec_svc=loop_exec_svc,
         )
         if error_message:
+            msg_out = error_message
+            if error_message == MSG_EXECUTION_NOT_FOUND:
+                msg_out = localize_error_message(
+                    code="workflow_execution_not_found",
+                    default_message=MSG_EXECUTION_NOT_FOUND,
+                    accept_language=sse_accept_language,
+                )
             return (
                 _sse_data(
                     {
                         "type": "error",
                         "error_code": SSE_STREAM_RESOURCE_NOT_FOUND_ERROR_CODE,
-                        "message": error_message,
+                        "message": msg_out,
                     }
                 ),
                 last_hash,
@@ -2302,12 +2318,17 @@ async def _stream_status_tick(
                 True,
             )
         if status_payload is None or is_terminal is None:
+            msg_nf = localize_error_message(
+                code="workflow_execution_not_found",
+                default_message=MSG_EXECUTION_NOT_FOUND,
+                accept_language=sse_accept_language,
+            )
             return (
                 _sse_data(
                     {
                         "type": "error",
                         "error_code": SSE_STREAM_RESOURCE_NOT_FOUND_ERROR_CODE,
-                        "message": MSG_EXECUTION_NOT_FOUND,
+                        "message": msg_nf,
                     }
                 ),
                 last_hash,
@@ -2341,23 +2362,25 @@ async def stream_execution_status(
     http_request: Request,
     workflow_id: str,
     execution_id: str,
+    db: Annotated[Session, Depends(get_db)],
     interval_ms: Annotated[int, Query(ge=300, le=5000, description="SSE 推送间隔（毫秒）")] = 900,
     compact: Annotated[bool, Query(description="true 时推送 status_delta（轻量增量）")] = False,
+    lang: Annotated[
+        Optional[str],
+        Query(description="UI locale for SSE payloads (zh|en); EventSource cannot set Accept-Language"),
+    ] = None,
     *,
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> StreamingResponse:
     """SSE 推送执行状态（节点级），前端可替代高频轮询；轮询仍可作为降级路径。"""
-    init_db = SessionLocal()
-    try:
-        _validate_stream_access(
-            init_db=init_db,
-            http_request=http_request,
-            workflow_id=workflow_id,
-            execution_id=execution_id,
-            current_user=current_user,
-        )
-    finally:
-        init_db.close()
+    accept_sse = resolve_accept_language_for_sse(http_request, lang)
+    _validate_stream_access(
+        init_db=db,
+        http_request=http_request,
+        workflow_id=workflow_id,
+        execution_id=execution_id,
+        current_user=current_user,
+    )
 
     async def _event_stream() -> AsyncIterator[str]:
         last_hash: Optional[str] = None
@@ -2368,12 +2391,14 @@ async def stream_execution_status(
         while True:
             try:
                 event, last_hash, heartbeat_at, should_stop = await _stream_status_tick(
+                    db=db,
                     workflow_id=workflow_id,
                     execution_id=execution_id,
                     last_hash=last_hash,
                     heartbeat_at=heartbeat_at,
                     heartbeat_every=heartbeat_every,
                     compact=compact,
+                    sse_accept_language=accept_sse,
                 )
                 if event is not None:
                     yield event

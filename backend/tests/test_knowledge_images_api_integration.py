@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api.errors import register_error_handlers
 from api import knowledge as knowledge_api
 from api import images as images_api
+from tests.helpers import build_minimal_router_test_client
 
 pytestmark = pytest.mark.no_fallback
 
@@ -18,19 +17,13 @@ def knowledge_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
             return None
 
     monkeypatch.setattr(knowledge_api, "_kb_store", _FakeKBStore())
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(knowledge_api.router)
-    return TestClient(app)
+    return build_minimal_router_test_client(knowledge_api)
 
 
 @pytest.fixture()
 def images_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(images_api, "_db_get_latest_warmup", lambda model: None)
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(images_api.router)
-    return TestClient(app)
+    return build_minimal_router_test_client(images_api)
 
 
 def test_knowledge_get_not_found_is_structured_without_fallback(

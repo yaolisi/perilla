@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from config.settings import settings
 from middleware.request_whitelist import enforce_request_body_whitelist
 from middleware.sensitive_data_redaction import SensitiveDataRedactionMiddleware
+from tests.helpers import make_fastapi_app_with_handlers
 
 
 class LoginBody(BaseModel):
@@ -14,7 +15,7 @@ class LoginBody(BaseModel):
 
 
 def _create_app() -> FastAPI:
-    app = FastAPI(dependencies=[Depends(enforce_request_body_whitelist)])
+    app = make_fastapi_app_with_handlers(dependencies=[Depends(enforce_request_body_whitelist)])
     app.add_middleware(SensitiveDataRedactionMiddleware)
 
     @app.post("/login")
@@ -43,9 +44,10 @@ def test_request_whitelist_rejects_unknown_fields():
             },
         )
         assert resp.status_code == 422
-        detail = resp.json().get("detail", {})
-        assert detail.get("code") == "request_unknown_fields"
-        assert "unexpected" in detail.get("unknown_fields", [])
+        body = resp.json()
+        assert body["error"]["code"] == "request_unknown_fields"
+        details = body["error"].get("details") or {}
+        assert "unexpected" in details.get("unknown_fields", [])
     finally:
         settings.api_request_whitelist_enabled = prev
 

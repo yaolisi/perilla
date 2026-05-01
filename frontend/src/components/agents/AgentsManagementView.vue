@@ -25,6 +25,7 @@ import {
   Lightbulb,
   Wand2,
   Plug,
+  Layers2,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -49,8 +50,12 @@ import {
 } from '@/services/api'
 import { useSystemMetrics } from '@/composables/useSystemMetrics'
 import { useSystemConfigWithDebounce } from '@/composables/useSystemConfigWithDebounce'
+import { readRagMultiHopEnabledFromModelParams } from '@/utils/agentRagModelParams'
+import { formatAgentMutationErrorMessage } from '@/utils/agentMutationMessages'
 // Loading State
 const loading = ref(true)
+/** listAgents + listModels 拉取失败 */
+const agentsListError = ref<string | null>(null)
 const agents = ref<any[]>([])
 const modelsIndex = ref<Record<string, ModelInfo>>({})
 const searchQuery = ref('')
@@ -155,6 +160,7 @@ const getToolName = (toolId: string) => {
 const fetchAgents = async (showLoading = true) => {
   try {
     if (showLoading) loading.value = true
+    agentsListError.value = null
     const [agentsRes, modelsRes] = await Promise.all([
       listAgents(),
       listModels(),
@@ -206,6 +212,9 @@ const fetchAgents = async (showLoading = true) => {
       const tfr = mp?.tool_failure_reflection
       const toolFailureReflection =
         Boolean(tfr && typeof tfr === 'object' && (tfr as { enabled?: boolean }).enabled === true)
+      const ragIdsLen = agent.rag_ids?.length || 0
+      const ragMultiHop =
+        ragIdsLen > 0 && readRagMultiHopEnabledFromModelParams(mp as Record<string, unknown> | null)
       return ({
       id: agent.agent_id,
       name: agent.name,
@@ -215,7 +224,8 @@ const fetchAgents = async (showLoading = true) => {
       model_family: modelFamily,
       runtime_backend: runtimeBackend,
       runtime_label: runtimeLabelForBackend(runtimeBackend),
-      rag_count: agent.rag_ids?.length || 0,
+      rag_count: ragIdsLen,
+      rag_multi_hop: ragMultiHop,
       tools,
       skillChips,
       has_mcp_skill,
@@ -227,6 +237,8 @@ const fetchAgents = async (showLoading = true) => {
     console.log('[AgentsManagementView] Mapped agents:', agents.value)
   } catch (error) {
     console.error('[AgentsManagementView] Failed to fetch agents:', error)
+    agentsListError.value =
+      formatAgentMutationErrorMessage(error, t) || t('agents.list_load_failed')
     agents.value = []
   } finally {
     if (showLoading) loading.value = false
@@ -321,6 +333,8 @@ const filteredAgents = computed(() => {
     result = result.filter(agent => agent.rag_count > 0)
   } else if (selectedRag.value === 'disabled') {
     result = result.filter(agent => agent.rag_count === 0)
+  } else if (selectedRag.value === 'multi_hop') {
+    result = result.filter((agent) => agent.rag_multi_hop === true)
   }
   
   // Filter by tool
@@ -433,7 +447,7 @@ const confirmNlCreate = async () => {
     await fetchAgents(false)
     router.push(`/agents/${agent.agent_id}/edit`)
   } catch (e) {
-    alert(e instanceof Error ? e.message : 'Create failed')
+    alert(formatAgentMutationErrorMessage(e, t) || 'Create failed')
   } finally {
     nlCreating.value = false
   }
@@ -458,7 +472,7 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
     agents.value = agents.value.filter((a) => a.id !== agentId)
   } catch (error) {
     console.error('Failed to delete agent:', error)
-    alert(error instanceof Error ? error.message : t('agents.delete_failed'))
+    alert(formatAgentMutationErrorMessage(error, t) || t('agents.delete_failed'))
   } finally {
     deletingId.value = null
   }
@@ -498,6 +512,14 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
         </div>
       </div>
     </header>
+
+    <div v-if="agentsListError && !loading" class="px-8 pb-4 shrink-0">
+      <div
+        class="text-sm text-destructive rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3"
+      >
+        {{ agentsListError }}
+      </div>
+    </div>
 
     <!-- Filters -->
     <div v-if="!loading && agents.length > 0" class="px-8 pb-6 flex items-center gap-3 shrink-0 border-b border-border">
@@ -539,6 +561,7 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
           <SelectItem value="all">{{ t('agents.filters.all') }}</SelectItem>
           <SelectItem value="enabled">{{ t('agents.filters.enabled') }}</SelectItem>
           <SelectItem value="disabled">{{ t('agents.filters.disabled') }}</SelectItem>
+          <SelectItem value="multi_hop">{{ t('agents.filters.rag_multi_hop') }}</SelectItem>
         </SelectContent>
       </Select>
 
@@ -622,6 +645,14 @@ const handleDeleteAgent = async (agentId: string, agentName: string) => {
               >
                 <Lightbulb class="w-3 h-3" />
                 {{ t('agents.card.reflection_badge') }}
+              </Badge>
+              <Badge
+                v-if="agent.rag_multi_hop"
+                variant="outline"
+                class="px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wide border-cyan-500/40 bg-cyan-500/10 text-cyan-800 dark:text-cyan-200 gap-1"
+              >
+                <Layers2 class="w-3 h-3" />
+                {{ t('agents.card.rag_mh_badge') }}
               </Badge>
             </div>
           </div>

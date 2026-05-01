@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import collaboration as collaboration_api
-from api.errors import register_error_handlers
+
+from tests.helpers import make_fastapi_app_router_only
 from core.agent_runtime.collaboration import STATE_KEY_COLLABORATION, STATE_KEY_COLLABORATION_MESSAGES
 from core.agent_runtime.session import AgentSession
 
@@ -29,15 +29,13 @@ class _FakeStore:
 
 
 def _build_client(fake_store: _FakeStore) -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
+    app = make_fastapi_app_router_only(collaboration_api)
 
     @app.middleware("http")
     async def _inject_test_user(request, call_next):  # type: ignore[no-untyped-def]
         request.state.user_id = request.headers.get("X-User-Id")
         return await call_next(request)
 
-    app.include_router(collaboration_api.router)
     app.dependency_overrides[collaboration_api.require_authenticated_platform_admin] = lambda: None
     collaboration_api.get_agent_session_store = lambda: fake_store  # type: ignore[assignment]
     return TestClient(app)

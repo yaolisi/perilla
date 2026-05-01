@@ -1032,16 +1032,8 @@ async def search_knowledge_base(
         # 从 embedding model 获取实际维度
         actual_embedding_dim = embedding_model.metadata.get("embedding_dim", settings.memory_embedding_dim)
         
-        # 使用正确的维度创建 KnowledgeBaseStore 实例
-        # 注意：每个知识库有独立的向量表，这里只需要确保该知识库的表存在
-        kb_store = KnowledgeBaseStore(
-            KnowledgeBaseConfig(
-                db_path=_db_path,
-                embedding_dim=actual_embedding_dim,
-            )
-        )
-        # 确保知识库的向量表存在且维度正确
-        kb_store._ensure_vec_table_dimension(kb_id, actual_embedding_dim)
+        # 使用模块级 _kb_store（与索引/CRUD 共库）；每个 KB 独立 vec 表，维度由下面参数指定
+        _kb_store._ensure_vec_table_dimension(kb_id, actual_embedding_dim)
         
         # 生成 query embedding（通过 Inference Gateway 解耦调用方）
         from core.inference import get_inference_client
@@ -1082,14 +1074,14 @@ async def search_knowledge_base(
                 },
             )
         
-        resolved_version_id = kb_store.resolve_kb_version_id(
+        resolved_version_id = _kb_store.resolve_kb_version_id(
             kb_id=kb_id,
             version_id=req.version_id,
             version_label=req.version_label,
         )
 
         # 向量检索
-        results = kb_store.search_chunks(
+        results = _kb_store.search_chunks(
             knowledge_base_id=kb_id,
             query_embedding=query_embedding,
             limit=req.top_k,

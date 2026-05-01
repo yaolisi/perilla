@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from api.error_i18n import localize_error_message
+from api.error_i18n import localize_error_message, resolve_accept_language_for_sse
 from log import logger
 
 
@@ -22,6 +22,13 @@ class APIError(BaseModel):
     details: Optional[ApiErrorDetailsJsonMap] = None
     request_id: Optional[str] = None
     trace_id: Optional[str] = None
+
+
+class APIErrorHttpEnvelope(BaseModel):
+    """与 APIException / HTTPException handler 返回体一致，用于 OpenAPI 声明 4xx JSON 形状。"""
+
+    detail: str
+    error: APIError
 
 
 class APIException(Exception):
@@ -83,13 +90,34 @@ def raise_api_error(
     )
 
 
+_STRUCTURED_HTTP_DETAIL_KEYS = frozenset({"code", "message", "details"})
+
+
+def _structured_http_exception_parts(detail: Dict[str, Any]) -> tuple[str, str, Optional[Dict[str, Any]]]:
+    """解析 ``HTTPException(detail={code, message, ...})``；顶层除 code/message/details 外的键并入 ``details``。"""
+    message = str(detail.get("message", "request failed"))
+    code = str(detail.get("code", "http_error"))
+    nested = detail.get("details")
+    extras = {k: v for k, v in detail.items() if k not in _STRUCTURED_HTTP_DETAIL_KEYS}
+    if isinstance(nested, dict):
+        merged: Optional[Dict[str, Any]] = {**nested, **extras} if extras else nested
+    elif extras:
+        merged = extras
+    else:
+        merged = nested if isinstance(nested, dict) else None
+    return code, message, merged
+
+
 def register_error_handlers(app: FastAPI) -> None:
+    def _accept_lang_for_request(request: Request) -> str | None:
+        return resolve_accept_language_for_sse(request, request.query_params.get("lang"))
+
     @app.exception_handler(APIException)
     async def _api_exception_handler(request: Request, exc: APIException) -> JSONResponse:
         localized_message = localize_error_message(
             code=exc.code,
             default_message=exc.message,
-            accept_language=request.headers.get("accept-language"),
+            accept_language=_accept_lang_for_request(request),
         )
         error = APIError(
             code=exc.code,
@@ -110,9 +138,7 @@ def register_error_handlers(app: FastAPI) -> None:
     async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
         detail = exc.detail
         if isinstance(detail, dict) and "code" in detail and "message" in detail:
-            message = str(detail.get("message", "request failed"))
-            code = str(detail.get("code", "http_error"))
-            extra_details = detail.get("details")
+            code, message, extra_details = _structured_http_exception_parts(detail)
         else:
             message = str(detail)
             # Fallback path: framework/third-party HTTPException without APIException envelope.
@@ -137,7 +163,7 @@ def register_error_handlers(app: FastAPI) -> None:
         localized_message = localize_error_message(
             code=code,
             default_message=message,
-            accept_language=request.headers.get("accept-language"),
+            accept_language=_accept_lang_for_request(request),
         )
         error = APIError(
             code=code,
@@ -159,7 +185,7 @@ def register_error_handlers(app: FastAPI) -> None:
         localized_message = localize_error_message(
             code="internal_server_error",
             default_message="Internal server error",
-            accept_language=request.headers.get("accept-language"),
+            accept_language=_accept_lang_for_request(request),
         )
         error = APIError(
             code="internal_server_error",

@@ -1,20 +1,18 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import collaboration as collaboration_api
 from api import rag_trace as rag_trace_api
 from api import skill_discovery as skill_discovery_api
-from api.errors import register_error_handlers
 from core.security.deps import require_authenticated_platform_admin
 from middleware import user_context as user_context_mw
 
+from tests.helpers import make_fastapi_app_router_only
+
 
 def test_openapi_rag_trace_internal_named_schemas() -> None:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(rag_trace_api.router)
+    app = make_fastapi_app_router_only(rag_trace_api)
     client = TestClient(app)
     spec = client.get("/openapi.json").json()
     paths = spec.get("paths") or {}
@@ -45,9 +43,7 @@ def test_openapi_rag_trace_internal_named_schemas() -> None:
 
 
 def test_openapi_collaboration_message_upsert_named_schema() -> None:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(collaboration_api.router)
+    app = make_fastapi_app_router_only(collaboration_api)
     app.dependency_overrides[require_authenticated_platform_admin] = lambda: None
     client = TestClient(app)
     spec = client.get("/openapi.json").json()
@@ -109,9 +105,7 @@ def test_openapi_collaboration_message_upsert_named_schema() -> None:
 
 
 def test_openapi_skill_discovery_named_schemas() -> None:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(skill_discovery_api.router)
+    app = make_fastapi_app_router_only(skill_discovery_api)
     app.dependency_overrides[user_context_mw.get_current_user] = lambda: "contract-test-user"
     client = TestClient(app)
     spec = client.get("/openapi.json").json()

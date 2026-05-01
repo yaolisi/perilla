@@ -11,6 +11,7 @@ from api.system import (
     RoadmapPhaseGatesUpdateResponse,
     RoadmapQualityMetricsReadResponse,
     RoadmapQualityMetricsUpdateResponse,
+    SystemJsonMap,
 )
 from core.system import roadmap
 
@@ -87,7 +88,7 @@ def test_roadmap_quality_metrics_update_response_validates_save_payload() -> Non
     merged = roadmap.save_manual_quality_metrics({"rag_top5_recall": 0.71}, store=store)
     model = RoadmapQualityMetricsUpdateResponse.model_validate({"success": True, "quality_metrics": merged})
     assert model.success is True
-    assert model.quality_metrics.get("rag_top5_recall") == pytest.approx(0.71)
+    assert model.quality_metrics.model_dump().get("rag_top5_recall") == pytest.approx(0.71)
 
 
 def test_roadmap_quality_metrics_read_response_validates_describe_payload() -> None:
@@ -96,7 +97,7 @@ def test_roadmap_quality_metrics_read_response_validates_describe_payload() -> N
     model = RoadmapQualityMetricsReadResponse.model_validate(payload)
     assert model.explicit_metric_keys_tracked is False
     assert model.explicit_metric_keys is None
-    assert isinstance(model.phase3_kpi_inference_probe, dict)
+    assert isinstance(model.phase3_kpi_inference_probe, SystemJsonMap)
 
 
 def test_describe_roadmap_quality_metrics_returns_stable_shape() -> None:

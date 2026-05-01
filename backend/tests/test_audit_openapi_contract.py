@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import audit as audit_api
-from api.errors import register_error_handlers
 from core.security.deps import require_audit_reader
 from core.security.rbac import PlatformRole
 
+from tests.helpers import make_fastapi_app_router_only
+
 
 def _client() -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(audit_api.router)
+    app = make_fastapi_app_router_only(audit_api)
     app.dependency_overrides[require_audit_reader] = lambda: PlatformRole.ADMIN
     return TestClient(app)
 

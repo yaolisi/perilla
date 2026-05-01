@@ -48,7 +48,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             ):
                 return response
 
-            from core.data.base import SessionLocal
+            from core.data.base import DB_ENGINE_STATE_KEY, get_engine, sessionmaker_for_engine
             from core.security.audit_service import append_audit_log
             from middleware.user_context import get_current_user
 
@@ -58,7 +58,8 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             role_s = getattr(role, "value", None) or str(role or "operator")
             rid = getattr(request.state, "request_id", None)
             tid = getattr(request.state, "trace_id", None)
-            db = SessionLocal()
+            bind = getattr(request.state, DB_ENGINE_STATE_KEY, None) or get_engine()
+            db = sessionmaker_for_engine(bind)()
             try:
                 append_audit_log(
                     db,

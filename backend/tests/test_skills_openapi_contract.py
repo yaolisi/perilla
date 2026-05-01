@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import skills as skills_api
-from api.errors import register_error_handlers
 from core.security.deps import require_authenticated_platform_admin
+
+from tests.helpers import make_fastapi_app_router_only
 
 
 def _build_client() -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(skills_api.router)
+    app = make_fastapi_app_router_only(skills_api)
     app.dependency_overrides[require_authenticated_platform_admin] = lambda: None
     return TestClient(app)
 

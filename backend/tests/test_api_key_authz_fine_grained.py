@@ -1,12 +1,12 @@
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from config.settings import settings
 from middleware.api_key_scope import ApiKeyScopeMiddleware
+from tests.helpers import make_fastapi_app_router_only
 
 
-def _make_app() -> FastAPI:
-    app = FastAPI()
+def _make_app():
+    app = make_fastapi_app_router_only()
     app.add_middleware(ApiKeyScopeMiddleware)
 
     @app.get("/api/agents/{agent_id}")

@@ -11,11 +11,12 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 import api.vlm as vlm_mod
-from api.errors import register_error_handlers
+
+from tests.helpers import make_fastapi_app_router_only
 from core.models.descriptor import ModelDescriptor
 
 
@@ -150,10 +151,7 @@ def vlm_test_client(
     monkeypatch.setattr(vlm_mod, "estimate_tokens", lambda _t: 3)
     monkeypatch.setattr(vlm_mod, "log_structured", lambda *a, **k: None)
 
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(vlm_mod.router)
-    return TestClient(app), store
+    return TestClient(make_fastapi_app_router_only(vlm_mod)), store
 
 
 def test_vlm_generate_http_success(

@@ -1,6 +1,5 @@
 import types
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from config.settings import settings
@@ -9,6 +8,7 @@ from core.system.storage_strategy import detect_storage_backend, storage_readine
 from middleware.api_key_scope import _parse_scopes, ApiKeyScopeMiddleware
 from middleware.tenant_context import TenantContextMiddleware
 from scripts.slo_check import evaluate
+from tests.helpers import make_fastapi_app_router_only
 
 
 def test_parse_scopes_json():
@@ -21,7 +21,7 @@ def test_api_key_scope_enforcement_blocks_missing_scope():
     prev = settings.api_key_scopes_json
     try:
         settings.api_key_scopes_json = '{"k-read":["read"]}'
-        app = FastAPI()
+        app = make_fastapi_app_router_only()
         app.add_middleware(ApiKeyScopeMiddleware)
 
         @app.get("/api/v1/audit/logs")
@@ -39,7 +39,7 @@ def test_api_key_scope_enforcement_allows_admin():
     prev = settings.api_key_scopes_json
     try:
         settings.api_key_scopes_json = '{"k-admin":["admin"]}'
-        app = FastAPI()
+        app = make_fastapi_app_router_only()
         app.add_middleware(ApiKeyScopeMiddleware)
 
         @app.post("/api/v1/workflows/x")
@@ -59,7 +59,7 @@ def test_tenant_enforcement_protected_path():
     try:
         settings.tenant_enforcement_enabled = True
         settings.tenant_default_id = "default"
-        app = FastAPI()
+        app = make_fastapi_app_router_only()
         app.add_middleware(TenantContextMiddleware)
 
         @app.get("/api/v1/workflows/w1")

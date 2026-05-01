@@ -10,9 +10,12 @@ import {
   type Message,
   type ChatStreamChunk,
   type ChatStreamResponse,
+  type ChatStreamJsonlChunk,
+  type ChatStreamMarkdownChunk,
   type ChatRoutingMetadata,
   type ChatRequest,
   type ChatStreamFormat,
+  type RAGConfig,
   streamChunkDeltaText,
   setSessionId
 } from '@/services/api'
@@ -66,6 +69,7 @@ interface UseChatOptions {
 
 const STORAGE_MODEL_KEY = 'ai_platform_selected_model'
 const STORAGE_KB_KEY = 'ai_platform_selected_kb'
+const STORAGE_RAG_MULTI_HOP_KEY = 'ai_platform_rag_multi_hop'
 
 // module-singleton state
 const globalMessages = ref<ChatMessage[]>([])
@@ -74,6 +78,7 @@ const globalError = ref<string | null>(null)
 const globalSessionId = ref<string | null>(null)
 const globalModel = ref(localStorage.getItem(STORAGE_MODEL_KEY) || 'auto')
 const globalKnowledgeBaseId = ref<string | null>(localStorage.getItem(STORAGE_KB_KEY) || null)
+const globalRagMultiHop = ref(localStorage.getItem(STORAGE_RAG_MULTI_HOP_KEY) === '1')
 
 // 持久化模型选择
 watch(globalModel, (val) => {
@@ -89,6 +94,14 @@ watch(globalKnowledgeBaseId, (val) => {
     localStorage.setItem(STORAGE_KB_KEY, val)
   } else {
     localStorage.removeItem(STORAGE_KB_KEY)
+  }
+})
+
+watch(globalRagMultiHop, (val) => {
+  if (val) {
+    localStorage.setItem(STORAGE_RAG_MULTI_HOP_KEY, '1')
+  } else {
+    localStorage.removeItem(STORAGE_RAG_MULTI_HOP_KEY)
   }
 })
 
@@ -119,7 +132,22 @@ export function useChat(options: UseChatOptions = {}) {
   const sessionId = globalSessionId
   const model = globalModel
   const knowledgeBaseId = globalKnowledgeBaseId
-  
+  const ragMultiHop = globalRagMultiHop
+
+  function buildRagOptions(): RAGConfig | undefined {
+    if (!knowledgeBaseId.value) return undefined
+    const rag: RAGConfig = {
+      knowledge_base_id: knowledgeBaseId.value,
+      top_k: 5,
+      score_threshold: 1.2,
+      retrieval_mode: 'hybrid',
+    }
+    if (ragMultiHop.value) {
+      rag.multi_hop_enabled = true
+    }
+    return rag
+  }
+
   const params = useParameters()
   const { streamGzip, streamFormat } = useChatStreamPreferences()
 
@@ -154,6 +182,7 @@ export function useChat(options: UseChatOptions = {}) {
     msgParams?: ChatMessage['params'],
     attachments?: ChatMessage['attachments'],
     routing?: ChatMessage['routing'],
+    meta?: Record<string, unknown> | null,
   ): ChatMessage {
     const message: ChatMessage = {
       id: generateId(),
@@ -165,6 +194,7 @@ export function useChat(options: UseChatOptions = {}) {
       params: msgParams,
       attachments,
       routing: routing ?? undefined,
+      meta: meta ?? undefined,
     }
     messages.value.push(message)
     return message
@@ -204,6 +234,36 @@ export function useChat(options: UseChatOptions = {}) {
     const message = messages.value.find((m) => m.id === id)
     if (message) {
       message.routing = routing
+    }
+  }
+
+  /** 流式最后一帧携带与非流式相同的 metadata（含 rag / multi_hop），写入 assistant 消息以便无需刷新即可溯源 */
+  function applyStreamCompletionMetadata(id: string, chunk: ChatStreamChunk): void {
+    let raw: Record<string, unknown> | undefined
+    if (chunk.object === 'chat.completion.chunk') {
+      const c = chunk as ChatStreamResponse
+      if (c.choices?.[0]?.finish_reason === 'stop' && c.metadata && typeof c.metadata === 'object') {
+        raw = c.metadata as Record<string, unknown>
+      }
+    } else if (chunk.object === 'perilla.stream.jsonl') {
+      const j = chunk as ChatStreamJsonlChunk
+      if (j.d === true && j.metadata && typeof j.metadata === 'object') {
+        raw = j.metadata as Record<string, unknown>
+      }
+    } else if (chunk.object === 'perilla.stream.md') {
+      const m = chunk as ChatStreamMarkdownChunk
+      if (m.d === true && m.metadata && typeof m.metadata === 'object') {
+        raw = m.metadata as Record<string, unknown>
+      }
+    }
+    if (!raw) return
+    const message = messages.value.find((m) => m.id === id)
+    if (!message) return
+    message.meta = { ...(message.meta || {}), ...raw }
+    const rm = raw.resolved_model
+    const rv = raw.resolved_via
+    if (typeof rm === 'string' && typeof rv === 'string') {
+      message.routing = { resolved_model: rm, resolved_via: rv }
     }
   }
 
@@ -317,13 +377,7 @@ export function useChat(options: UseChatOptions = {}) {
             max_tokens: Number(max_tokens.value),
             system_prompt: params.useSystemPrompt.value ? params.systemPrompt.value : undefined,
             max_history_messages: params.maxHistoryMessages.value,
-            rag: knowledgeBaseId.value
-              ? {
-                  knowledge_base_id: knowledgeBaseId.value,
-                  top_k: 5,
-                  score_threshold: 1.2,
-                }
-              : undefined,
+            rag: buildRagOptions(),
             signal,
           }
           applyStreamTransportPrefs(streamBody, options, streamTransportDefaults)
@@ -331,6 +385,7 @@ export function useChat(options: UseChatOptions = {}) {
             streamBody,
             (chunk: ChatStreamChunk) => {
               if (chunk.object === 'perilla.stream.meta') return
+              applyStreamCompletionMetadata(assistantMsg.id, chunk)
               const c = chunk as ChatStreamResponse
               if (c.model) {
                 updateMessageModelName(assistantMsg.id, c.model)
@@ -338,14 +393,6 @@ export function useChat(options: UseChatOptions = {}) {
               const delta = streamChunkDeltaText(chunk)
               if (delta) {
                 updateMessageContent(assistantMsg.id, assistantMsg.content + delta)
-              }
-              const meta =
-                (chunk as ChatStreamResponse).metadata ??
-                (chunk.object === 'perilla.stream.jsonl' || chunk.object === 'perilla.stream.md'
-                  ? (chunk as { metadata?: ChatRoutingMetadata }).metadata
-                  : undefined)
-              if (meta?.resolved_model && meta?.resolved_via) {
-                updateMessageRouting(assistantMsg.id, meta)
               }
             },
             () => {
@@ -371,11 +418,7 @@ export function useChat(options: UseChatOptions = {}) {
           max_tokens: currentParams.max_tokens,
           system_prompt: currentParams.system_prompt,
           max_history_messages: params.maxHistoryMessages.value,
-          rag: knowledgeBaseId.value ? {
-            knowledge_base_id: knowledgeBaseId.value,
-            top_k: 5,
-            score_threshold: 1.2,
-          } : undefined,
+          rag: buildRagOptions(),
           signal,
         })
 
@@ -384,13 +427,26 @@ export function useChat(options: UseChatOptions = {}) {
           const content = typeof response.choices[0].message.content === 'string' 
             ? response.choices[0].message.content 
             : ''
+          const apiMeta = response.metadata as ChatRoutingMetadata | undefined
+          const routingOnly =
+            apiMeta?.resolved_model && apiMeta?.resolved_via
+              ? {
+                  resolved_model: apiMeta.resolved_model,
+                  resolved_via: apiMeta.resolved_via,
+                }
+              : undefined
+          const metaFull =
+            response.metadata && typeof response.metadata === 'object'
+              ? { ...(response.metadata as Record<string, unknown>) }
+              : undefined
           addMessage(
             'assistant',
             content,
             response.model || model.value,
             currentParams,
             undefined,
-            response.metadata,
+            routingOnly,
+            metaFull,
           )
         }
       }
@@ -452,6 +508,7 @@ export function useChat(options: UseChatOptions = {}) {
     error,
     model,
     knowledgeBaseId,
+    ragMultiHop,
     temperature,
     top_p,
     max_tokens,

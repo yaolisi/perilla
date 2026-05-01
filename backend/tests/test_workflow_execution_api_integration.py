@@ -11,14 +11,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
-from api.errors import register_error_handlers
 from core.data.base import Base
 from core.data.models.workflow import WorkflowORM
+from tests.helpers import build_workflow_integration_test_client
 from core.workflows.models.workflow_execution import (
     WorkflowExecution,
     WorkflowExecutionNode,
@@ -85,23 +83,6 @@ def _load_workflows_api_module():
     return importlib.import_module("api.workflows")
 
 
-def _build_client(session_factory, workflows_api):
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(workflows_api.router)
-
-    def _override_get_db():
-        db = session_factory()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[workflows_api.get_db] = _override_get_db
-    app.dependency_overrides[workflows_api.get_current_user] = lambda: "u1"
-    return TestClient(app)
-
-
 def _seed_workflow(session_factory):
     with session_factory() as db:
         db.add(
@@ -124,7 +105,7 @@ def test_create_and_get_execution_status_flow(tmp_path, monkeypatch, fallback_pr
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     store: dict[str, WorkflowExecution] = {}
 
@@ -215,7 +196,7 @@ def test_create_execution_wait_true_returns_completed_control_flow_output(
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     def _fake_create_execution(self, request, triggered_by=None):
         return WorkflowExecution(
@@ -302,7 +283,7 @@ def test_stream_execution_status_compact_emits_status_delta(tmp_path, monkeypatc
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     monkeypatch.setattr(workflows_api, "_validate_stream_access", lambda **kwargs: None)
 
@@ -357,7 +338,7 @@ def test_stream_execution_status_not_found_emits_error_code(tmp_path, monkeypatc
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     monkeypatch.setattr(workflows_api, "_validate_stream_access", lambda **kwargs: None)
 
@@ -385,11 +366,44 @@ def test_stream_execution_status_not_found_emits_error_code(tmp_path, monkeypatc
 
 
 @pytest.mark.no_fallback
+def test_stream_execution_status_http_404_localizes_when_lang_zh(tmp_path, fallback_probe):
+    """SSE 路由先校验执行是否存在：404 JSON 随 ?lang= 本地化（与 Agent Session stream 对齐）。"""
+    workflows_api = _load_workflows_api_module()
+    session_factory = _make_session_factory(tmp_path)
+    _seed_workflow(session_factory)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
+    resp = client.get(
+        "/api/v1/workflows/wf_exec_1/executions/exec_stream_absent/stream?lang=zh",
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "workflow_execution_not_found"
+    assert body.get("error", {}).get("message") == "工作流执行记录不存在"
+    assert fallback_probe == []
+
+
+@pytest.mark.no_fallback
+def test_stream_execution_status_http_404_localizes_when_lang_en(tmp_path, fallback_probe):
+    workflows_api = _load_workflows_api_module()
+    session_factory = _make_session_factory(tmp_path)
+    _seed_workflow(session_factory)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
+    resp = client.get(
+        "/api/v1/workflows/wf_exec_1/executions/exec_stream_absent_en/stream?lang=en",
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "workflow_execution_not_found"
+    assert body.get("error", {}).get("message") == "workflow execution not found"
+    assert fallback_probe == []
+
+
+@pytest.mark.no_fallback
 def test_create_execution_idempotency_conflict_returns_structured_error(tmp_path, monkeypatch, fallback_probe):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     monkeypatch.setattr(
         workflows_api,
@@ -418,7 +432,7 @@ def test_create_execution_wait_true_returns_structured_loop_failure_error(
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     def _fake_create_execution(self, request, triggered_by=None):
         return WorkflowExecution(
@@ -471,7 +485,7 @@ def test_create_execution_idempotency_in_progress_returns_structured_error(
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     monkeypatch.setattr(
         workflows_api,
@@ -500,7 +514,7 @@ def test_create_execution_same_key_different_payload_returns_conflict(
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     monkeypatch.setattr(
         workflows_api,
@@ -543,7 +557,7 @@ def test_failure_report_endpoint_returns_audit_and_hash_fields(tmp_path, monkeyp
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     now = datetime.now(timezone.utc)
     execution = WorkflowExecution(
@@ -594,7 +608,7 @@ def test_failure_report_archive_endpoint_returns_headers_and_zip_payload(tmp_pat
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     execution = WorkflowExecution(
         execution_id="exec_failure_bundle_1",

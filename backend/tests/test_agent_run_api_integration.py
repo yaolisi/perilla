@@ -4,19 +4,17 @@ import asyncio
 from typing import Dict, Optional
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.agents import router as agents_router
 from api.agents import session_router as agent_sessions_router
-from api.errors import register_error_handlers
 from core.agent_runtime.definition import AgentDefinition
 from core.agent_runtime.session import AgentSession
 from core.security.deps import require_authenticated_platform_admin
 from core.security.rbac import PlatformRole
 from core.types import Message
+from tests.helpers import make_fastapi_app_router_only
 from tests.idempotency_testkit import (
-    DummyDb,
     FakeClaim,
     build_fixed_idempotency_service,
     build_keyed_hash_idempotency_service,
@@ -101,10 +99,7 @@ def agent_run_client(monkeypatch) -> TestClient:
     monkeypatch.setattr("api.agents.get_agent_executor", lambda: object())
     monkeypatch.setattr("api.agents.get_agent_runtime", lambda _executor: _Runtime())
 
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(agents_router)
-    app.include_router(agent_sessions_router)
+    app = make_fastapi_app_router_only(agents_router, agent_sessions_router)
     app.dependency_overrides[require_authenticated_platform_admin] = lambda: PlatformRole.ADMIN
 
     client = TestClient(app)
@@ -160,7 +155,6 @@ def test_run_agent_idempotency_conflict_returns_structured_error(
         "api.agents.IdempotencyService",
         build_fixed_idempotency_service(FakeClaim(conflict=True, is_new=False, record_id=1)),
     )
-    monkeypatch.setattr("api.agents.SessionLocal", lambda: DummyDb())
 
     resp = agent_run_client.post(
         "/api/agents/agent_run_1/run",
@@ -199,7 +193,6 @@ def test_run_agent_idempotency_hit_returns_existing_session(
             FakeClaim(conflict=False, is_new=False, record_id=2, response_ref="asess_idem_hit_1")
         ),
     )
-    monkeypatch.setattr("api.agents.SessionLocal", lambda: DummyDb())
 
     resp = agent_run_client.post(
         "/api/agents/agent_run_1/run",
@@ -223,7 +216,6 @@ def test_run_agent_idempotency_in_progress_returns_structured_error(
         "api.agents.IdempotencyService",
         build_fixed_idempotency_service(FakeClaim(conflict=False, is_new=False, record_id=3)),
     )
-    monkeypatch.setattr("api.agents.SessionLocal", lambda: DummyDb())
 
     resp = agent_run_client.post(
         "/api/agents/agent_run_1/run",
@@ -246,7 +238,6 @@ def test_run_agent_same_key_different_payload_returns_conflict(
         "api.agents.IdempotencyService",
         build_keyed_hash_idempotency_service(record_id=10),
     )
-    monkeypatch.setattr("api.agents.SessionLocal", lambda: DummyDb())
 
     headers = _run_headers(user_id="u1", idem_key="idem-agent-hash-mismatch")
     payload_a = _run_payload("hello")

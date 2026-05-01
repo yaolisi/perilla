@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import agents as agents_api
-from api.errors import register_error_handlers
 from core.security.deps import require_authenticated_platform_admin
+
+from tests.helpers import make_fastapi_app_router_only
 
 
 def _client() -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(agents_api.router)
-    app.include_router(agents_api.session_router)
+    app = make_fastapi_app_router_only(agents_api.router, agents_api.session_router)
     app.dependency_overrides[require_authenticated_platform_admin] = lambda: None
     return TestClient(app)
 
@@ -22,6 +19,36 @@ def test_openapi_agents_json_named_schemas() -> None:
     spec = client.get("/openapi.json").json()
     paths = spec.get("paths") or {}
     schemas = spec.get("components", {}).get("schemas") or {}
+
+    env_ref = "#/components/schemas/APIErrorHttpEnvelope"
+    post_responses = paths["/api/agents"]["post"]["responses"]
+    assert post_responses["400"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    assert post_responses["503"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    put_responses = paths["/api/agents/{agent_id}"]["put"]["responses"]
+    assert put_responses["400"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    assert put_responses["404"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    assert put_responses["503"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    assert schemas["APIErrorHttpEnvelope"]["properties"]["error"]["$ref"] == "#/components/schemas/APIError"
+
+    nl_resp = paths["/api/agents/generate-from-nl"]["post"]["responses"]
+    assert nl_resp["400"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    assert nl_resp["503"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+
+    assert (
+        paths["/api/agents/{agent_id}"]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"]
+        == env_ref
+    )
+    assert (
+        paths["/api/agents/{agent_id}"]["delete"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"]
+        == env_ref
+    )
+
+    run_post_resp = paths["/api/agents/{agent_id}/run"]["post"]["responses"]
+    assert run_post_resp["404"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+
+    run_files_post_resp = paths["/api/agents/{agent_id}/run/with-files"]["post"]["responses"]
+    assert run_files_post_resp["404"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    assert run_files_post_resp["413"]["content"]["application/json"]["schema"]["$ref"] == env_ref
 
     list_agents = paths["/api/agents"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
     assert list_agents == "#/components/schemas/AgentsListEnvelope"
@@ -92,6 +119,31 @@ def test_openapi_agent_sessions_json_named_schemas() -> None:
     client = _client()
     spec = client.get("/openapi.json").json()
     paths = spec.get("paths") or {}
+
+    env_ref = "#/components/schemas/APIErrorHttpEnvelope"
+
+    one_resp = paths["/api/agent-sessions/{session_id}"]["get"]["responses"]
+    assert one_resp["404"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+
+    stream_op = paths["/api/agent-sessions/{session_id}/stream"]["get"]
+    stream_resp = stream_op["responses"]
+    assert stream_resp["404"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    stream_param_names = {p["name"] for p in stream_op.get("parameters") or []}
+    assert "lang" in stream_param_names
+
+    files_resp = paths["/api/agent-sessions/{session_id}/files/{filename}"]["get"]["responses"]
+    assert files_resp["400"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    assert files_resp["404"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+
+    patch_resp = paths["/api/agent-sessions/{session_id}"]["patch"]["responses"]
+    assert patch_resp["404"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    assert patch_resp["500"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+
+    del_msg_resp = paths["/api/agent-sessions/{session_id}/messages/{message_index}"]["delete"]["responses"]
+    assert del_msg_resp["404"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+
+    del_sess_resp = paths["/api/agent-sessions/{session_id}"]["delete"]["responses"]
+    assert del_sess_resp["404"]["content"]["application/json"]["schema"]["$ref"] == env_ref
 
     lst = paths["/api/agent-sessions"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
     assert lst == "#/components/schemas/AgentSessionsListEnvelope"

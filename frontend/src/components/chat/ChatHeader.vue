@@ -33,6 +33,8 @@ const props = defineProps<{
 
 const streamGzip = defineModel<boolean>('streamGzip', { default: false })
 const streamFormat = defineModel<ChatStreamFormat>('streamFormat', { default: 'openai' })
+/** 启用知识库时：运行时多跳检索（与 useChat 持久化同步） */
+const ragMultiHop = defineModel<boolean>('ragMultiHop', { default: false })
 
 const setStreamGzip = (v: boolean) => {
   streamGzip.value = v
@@ -41,6 +43,10 @@ const setStreamFormat = (v: string) => {
   if (v === 'openai' || v === 'jsonl' || v === 'markdown') {
     streamFormat.value = v
   }
+}
+
+const setRagMultiHop = (v: boolean) => {
+  ragMultiHop.value = v
 }
 
 const emit = defineEmits<{
@@ -382,6 +388,25 @@ const orderedModelGroups = computed(() => {
           </div>
         </SelectContent>
       </Select>
+
+      <div
+        v-if="knowledgeBaseId"
+        class="flex items-center gap-2 rounded-xl border border-border/40 bg-muted/15 px-2.5 py-1 shrink-0"
+      >
+        <Switch
+          id="rag-multi-hop-switch"
+          :checked="ragMultiHop"
+          class="scale-90 origin-left"
+          @update:checked="setRagMultiHop"
+        />
+        <label
+          for="rag-multi-hop-switch"
+          class="text-[11px] text-muted-foreground cursor-pointer select-none leading-snug max-w-[min(11rem,28vw)]"
+          :title="t('chat.header.rag_multi_hop_hint')"
+        >
+          {{ t('chat.header.rag_multi_hop') }}
+        </label>
+      </div>
     </div>
 
     <!-- Right: Actions -->

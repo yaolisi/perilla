@@ -7,19 +7,27 @@ import pytest
 
 # 与 requirements/base.txt 中 pytest-asyncio 配套，支持 @pytest.mark.asyncio
 pytest_plugins = ("pytest_asyncio",)
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.errors import set_http_exception_fallback_observer
-from api.errors import register_error_handlers
 from api.stream_resume_store import StreamResumeStore
 from config.settings import settings
 from middleware.csrf_protection import CSRFMiddleware
 from middleware.user_context import UserContextMiddleware
+from tests.helpers import make_fastapi_app_router_only
 from tests.helpers.chat_stream_helpers import chat_prime_csrf, chat_seed_stream_store
 
 # 减轻部分环境下 OpenMP / 大依赖导入时的异常退出
 os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+
+@pytest.fixture(autouse=True)
+def _reset_workflow_execution_manager_singleton_after_test() -> Iterator[None]:
+    """避免 ExecutionManager 全局单例（persist_engine）泄漏到下一测试。"""
+    yield
+    from core.workflows.governance import reset_execution_manager_singleton
+
+    reset_execution_manager_singleton()
 
 
 @pytest.fixture()
@@ -61,16 +69,13 @@ def chat_stream_resume_client(monkeypatch: pytest.MonkeyPatch):
     settings.csrf_cookie_name = "csrf_token"
     settings.csrf_header_name = "X-CSRF-Token"
 
-    app = FastAPI()
-    register_error_handlers(app)
+    app = make_fastapi_app_router_only(chat_api)
     app.add_middleware(UserContextMiddleware)
     app.add_middleware(CSRFMiddleware)
 
     @app.get("/_ping")
     def _ping() -> dict[str, bool]:
         return {"ok": True}
-
-    app.include_router(chat_api.router)
 
     client = TestClient(app)
     try:

@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import tools as tools_api
-from api.errors import register_error_handlers
+
+from tests.helpers import build_minimal_router_test_client
 
 
 def _build_client() -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(tools_api.router)
-    return TestClient(app)
+    return build_minimal_router_test_client(tools_api)
 
 
 def test_openapi_tools_named_schemas() -> None:

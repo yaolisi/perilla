@@ -1,4 +1,3 @@
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from config.settings import settings
@@ -6,6 +5,7 @@ from core.security.rbac import PlatformRole
 from middleware.rbac_context import RBACContextMiddleware
 from middleware.rbac_enforcement import RBACEnforcementMiddleware
 from middleware.request_trace import RequestTraceMiddleware
+from tests.helpers import make_fastapi_app_router_only
 
 
 def test_viewer_write_blocked_when_enforced():
@@ -17,7 +17,7 @@ def test_viewer_write_blocked_when_enforced():
         settings.rbac_enforcement = True
         settings.rbac_viewer_api_keys = "viewer-key"
 
-        app = FastAPI()
+        app = make_fastapi_app_router_only()
         app.add_middleware(RequestTraceMiddleware, header_name="X-Request-Id")
         app.add_middleware(RBACContextMiddleware, api_key_header="X-Api-Key")
         app.add_middleware(RBACEnforcementMiddleware)
@@ -45,7 +45,7 @@ def test_operator_write_allowed_when_enforced():
         settings.rbac_enforcement = True
         settings.rbac_operator_api_keys = "op-key"
 
-        app = FastAPI()
+        app = make_fastapi_app_router_only()
         app.add_middleware(RBACContextMiddleware, api_key_header="X-Api-Key")
         app.add_middleware(RBACEnforcementMiddleware)
 
@@ -63,7 +63,7 @@ def test_operator_write_allowed_when_enforced():
 
 
 def test_traceparent_invalid_fallback_to_request_id():
-    app = FastAPI()
+    app = make_fastapi_app_router_only()
     app.add_middleware(RequestTraceMiddleware, header_name="X-Request-Id")
 
     @app.get("/ok")
@@ -78,7 +78,7 @@ def test_traceparent_invalid_fallback_to_request_id():
 
 
 def test_trace_header_pollution_is_rejected_and_fallback():
-    app = FastAPI()
+    app = make_fastapi_app_router_only()
     app.add_middleware(RequestTraceMiddleware, header_name="X-Request-Id")
 
     @app.get("/ok")

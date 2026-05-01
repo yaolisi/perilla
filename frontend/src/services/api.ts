@@ -30,6 +30,51 @@ function normalizeMethod(method?: string): string {
   return (method || 'GET').toUpperCase()
 }
 
+const STORAGE_LANGUAGE_KEY = 'platform-language'
+
+/**
+ * 与 `src/i18n/index.ts` 使用同一 localStorage 键，供后端 `Accept-Language` → error_i18n 与界面语言一致。
+ * 放在文件前部以便 CSRF 预热请求与 `apiFetch` 共用。
+ */
+export function getApiAcceptLanguage(): string {
+  if (typeof localStorage === 'undefined') {
+    return 'en-US, en;q=0.9'
+  }
+  try {
+    const saved = localStorage.getItem(STORAGE_LANGUAGE_KEY)
+    if (saved === 'zh') {
+      return 'zh-CN, zh;q=0.9, en;q=0.5'
+    }
+  } catch {
+    /* ignore quota / privacy mode */
+  }
+  return 'en-US, en;q=0.9'
+}
+
+/** 与界面语言一致；EventSource 无法设置 Accept-Language，通过 URL `?lang=` 传给后端 */
+export function getApiLocaleQueryParam(): 'zh' | 'en' {
+  if (typeof localStorage === 'undefined') {
+    return 'en'
+  }
+  try {
+    return localStorage.getItem(STORAGE_LANGUAGE_KEY) === 'zh' ? 'zh' : 'en'
+  } catch {
+    return 'en'
+  }
+}
+
+/** 为 SSE 等请求追加 `lang=`，与后端 `resolve_accept_language_for_sse` 对齐 */
+export function appendApiLocaleQuery(url: string): string {
+  try {
+    const u = new URL(url)
+    u.searchParams.set('lang', getApiLocaleQueryParam())
+    return u.href
+  } catch {
+    const joiner = url.includes('?') ? '&' : '?'
+    return `${url}${joiner}lang=${getApiLocaleQueryParam()}`
+  }
+}
+
 function getCsrfToken(): string | null {
   return getCookie(CSRF_COOKIE_NAME)
 }
@@ -42,6 +87,9 @@ async function ensureCsrfToken(): Promise<void> {
         await fetch(`${API_BASE_URL}${CSRF_PRIME_PATH}`, {
           method: 'GET',
           credentials: 'include',
+          headers: {
+            'Accept-Language': getApiAcceptLanguage(),
+          },
         })
       } catch (error) {
         console.warn('[CSRF] Failed to prime CSRF cookie:', error)
@@ -181,6 +229,9 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
   if (!headers.has('Content-Type') && !(init.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json')
   }
+  if (!headers.has('Accept-Language')) {
+    headers.set('Accept-Language', getApiAcceptLanguage())
+  }
 
   // 统一注入 user/session header
   headers.set('X-User-Id', getUserId())
@@ -220,15 +271,37 @@ export interface Message {
 }
 
 export interface RAGConfig {
-  knowledge_base_id: string
+  knowledge_base_id?: string
+  knowledge_base_ids?: string[]
   top_k?: number
+  retrieval_mode?: 'vector' | 'hybrid'
+  keyword_top_k?: number
+  vector_top_k?: number
+  rerank_top_k?: number
+  min_relevance_score?: number
   score_threshold?: number
+  max_context_tokens?: number
+  multi_hop_enabled?: boolean
+  multi_hop_max_rounds?: number
+  multi_hop_min_chunks?: number
+  multi_hop_min_best_relevance?: number
+  multi_hop_relax_relevance?: boolean
+  multi_hop_feedback_chars?: number
 }
 
 /** 与后端 ChatCompletion 响应 /metadata 对齐（智能路由解析结果） */
+/** 流式结束帧 metadata.rag（与非流式持久化助手 meta 对齐） */
+export interface ChatRagStreamSummary {
+  used?: boolean
+  trace_id?: string | null
+  retrieved_count?: number
+  multi_hop?: { rounds?: number; queries?: string[] }
+}
+
 export interface ChatRoutingMetadata {
   resolved_model: string
   resolved_via: string
+  rag?: ChatRagStreamSummary
 }
 
 /** 与后端 core.types.StreamFormat 对齐 */
@@ -1578,9 +1651,10 @@ export function streamWorkflowExecutionStatus(
 ): () => void {
   const intervalMs = Math.max(300, Math.min(5000, Math.floor(options?.intervalMs || 900)))
   const compact = options?.compact === true
-  const url =
+  const url = appendApiLocaleQuery(
     `${API_BASE_URL}/api/v1/workflows/${workflowId}/executions/${executionId}/stream?interval_ms=${intervalMs}` +
-    (compact ? '&compact=true' : '')
+      (compact ? '&compact=true' : ''),
+  )
   const eventSource = new EventSource(url)
 
   eventSource.onmessage = (event) => {
@@ -1737,6 +1811,10 @@ export interface ToolFailureReflectionOutputPayload {
 
 /**
  * 与后端 OpenAPI `AgentModelParamsJsonMap` / `AgentDefinition.model_params` 同构（允许任意额外键）。
+ *
+ * 知识库 RAG 运行时（`AgentLoop` / `RAGRetrieval`）常用键：`rag_top_k`、`rag_score_threshold`、`rag_retrieval_mode`（`hybrid` | `vector`）、`rag_min_relevance_score`、
+ * 多跳：`rag_multi_hop_enabled` 与 `rag_multi_hop_max_rounds` 等。创建/更新时 API 会校验范围，错误码 `agent_invalid_model_params_rag`。
+ * @see `frontend/src/utils/agentRagModelParams.ts`
  */
 export type AgentModelParamsJsonMap = Record<string, unknown>
 
@@ -1767,7 +1845,7 @@ export interface AgentDefinition {
   on_failure_strategy?: string
   replan_prompt?: string
   /**
-   * 与后端 `AgentDefinition.model_params` 一致；可含 `plan_execution`（见 `PlanExecutionConfig`）、`tool_failure_reflection`（见 `ToolFailureReflectionConfig`）等。
+   * 与后端 `AgentDefinition.model_params` 一致；可含 `plan_execution`（见 `PlanExecutionConfig`）、`tool_failure_reflection`（见 `ToolFailureReflectionConfig`）、RAG 相关键（见 `AgentModelParamsJsonMap`）等。
    */
   model_params?: AgentModelParamsJsonMap
 }
@@ -1803,7 +1881,7 @@ export interface CreateAgentRequest {
   /** V2.3: Contract source keys in priority order */
   plan_contract_sources?: string[]
   /**
-   * `plan_execution` 见 `PlanExecutionConfig`；`tool_failure_reflection` 见 `ToolFailureReflectionConfig`（与后端合并逻辑一致）。
+   * `plan_execution` 见 `PlanExecutionConfig`；`tool_failure_reflection` 见 `ToolFailureReflectionConfig`；RAG 见 `AgentModelParamsJsonMap`（与后端合并逻辑一致）。
    */
   model_params?: AgentModelParamsJsonMap
 }
@@ -1858,14 +1936,82 @@ export interface AgentTraceEvent {
   created_at: string
 }
 
+/** 与 `api/errors.register_error_handlers` 返回体一致：`detail` + `error.{ code, message, details }` */
+export interface ApiEnvelopeErrorBody {
+  detail?: string
+  error?: {
+    code?: string
+    message?: string
+    details?: Record<string, unknown>
+  }
+}
+
+/**
+ * Agent 创建/更新/删除失败时抛出，便于按 `code`（如 `agent_invalid_model_params_rag`）分支提示。
+ */
+export class AgentApiError extends Error {
+  readonly status: number
+  readonly code?: string
+  readonly details?: Record<string, unknown>
+
+  constructor(
+    message: string,
+    opts: { status: number; code?: string; details?: Record<string, unknown> | undefined }
+  ) {
+    super(message)
+    this.name = 'AgentApiError'
+    this.status = opts.status
+    this.code = opts.code
+    this.details = opts.details
+  }
+}
+
+function throwAgentMutationError(response: Response, body: unknown): never {
+  const b = body as ApiEnvelopeErrorBody
+  const nested = b?.error
+  const msg =
+    (typeof b?.detail === 'string' && b.detail.trim() ? b.detail : '') ||
+    (typeof nested?.message === 'string' ? nested.message : '') ||
+    response.statusText ||
+    `HTTP ${response.status}`
+  throw new AgentApiError(msg.trim() || `HTTP ${response.status}`, {
+    status: response.status,
+    code: typeof nested?.code === 'string' ? nested.code : undefined,
+    details:
+      nested?.details && typeof nested.details === 'object'
+        ? (nested.details as Record<string, unknown>)
+        : undefined,
+  })
+}
+
+/** 提交失败横幅展示：附带 `details.field` 或 `details.unknown_fields`（校验 / 白名单） */
+export function formatAgentApiError(error: unknown): string {
+  if (!(error instanceof AgentApiError)) {
+    return error instanceof Error ? error.message : String(error)
+  }
+  const field = error.details?.field
+  if (typeof field === 'string' && field.length > 0) {
+    return `${error.message} · ${field}`
+  }
+  const unknown = error.details?.unknown_fields
+  if (
+    Array.isArray(unknown) &&
+    unknown.length > 0 &&
+    unknown.every((x): x is string => typeof x === 'string')
+  ) {
+    return `${error.message} · ${unknown.join(', ')}`
+  }
+  return error.message
+}
+
 export async function createAgent(data: CreateAgentRequest): Promise<AgentDefinition> {
   const response = await apiFetch(`${API_BASE_URL}/api/agents`, {
     method: 'POST',
     body: JSON.stringify(data),
   })
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(error.detail || `API error: ${response.statusText}`)
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
   }
   return response.json()
 }
@@ -1899,13 +2045,8 @@ export async function generateAgentFromNl(body: {
     }),
   })
   if (!response.ok) {
-    const err = (await response.json().catch(() => ({}))) as {
-      detail?: string
-      message?: string
-    }
-    throw new Error(
-      err.message || err.detail || `API error: ${response.statusText}`
-    )
+    const bodyJson = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, bodyJson)
   }
   return response.json()
 }
@@ -2024,7 +2165,10 @@ export async function importMcpTools(
  */
 export async function getAgent(agentId: string): Promise<AgentDefinition> {
   const response = await apiFetch(`${API_BASE_URL}/api/agents/${agentId}`)
-  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
+  }
   return response.json()
 }
 
@@ -2037,8 +2181,8 @@ export async function updateAgent(agentId: string, data: CreateAgentRequest): Pr
     body: JSON.stringify(data),
   })
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(error.detail || `API error: ${response.statusText}`)
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
   }
   return response.json()
 }
@@ -2049,8 +2193,8 @@ export async function updateAgent(agentId: string, data: CreateAgentRequest): Pr
 export async function deleteAgent(agentId: string): Promise<{ status: string }> {
   const response = await apiFetch(`${API_BASE_URL}/api/agents/${agentId}`, { method: 'DELETE' })
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(error.detail || `API error: ${response.statusText}`)
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
   }
   return response.json()
 }
@@ -2063,7 +2207,10 @@ export async function runAgent(agentId: string, data: RunAgentRequest): Promise<
     method: 'POST',
     body: JSON.stringify(data),
   })
-  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
+  }
   return response.json()
 }
 
@@ -2141,8 +2288,8 @@ export async function runAgentWithFiles(
     // 不设置 Content-Type，让浏览器自动设置 multipart/form-data; boundary=...
   })
   if (!response.ok) {
-    const err = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(err.detail || `API error: ${response.statusText}`)
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
   }
   return response.json()
 }
@@ -2159,9 +2306,10 @@ export function streamAgentSessionStatus(
 ): () => void {
   const intervalMs = Math.max(300, Math.min(5000, Math.floor(options?.intervalMs || 900)))
   const compact = options?.compact === true
-  const url =
+  const url = appendApiLocaleQuery(
     `${API_BASE_URL}/api/agent-sessions/${encodeURIComponent(sessionId)}/stream?interval_ms=${intervalMs}` +
-    (compact ? '&compact=true' : '')
+      (compact ? '&compact=true' : ''),
+  )
   const eventSource = new EventSource(url, { withCredentials: true })
 
   eventSource.onmessage = (event) => {
@@ -2214,7 +2362,10 @@ export function streamAgentSessionStatus(
  */
 export async function getAgentSession(sessionId: string): Promise<AgentSession> {
   const response = await apiFetch(`${API_BASE_URL}/api/agent-sessions/${sessionId}`)
-  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
+  }
   return response.json()
 }
 
@@ -2223,7 +2374,10 @@ export async function getAgentSession(sessionId: string): Promise<AgentSession> 
  */
 export async function getAgentTrace(sessionId: string): Promise<{ object: string; data: AgentTraceEvent[] }> {
   const response = await apiFetch(`${API_BASE_URL}/api/agent-sessions/${sessionId}/trace`)
-  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
+  }
   return response.json()
 }
 
@@ -2234,7 +2388,10 @@ export async function deleteAgentSessionMessage(sessionId: string, messageIndex:
   const response = await apiFetch(`${API_BASE_URL}/api/agent-sessions/${sessionId}/messages/${messageIndex}`, {
     method: 'DELETE',
   })
-  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
+  }
   return response.json()
 }
 
@@ -2245,7 +2402,10 @@ export async function deleteAgentSession(sessionId: string): Promise<{ deleted: 
   const response = await apiFetch(`${API_BASE_URL}/api/agent-sessions/${sessionId}`, {
     method: 'DELETE',
   })
-  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
+  }
   return response.json()
 }
 
@@ -2260,7 +2420,10 @@ export async function updateAgentSession(
     method: 'PATCH',
     body: JSON.stringify(data),
   })
-  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
+  }
   return response.json()
 }
 
@@ -2275,7 +2438,10 @@ export async function listAgentSessions(
   if (typeof params.limit === 'number') usp.set('limit', String(params.limit))
   const qs = usp.toString()
   const response = await apiFetch(`${API_BASE_URL}/api/agent-sessions${qs ? `?${qs}` : ''}`, { method: 'GET' })
-  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
+  }
   return response.json()
 }
 
@@ -2284,7 +2450,10 @@ export async function listAgentSessions(
  */
 export async function listAgents(): Promise<{ object: string; data: AgentDefinition[] }> {
   const response = await apiFetch(`${API_BASE_URL}/api/agents`)
-  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throwAgentMutationError(response, body)
+  }
   return response.json()
 }
 
@@ -3087,7 +3256,7 @@ export function streamLogs(
   onLog: (entry: LogEntry) => void,
   onError?: (error: Error) => void
 ): () => void {
-  const eventSource = new EventSource(`${API_BASE_URL}/api/system/logs/stream`)
+  const eventSource = new EventSource(appendApiLocaleQuery(`${API_BASE_URL}/api/system/logs/stream`))
 
   eventSource.onmessage = (event) => {
     try {

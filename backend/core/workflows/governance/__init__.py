@@ -9,6 +9,7 @@ from .execution_manager import (
     ExecutionRequest,
     ExecutionResult,
     get_execution_manager,
+    reset_execution_manager_singleton,
 )
 from .concurrency_limiter import ConcurrencyLimiter
 from .quota_manager import QuotaManager, QuotaConfig
@@ -18,6 +19,7 @@ __all__ = [
     "ExecutionRequest",
     "ExecutionResult",
     "get_execution_manager",
+    "reset_execution_manager_singleton",
     "ConcurrencyLimiter",
     "QuotaManager",
     "QuotaConfig",

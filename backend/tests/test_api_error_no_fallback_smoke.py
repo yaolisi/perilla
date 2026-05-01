@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api.errors import register_error_handlers
+from api import images as images_api
+from api import knowledge as knowledge_api
 from api import memory as memory_api
 from api import sessions as sessions_api
-from api import knowledge as knowledge_api
-from api import images as images_api
+
+from tests.helpers import make_fastapi_app_router_only
 
 pytestmark = pytest.mark.no_fallback
 
@@ -31,10 +31,7 @@ def test_sessions_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPatc
             return False
 
     monkeypatch.setattr(sessions_api, "_store", _FakeHistoryStore())
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(sessions_api.router)
-    client = TestClient(app)
+    client = TestClient(make_fastapi_app_router_only(sessions_api))
 
     resp = client.get("/api/sessions/smoke-missing/messages")
     assert resp.status_code == 404
@@ -54,10 +51,7 @@ def test_memory_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPatch,
             return 0
 
     monkeypatch.setattr(memory_api, "_store", _FakeMemoryStore())
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(memory_api.router)
-    client = TestClient(app)
+    client = TestClient(make_fastapi_app_router_only(memory_api))
 
     resp = client.delete("/api/memory/smoke-memory-id")
     assert resp.status_code == 404
@@ -71,10 +65,7 @@ def test_knowledge_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPat
             return None
 
     monkeypatch.setattr(knowledge_api, "_kb_store", _FakeKBStore())
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(knowledge_api.router)
-    client = TestClient(app)
+    client = TestClient(make_fastapi_app_router_only(knowledge_api))
 
     resp = client.get("/api/knowledge-bases/smoke-kb-id")
     assert resp.status_code == 404
@@ -84,10 +75,7 @@ def test_knowledge_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPat
 
 def test_images_warmup_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPatch, fallback_probe):
     monkeypatch.setattr(images_api, "_db_get_latest_warmup", lambda model: None)
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(images_api.router)
-    client = TestClient(app)
+    client = TestClient(make_fastapi_app_router_only(images_api))
 
     resp = client.get("/api/v1/images/warmup/latest", params={"model": "smoke-model"})
     assert resp.status_code == 404

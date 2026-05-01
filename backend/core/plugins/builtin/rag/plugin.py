@@ -2,9 +2,10 @@
 RAG Plugin v1
 实现 retrieve → inject → merge 完整流程
 """
-from typing import Dict, Any, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.plugins.base import Plugin
+from core.rag.runtime_multi_hop import run_multi_hop_retrieval
 from core.plugins.context import PluginContext
 from core.types import Message
 from log import logger
@@ -71,6 +72,44 @@ class RAGPlugin(Plugin):
                     # 注意：score_threshold 实际是 distance 阈值（max_distance）
                     # embedding 默认 L2 normalize，常见距离范围约 0~2
                     "score_threshold": {"type": "number", "default": 1.2, "minimum": 0, "maximum": 2},
+                    "multi_hop_enabled": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "启用运行时多跳：首轮不足时基于相关性反馈扩展查询再检索并合并去重",
+                    },
+                    "multi_hop_max_rounds": {
+                        "type": "integer",
+                        "default": 3,
+                        "minimum": 2,
+                        "maximum": 5,
+                        "description": "多跳检索最大轮数（含首轮）",
+                    },
+                    "multi_hop_min_chunks": {
+                        "type": "integer",
+                        "default": 2,
+                        "minimum": 0,
+                        "maximum": 50,
+                        "description": "合并后 chunk 数低于该值则尝试下一轮；0 表示不按数量触发",
+                    },
+                    "multi_hop_min_best_relevance": {
+                        "type": "number",
+                        "default": 0.0,
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": "最佳 relevance_score 低于该值则尝试下一轮；0 表示不按分数触发",
+                    },
+                    "multi_hop_relax_relevance": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "第二轮及以后将 min_relevance_score 按轮次温和放宽，减轻冷启动",
+                    },
+                    "multi_hop_feedback_chars": {
+                        "type": "integer",
+                        "default": 320,
+                        "minimum": 80,
+                        "maximum": 2000,
+                        "description": "相关性反馈拼接时从高分 chunk 抽取的最大总字符数",
+                    },
                 },
                 # 取消 knowledge_base_id 的硬性要求，改为在代码中判断两者其一
             },
@@ -174,6 +213,16 @@ class RAGPlugin(Plugin):
                 version_label=version_label,
             )
         score_threshold = rag_config.get("score_threshold", 1.2)
+        multi_hop_enabled = bool(rag_config.get("multi_hop_enabled", False))
+        multi_hop_max_rounds = int(rag_config.get("multi_hop_max_rounds", 3))
+        multi_hop_max_rounds = max(2, min(5, multi_hop_max_rounds))
+        multi_hop_min_chunks = int(rag_config.get("multi_hop_min_chunks", 2))
+        multi_hop_min_chunks = max(0, min(50, multi_hop_min_chunks))
+        multi_hop_min_best_relevance = float(rag_config.get("multi_hop_min_best_relevance", 0.0))
+        multi_hop_min_best_relevance = max(0.0, min(1.0, multi_hop_min_best_relevance))
+        multi_hop_relax_relevance = bool(rag_config.get("multi_hop_relax_relevance", True))
+        multi_hop_feedback_chars = int(rag_config.get("multi_hop_feedback_chars", 320))
+        multi_hop_feedback_chars = max(80, min(2000, multi_hop_feedback_chars))
 
         if context.logger:
             context.logger.info(
@@ -231,92 +280,120 @@ class RAGPlugin(Plugin):
         try:
             from core.inference import get_inference_client
             client = get_inference_client()
-            resp = await client.embed(
-                model=embedding_model.id,
-                input_text=[query_text],
-                metadata={
-                    "caller": "RAGPlugin.embed_query",
-                    "session_id": context.session_id or "",
-                    "agent_id": context.agent_id or "",
-                    "kb_ids": kb_ids,
-                },
-            )
-            query_embeddings = resp.embeddings
-            if not query_embeddings:
-                return {"messages": messages}
-            query_embedding = query_embeddings[0]
+
+            async def _embed_one(q: str) -> List[float]:
+                resp = await client.embed(
+                    model=embedding_model.id,
+                    input_text=[q],
+                    metadata={
+                        "caller": "RAGPlugin.embed_query",
+                        "session_id": context.session_id or "",
+                        "agent_id": context.agent_id or "",
+                        "kb_ids": kb_ids,
+                    },
+                )
+                rows = resp.embeddings
+                if not rows:
+                    raise RuntimeError("empty embeddings")
+                return rows[0]
+
+            async def _search_one(qt: str, qemb: List[float], eff_min: float) -> List[Dict[str, Any]]:
+                if retrieval_mode == "hybrid":
+                    return context.knowledge_base_store.hybrid_search_chunks_multi_kb(
+                        knowledge_base_ids=kb_ids,
+                        query_text=qt,
+                        query_embedding=qemb,
+                        keyword_limit=keyword_top_k,
+                        vector_limit=vector_top_k,
+                        rerank_limit=rerank_top_k,
+                        min_relevance_score=eff_min,
+                        max_distance=score_threshold,
+                        version_id=version_id,
+                    )
+                return context.knowledge_base_store.search_chunks_multi_kb(
+                    knowledge_base_ids=kb_ids,
+                    query_embedding=qemb,
+                    limit=top_k,
+                    max_distance=score_threshold,
+                    version_id=version_id,
+                )
+
+            chunks = []
+            mh_detail: Dict[str, Any] = {}
+            try:
+                if multi_hop_enabled:
+                    chunks, mh_detail = await run_multi_hop_retrieval(
+                        initial_query=query_text,
+                        rerank_top_k=rerank_top_k,
+                        min_relevance_score=min_relevance_score,
+                        embed_fn=_embed_one,
+                        search_fn=_search_one,
+                        multi_hop_max_rounds=multi_hop_max_rounds,
+                        multi_hop_min_chunks=multi_hop_min_chunks,
+                        multi_hop_min_best_relevance=multi_hop_min_best_relevance,
+                        multi_hop_relax_relevance=multi_hop_relax_relevance,
+                        feedback_budget_chars=multi_hop_feedback_chars,
+                        messages_for_fallback=messages,
+                    )
+                else:
+                    qemb = await _embed_one(query_text)
+                    chunks = await _search_one(query_text, qemb, min_relevance_score)
+            except Exception as e:
+                if context.logger:
+                    context.logger.error(f"[RAGPlugin] Vector search failed: {e}")
+                trace_id = self._record_trace_retrieve(
+                    context=context,
+                    query_text=query_text,
+                    embedding_model_id=embedding_model_id,
+                    kb_ids=kb_ids,
+                    top_k=top_k,
+                    chunks=[],
+                )
+                return {
+                    "messages": messages,
+                    "metadata": {
+                        "retrieved_chunks": 0,
+                        "sources": [],
+                        "trace_id": trace_id,
+                    },
+                }
+
         except Exception as e:
             if context.logger:
                 context.logger.error(f"[RAGPlugin] Failed to embed query: {e}")
             return {"messages": messages}
 
-        # 多阶段检索（hybrid）或纯向量检索（vector）
-        chunks = []
-        try:
-            if retrieval_mode == "hybrid":
-                chunks = context.knowledge_base_store.hybrid_search_chunks_multi_kb(
-                    knowledge_base_ids=kb_ids,
-                    query_text=query_text,
-                    query_embedding=query_embedding,
-                    keyword_limit=keyword_top_k,
-                    vector_limit=vector_top_k,
-                    rerank_limit=rerank_top_k,
-                    min_relevance_score=min_relevance_score,
-                    max_distance=score_threshold,
-                    version_id=version_id,
-                )
-            else:
-                chunks = context.knowledge_base_store.search_chunks_multi_kb(
-                    knowledge_base_ids=kb_ids,
-                    query_embedding=query_embedding,
-                    limit=top_k,
-                    max_distance=score_threshold,
-                    version_id=version_id,
-                )
-        except Exception as e:
-            if context.logger:
-                context.logger.error(f"[RAGPlugin] Vector search failed: {e}")
-            # 即使搜索失败，也记录 trace（标记为失败）
-            trace_id = self._record_trace_retrieve(
-                context=context,
-                query_text=query_text,
-                embedding_model_id=embedding_model_id,
-                kb_ids=kb_ids,
-                top_k=top_k,
-                chunks=[],  # 空列表表示搜索失败或没有结果
-            )
-            return {
-                "messages": messages,
-                "metadata": {
-                    "retrieved_chunks": 0,
-                    "sources": [],
-                    "trace_id": trace_id,
-                }
-            }
+        trace_query = query_text
+        trace_type = "multi_hop" if multi_hop_enabled else "naive"
+        if multi_hop_enabled and mh_detail.get("queries"):
+            trace_query = "[multi_hop] " + " | ".join(mh_detail["queries"])[:4000]
 
         # RAG Trace: 记录检索结果（无论是否找到 chunks）
         trace_id = self._record_trace_retrieve(
             context=context,
-            query_text=query_text,
+            query_text=trace_query,
             embedding_model_id=embedding_model_id,
             kb_ids=kb_ids,
             top_k=top_k,
             chunks=chunks,
             version_id=version_id,
+            rag_type_override=trace_type,
         )
 
         if not chunks:
             if context.logger:
                 context.logger.info("[RAGPlugin] No relevant chunks found")
-            # 即使没有找到 chunks，也返回 trace_id，让前端知道 RAG 执行了
-            return {
-                "messages": messages,
-                "metadata": {
-                    "retrieved_chunks": 0,
-                    "sources": [],
-                    "trace_id": trace_id,  # 返回 trace_id，即使没有找到结果
-                }
+            empty_meta: Dict[str, Any] = {
+                "retrieved_chunks": 0,
+                "sources": [],
+                "trace_id": trace_id,
             }
+            if multi_hop_enabled and mh_detail:
+                empty_meta["multi_hop"] = {
+                    "rounds": mh_detail.get("rounds"),
+                    "queries": mh_detail.get("queries"),
+                }
+            return {"messages": messages, "metadata": empty_meta}
 
         # 3. Inject: 构造 context prompt (含引用)
         # 获取模型的上下文长度（如果可用），默认使用 2000 tokens 作为 RAG 上下文预算
@@ -344,13 +421,20 @@ class RAGPlugin(Plugin):
                 f"[RAGPlugin] RAG completed: retrieved {len(chunks)} chunks from {len(sources)} sources"
             )
 
+        meta: Dict[str, Any] = {
+            "retrieved_chunks": len(chunks),
+            "sources": sources,
+            "trace_id": trace_id,
+        }
+        if multi_hop_enabled and mh_detail:
+            meta["multi_hop"] = {
+                "rounds": mh_detail.get("rounds"),
+                "queries": mh_detail.get("queries"),
+            }
+
         return {
             "messages": enhanced_messages,
-            "metadata": {
-                "retrieved_chunks": len(chunks),
-                "sources": sources,
-                "trace_id": trace_id,  # 返回 trace_id 供 chat.py 使用
-            }
+            "metadata": meta,
         }
 
     def _build_graph_context(
@@ -539,6 +623,7 @@ class RAGPlugin(Plugin):
         top_k: int,
         chunks: List[Dict[str, Any]],
         version_id: Optional[str] = None,
+        rag_type_override: Optional[str] = None,
     ) -> Optional[str]:
         """
         记录 RAG Trace 的检索阶段
@@ -570,7 +655,7 @@ class RAGPlugin(Plugin):
                 session_id=session_id,
                 message_id=message_id,
                 rag_id=rag_id,
-                rag_type="naive",
+                rag_type=(rag_type_override or "naive"),
                 query=query_text,
                 embedding_model=embedding_model_id,
                 vector_store="sqlite-vec",

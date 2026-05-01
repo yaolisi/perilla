@@ -5,11 +5,10 @@ from __future__ import annotations
 from typing import Any, List
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api.errors import register_error_handlers
 from api import sessions as sessions_api
+from tests.helpers import build_minimal_router_test_client
 
 pytestmark = pytest.mark.no_fallback
 
@@ -40,11 +39,7 @@ def sessions_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     fake = _FakeHistoryStore()
     monkeypatch.setattr(sessions_api, "_store", fake)
 
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(sessions_api.router)
-
-    client = TestClient(app)
+    client = build_minimal_router_test_client(sessions_api)
     client._fake_store = fake  # type: ignore[attr-defined]
     return client
 

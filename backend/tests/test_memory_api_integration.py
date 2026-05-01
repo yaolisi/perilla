@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api.errors import register_error_handlers
 from api import memory as memory_api
+from tests.helpers import build_minimal_router_test_client
 
 pytestmark = pytest.mark.no_fallback
 
@@ -27,11 +26,7 @@ class _FakeMemoryStore:
 def memory_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(memory_api, "_store", _FakeMemoryStore())
 
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(memory_api.router)
-
-    return TestClient(app)
+    return build_minimal_router_test_client(memory_api)
 
 
 def test_delete_unknown_memory_returns_structured_404(

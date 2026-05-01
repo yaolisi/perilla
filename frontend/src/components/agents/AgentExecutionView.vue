@@ -33,6 +33,7 @@ import {
   ExternalLink,
   Lightbulb,
   Plug,
+  Layers2,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -81,6 +82,11 @@ import {
   skillRecordStubFromId,
 } from '@/utils/skillMeta'
 import { useSystemConfigWithDebounce } from '@/composables/useSystemConfigWithDebounce'
+import {
+  loadAgentRagFormFromModelParams,
+  readRagMultiHopEnabledFromModelParams,
+} from '@/utils/agentRagModelParams'
+import { formatAgentMutationErrorMessage } from '@/utils/agentMutationMessages'
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 function messageContentToString(content: Message['content'] | undefined | null): string {
@@ -207,6 +213,10 @@ const MAX_RECORDING_SECONDS = 120
 const isRecording = ref(false)
 const asrLoading = ref(false)
 const asrError = ref<string | null>(null)
+/** POST /run、/run/with-files 失败时的可读提示（与结构化 AgentApiError 对齐） */
+const runSubmitError = ref<string | null>(null)
+/** GET /api/agents/:id 失败 */
+const agentFetchError = ref<string | null>(null)
 let mediaRecorder: MediaRecorder | null = null
 let audioChunks: Blob[] = []
 let recordingTimerRef: ReturnType<typeof setTimeout> | null = null
@@ -242,6 +252,7 @@ const runtimeLabelForBackend = (backend: string | null | undefined): string => {
 const fetchAgentData = async () => {
   try {
     isLoading.value = true
+    agentFetchError.value = null
     const [agentData, modelsData] = await Promise.all([getAgent(agentId), listModels()])
     agent.value = agentData
 
@@ -291,6 +302,8 @@ const fetchAgentData = async () => {
     }
   } catch (error) {
     console.error('Failed to fetch agent:', error)
+    agentFetchError.value =
+      formatAgentMutationErrorMessage(error, t) || t('agents.execution.agent_load_failed')
   } finally {
     isLoading.value = false
   }
@@ -433,7 +446,9 @@ const handleDeleteSession = async (sessionId: string) => {
 
 const handleSendMessage = async () => {
   if ((!userInput.value.trim() && uploadedFiles.value.length === 0) || isRunning.value) return
-  
+
+  runSubmitError.value = null
+
   // Build message content with file references
   let messageContent = userInput.value.trim()
   
@@ -538,6 +553,8 @@ const handleSendMessage = async () => {
     await fetchSessionsList()
   } catch (error) {
     console.error('Failed to run agent:', error)
+    runSubmitError.value =
+      formatAgentMutationErrorMessage(error, t) || t('agents.execution.run_failed')
     // 如果出错，回滚到之前的状态
     if (session.value) {
       session.value.messages = previousMessages
@@ -1083,6 +1100,21 @@ const supportsFileProcessing = computed(() => {
   ) || tools.some((t: string) => t === 'file.read' || t === 'file.list' || t === 'vision.detect_objects')
 })
 
+/** 已绑定知识库且 model_params.rag_multi_hop_enabled 为真时，与列表页徽章一致 */
+const ragMultiHopEnabled = computed(() => {
+  const a = agent.value
+  if (!a?.rag_ids?.length) return false
+  const mp = a.model_params as Record<string, unknown> | undefined
+  return readRagMultiHopEnabledFromModelParams(mp)
+})
+
+/** 从 model_params 解析的 RAG 配置（与创建/编辑页一致），仅用于运行页只读展示 */
+const ragRuntimeParams = computed(() => {
+  const a = agent.value
+  if (!a?.rag_ids?.length) return null
+  return loadAgentRagFormFromModelParams(a.model_params as Record<string, unknown> | undefined)
+})
+
 // v1.5: sidebar — 优先 GET agent 返回的 enabled_skills_meta，否则回退 listSkills 缓存
 const capabilitySidebarItems = computed(() => {
   const meta = agent.value?.enabled_skills_meta
@@ -1393,6 +1425,13 @@ watch(() => {
           <div v-if="isLoading || isLoadingSession" class="flex items-center justify-center h-full">
             <Loader2 class="w-8 h-8 animate-spin text-blue-500" />
           </div>
+
+          <div
+            v-else-if="agentFetchError"
+            class="flex flex-col items-center justify-center h-full gap-3 px-8 text-center max-w-lg mx-auto"
+          >
+            <p class="text-sm text-destructive leading-relaxed">{{ agentFetchError }}</p>
+          </div>
           
           <template v-else>
             <div v-if="!session" class="flex items-center justify-center h-full text-sm text-muted-foreground">
@@ -1581,6 +1620,13 @@ watch(() => {
                 </button>
               </div>
             </div>
+
+            <div
+              v-if="runSubmitError"
+              class="text-sm text-destructive rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-2"
+            >
+              {{ runSubmitError }}
+            </div>
             
             <!-- Input with file upload button -->
             <div class="relative flex items-center gap-2">
@@ -1699,7 +1745,23 @@ watch(() => {
 
           <!-- RAG Sources -->
           <section class="space-y-4 p-4 rounded-xl bg-card/50 border border-border/30">
-            <h3 class="text-[11px] font-black text-muted-foreground uppercase tracking-[0.2em]">{{ t('agents.execution.rag_sources') }}</h3>
+            <div class="flex items-start justify-between gap-2">
+              <h3 class="text-[11px] font-black text-muted-foreground uppercase tracking-[0.2em]">{{ t('agents.execution.rag_sources') }}</h3>
+              <Badge
+                v-if="ragMultiHopEnabled"
+                variant="outline"
+                class="shrink-0 px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wide border-cyan-500/40 bg-cyan-500/10 text-cyan-800 dark:text-cyan-200 gap-1"
+              >
+                <Layers2 class="w-3 h-3" />
+                {{ t('agents.execution.rag_multi_hop_badge') }}
+              </Badge>
+            </div>
+            <p
+              v-if="ragMultiHopEnabled"
+              class="text-[10px] text-muted-foreground/90 leading-relaxed"
+            >
+              {{ t('agents.execution.rag_multi_hop_note') }}
+            </p>
             <div class="flex flex-wrap gap-2">
               <div v-for="rag in agent?.rag_ids" :key="rag" 
                    class="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 shadow-sm hover:bg-emerald-500/20 hover:border-emerald-500/50 transition-all cursor-default">
@@ -1707,6 +1769,84 @@ watch(() => {
                 <span class="truncate max-w-[120px]">{{ rag }}</span>
               </div>
               <div v-if="!agent?.rag_ids?.length" class="text-xs text-muted-foreground/70 italic font-medium px-2 py-1">{{ t('agents.execution.no_rag_enabled') }}</div>
+            </div>
+
+            <div
+              v-if="ragRuntimeParams && agent?.rag_ids?.length"
+              class="pt-3 border-t border-border/40 space-y-2"
+            >
+              <div class="text-[10px] font-black text-muted-foreground uppercase tracking-wide">
+                {{ t('agents.execution.rag_params_title') }}
+              </div>
+              <div class="space-y-1.5">
+                <div class="flex items-center justify-between gap-2 text-[10px]">
+                  <span class="text-muted-foreground shrink-0">{{ t('agents.execution.rag_param_top_k') }}</span>
+                  <span class="font-mono font-bold text-foreground tabular-nums">{{ ragRuntimeParams.rag_top_k }}</span>
+                </div>
+                <div class="flex items-center justify-between gap-2 text-[10px]">
+                  <span class="text-muted-foreground shrink-0">{{ t('agents.execution.rag_param_mode') }}</span>
+                  <span class="font-bold text-foreground text-right">
+                    {{
+                      ragRuntimeParams.rag_retrieval_mode === 'vector'
+                        ? t('agents.create.rag_mode_vector')
+                        : t('agents.create.rag_mode_hybrid')
+                    }}
+                  </span>
+                </div>
+                <div class="flex items-center justify-between gap-2 text-[10px]">
+                  <span class="text-muted-foreground shrink-0">{{ t('agents.execution.rag_param_min_rel') }}</span>
+                  <span class="font-mono font-bold text-foreground tabular-nums">{{
+                    ragRuntimeParams.rag_min_relevance_score.toFixed(2)
+                  }}</span>
+                </div>
+                <div class="flex items-center justify-between gap-2 text-[10px]">
+                  <span class="text-muted-foreground shrink-0">{{ t('agents.execution.rag_param_distance') }}</span>
+                  <span class="font-mono font-bold text-foreground tabular-nums text-right">{{
+                    ragRuntimeParams.rag_score_threshold.trim() !== ''
+                      ? ragRuntimeParams.rag_score_threshold
+                      : t('agents.execution.rag_param_distance_default')
+                  }}</span>
+                </div>
+              </div>
+              <template v-if="ragRuntimeParams.rag_multi_hop_enabled">
+                <div class="text-[10px] font-black text-muted-foreground uppercase tracking-wide pt-1">
+                  {{ t('agents.create.rag_mh_title') }}
+                </div>
+                <div class="space-y-1.5">
+                  <div class="flex items-center justify-between gap-2 text-[10px]">
+                    <span class="text-muted-foreground shrink-0">{{ t('agents.create.rag_mh_rounds') }}</span>
+                    <span class="font-mono font-bold text-foreground tabular-nums">{{
+                      ragRuntimeParams.rag_multi_hop_max_rounds
+                    }}</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2 text-[10px]">
+                    <span class="text-muted-foreground shrink-0">{{ t('agents.create.rag_mh_min_chunks') }}</span>
+                    <span class="font-mono font-bold text-foreground tabular-nums">{{
+                      ragRuntimeParams.rag_multi_hop_min_chunks
+                    }}</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2 text-[10px]">
+                    <span class="text-muted-foreground shrink-0">{{ t('agents.create.rag_mh_min_best') }}</span>
+                    <span class="font-mono font-bold text-foreground tabular-nums">{{
+                      ragRuntimeParams.rag_multi_hop_min_best_relevance.toFixed(2)
+                    }}</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2 text-[10px]">
+                    <span class="text-muted-foreground shrink-0">{{ t('agents.create.rag_mh_relax') }}</span>
+                    <span class="font-bold text-foreground">{{
+                      ragRuntimeParams.rag_multi_hop_relax_relevance
+                        ? t('agents.execution.rag_bool_yes')
+                        : t('agents.execution.rag_bool_no')
+                    }}</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2 text-[10px]">
+                    <span class="text-muted-foreground shrink-0">{{ t('agents.create.rag_mh_feedback') }}</span>
+                    <span class="font-mono font-bold text-foreground tabular-nums">{{
+                      ragRuntimeParams.rag_multi_hop_feedback_chars
+                    }}</span>
+                  </div>
+                </div>
+              </template>
             </div>
           </section>
 

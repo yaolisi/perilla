@@ -7,10 +7,11 @@ from middleware.request_trace import RequestTraceMiddleware
 from middleware.csrf_protection import CSRFMiddleware
 from middleware.tenant_context import TenantContextMiddleware
 from middleware.tenant_key_binding import TenantApiKeyBindingMiddleware
+from tests.helpers import make_fastapi_app_router_only
 
 
 def create_app_for_test(limit: int = 2) -> FastAPI:
-    app = FastAPI()
+    app = make_fastapi_app_router_only()
     app.add_middleware(RequestTraceMiddleware, header_name="X-Request-Id")
     app.add_middleware(
         InMemoryRateLimitMiddleware,
@@ -91,7 +92,7 @@ def test_tenant_key_binding_blocks_unmapped_key():
         settings.tenant_api_key_tenants_json = '{"k-a":["tenant-a"]}'
         settings.tenant_default_id = "default"
 
-        app = FastAPI()
+        app = make_fastapi_app_router_only()
         app.add_middleware(TenantContextMiddleware)
         app.add_middleware(TenantApiKeyBindingMiddleware)
 
@@ -126,7 +127,7 @@ def test_csrf_issues_cookie_and_header_on_safe_request():
         settings.csrf_cookie_name = "csrf_token"
         settings.csrf_header_name = "X-CSRF-Token"
 
-        app = FastAPI()
+        app = make_fastapi_app_router_only()
         app.add_middleware(CSRFMiddleware)
 
         @app.get("/ok")
@@ -153,7 +154,7 @@ def test_csrf_blocks_mutation_without_token_header():
         settings.csrf_cookie_name = "csrf_token"
         settings.csrf_header_name = "X-CSRF-Token"
 
-        app = FastAPI()
+        app = make_fastapi_app_router_only()
         app.add_middleware(CSRFMiddleware)
 
         @app.get("/ok")
@@ -184,7 +185,7 @@ def test_csrf_blocks_when_token_mismatch():
         settings.csrf_cookie_name = "csrf_token"
         settings.csrf_header_name = "X-CSRF-Token"
 
-        app = FastAPI()
+        app = make_fastapi_app_router_only()
         app.add_middleware(CSRFMiddleware)
 
         @app.get("/ok")
@@ -214,7 +215,7 @@ def test_csrf_allows_when_cookie_and_header_match():
         settings.csrf_cookie_name = "csrf_token"
         settings.csrf_header_name = "X-CSRF-Token"
 
-        app = FastAPI()
+        app = make_fastapi_app_router_only()
         app.add_middleware(CSRFMiddleware)
 
         @app.get("/ok")

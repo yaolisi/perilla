@@ -10,19 +10,17 @@ import types
 import uuid
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
 from core.data.base import Base
+from tests.helpers import build_workflow_integration_test_client
 from core.data.models.workflow import (
     WorkflowORM,
     WorkflowExecutionORM,
     WorkflowApprovalTaskORM,
     WorkflowVersionORM,
 )
-from api.errors import register_error_handlers
 
 pytestmark = pytest.mark.no_fallback
 
@@ -60,23 +58,6 @@ def _load_workflows_api_module():
     sys.modules["core.workflows.runtime.graph_runtime_adapter"] = adapter_stub
     sys.modules.pop("api.workflows", None)
     return importlib.import_module("api.workflows")
-
-
-def _build_client(session_factory, workflows_api):
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(workflows_api.router)
-
-    def _override_get_db():
-        db = session_factory()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[workflows_api.get_db] = _override_get_db
-    app.dependency_overrides[workflows_api.get_current_user] = lambda: "u1"
-    return TestClient(app)
 
 
 def _seed_workflow_execution_and_task(session_factory, *, task_status: str = "pending", expires_at=None):
@@ -304,7 +285,7 @@ def test_list_approvals_api(tmp_path):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     execution_id, _ = _seed_workflow_execution_and_task(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.get(f"/api/v1/workflows/wf_1/executions/{execution_id}/approvals")
     assert resp.status_code == 200
@@ -333,9 +314,8 @@ def test_approve_moves_execution_to_pending_and_records_decision(tmp_path, monke
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     execution_id, task_id = _seed_workflow_execution_and_task(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
-    monkeypatch.setattr(workflows_api, "SessionLocal", session_factory)
     scheduled = {"called": False}
 
     class _DummyTask:
@@ -371,7 +351,7 @@ def test_reject_marks_execution_failed(tmp_path):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     execution_id, task_id = _seed_workflow_execution_and_task(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.post(
         f"/api/v1/workflows/wf_1/executions/{execution_id}/approvals/{task_id}/reject"
@@ -397,7 +377,7 @@ def test_approve_expired_task_returns_409_and_fails_execution(tmp_path):
         session_factory,
         expires_at=datetime.now(timezone.utc) - timedelta(seconds=60),
     )
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.post(
         f"/api/v1/workflows/wf_1/executions/{execution_id}/approvals/{task_id}/approve"
@@ -420,7 +400,7 @@ def test_get_execution_not_found_returns_structured_error(tmp_path):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow_execution_and_task(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.get("/api/v1/workflows/wf_1/executions/exec_not_exists")
     assert resp.status_code == 404
@@ -433,7 +413,7 @@ def test_get_execution_status_not_found_returns_structured_error(tmp_path):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow_execution_and_task(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.get("/api/v1/workflows/wf_1/executions/exec_not_exists/status")
     assert resp.status_code == 404
@@ -446,7 +426,7 @@ def test_list_execution_approvals_not_found_returns_structured_error(tmp_path):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow_execution_and_task(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.get("/api/v1/workflows/wf_1/executions/exec_not_exists/approvals")
     assert resp.status_code == 404
@@ -459,7 +439,7 @@ def test_reconcile_execution_not_found_returns_structured_error(tmp_path):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow_execution_and_task(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.post("/api/v1/workflows/wf_1/executions/exec_not_exists/reconcile")
     assert resp.status_code == 404
@@ -471,7 +451,7 @@ def test_reconcile_execution_not_found_returns_structured_error(tmp_path):
 def test_get_quota_workflow_not_found_returns_structured_error(tmp_path):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.get("/api/v1/workflows/wf_not_exists/quota")
     assert resp.status_code == 404
@@ -484,7 +464,7 @@ def test_set_governance_invalid_strategy_returns_structured_error(tmp_path):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow_execution_and_task(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.put(
         "/api/v1/workflows/wf_1/governance",
@@ -499,7 +479,7 @@ def test_set_governance_invalid_strategy_returns_structured_error(tmp_path):
 def test_get_workflow_not_found_returns_structured_error(tmp_path, fallback_probe):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.get("/api/v1/workflows/wf_not_exists")
     assert resp.status_code == 404
@@ -513,7 +493,7 @@ def test_get_version_not_found_returns_structured_error(tmp_path):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow_execution_and_task(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.get("/api/v1/workflows/wf_1/versions/v_nonexistent")
     assert resp.status_code == 404
@@ -526,7 +506,7 @@ def test_diff_versions_from_missing_returns_structured_error(tmp_path):
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow_execution_and_task(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.get(
         "/api/v1/workflows/wf_1/versions/compare",
@@ -543,7 +523,7 @@ def test_workflow_impact_api_supports_risk_summary_and_published_filter(tmp_path
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow_execution_and_task(session_factory)
     target_version_id = _seed_workflow_versions_for_impact(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp_all = client.get(
         "/api/v1/workflows/wf_1/impact",
@@ -639,7 +619,7 @@ def test_execution_call_chain_api_returns_parent_child_links(tmp_path):
             )
         )
         db.commit()
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
     resp = client.get(f"/api/v1/workflows/wf_1/executions/{execution_id}/call-chain")
     assert resp.status_code == 200
     data = resp.json()
@@ -661,7 +641,7 @@ def test_publish_version_blocks_on_subworkflow_breaking_impact(tmp_path):
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow_execution_and_task(session_factory)
     _seed_versions_for_publish_breaking_guard(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     resp = client.post("/api/v1/workflows/wf_1/versions/v_target_new/publish")
     assert resp.status_code == 400

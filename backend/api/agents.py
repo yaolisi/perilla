@@ -1,5 +1,6 @@
 import json
 import asyncio
+import math
 import re
 import hashlib
 from string import Formatter
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Annotated, List, Literal, Optional, Dict, Any, AsyncIterator, cast
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from sqlalchemy.orm import Session
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -42,9 +44,10 @@ from core.tools.sandbox import resolve_in_workspace, WorkspacePathError
 from core.security.deps import require_authenticated_platform_admin
 from core.security.skill_policy import get_blocked_skills
 from core.idempotency.service import IdempotencyService
-from core.data.base import SessionLocal
+from core.data.base import get_db
 from config.settings import settings
-from api.errors import raise_api_error  # type: ignore[import-untyped]
+from api.error_i18n import localize_error_message, resolve_accept_language_for_sse
+from api.errors import APIErrorHttpEnvelope, raise_api_error  # type: ignore[import-untyped]
 
 router = APIRouter(
     prefix="/api/agents",
@@ -319,6 +322,160 @@ def _validate_model_params_tool_failure_reflection(model_params: Optional[Dict[s
         )
 
 
+def _validate_model_params_rag(model_params: Optional[Dict[str, Any]]) -> None:
+    """
+    校验 model_params 中与 AgentLoop / RAGRetrieval 一致的 RAG 键（仅当键存在且非 null）。
+    与前端 agentRagModelParams 的 clamp 范围对齐。
+    """
+    if not model_params:
+        return
+
+    def _bad(field: str, message: str, **details: Any) -> None:
+        raise_api_error(
+            status_code=400,
+            code="agent_invalid_model_params_rag",
+            message=message,
+            details={"field": field, **details},
+        )
+
+    mp = model_params
+
+    if mp.get("rag_top_k") is not None:
+        v = mp["rag_top_k"]
+        try:
+            if isinstance(v, bool):
+                raise ValueError
+            n = int(v)
+        except (TypeError, ValueError):
+            _bad("model_params.rag_top_k", "model_params.rag_top_k must be an integer between 1 and 50")
+        if n < 1 or n > 50:
+            _bad("model_params.rag_top_k", "model_params.rag_top_k must be between 1 and 50", value=n)
+
+    if mp.get("rag_score_threshold") is not None:
+        try:
+            x = float(mp["rag_score_threshold"])
+        except (TypeError, ValueError):
+            _bad("model_params.rag_score_threshold", "model_params.rag_score_threshold must be a number")
+        if math.isnan(x) or x <= 0 or x > 100:
+            _bad(
+                "model_params.rag_score_threshold",
+                "model_params.rag_score_threshold must be between 0 and 100 (exclusive 0)",
+                value=x,
+            )
+
+    if mp.get("rag_retrieval_mode") is not None:
+        m = str(mp["rag_retrieval_mode"]).strip().lower()
+        if m not in ("hybrid", "vector"):
+            _bad(
+                "model_params.rag_retrieval_mode",
+                "model_params.rag_retrieval_mode must be hybrid or vector",
+            )
+
+    if mp.get("rag_min_relevance_score") is not None:
+        try:
+            x = float(mp["rag_min_relevance_score"])
+        except (TypeError, ValueError):
+            _bad("model_params.rag_min_relevance_score", "model_params.rag_min_relevance_score must be a number")
+        if math.isnan(x) or x < 0 or x > 1:
+            _bad(
+                "model_params.rag_min_relevance_score",
+                "model_params.rag_min_relevance_score must be between 0 and 1",
+                value=x,
+            )
+
+    def _boolish(field: str, val: Any) -> None:
+        if val is None:
+            return
+        if isinstance(val, bool):
+            return
+        if isinstance(val, int) and val in (0, 1):
+            return
+        if isinstance(val, str) and val.strip().lower() in (
+            "0",
+            "1",
+            "true",
+            "false",
+            "yes",
+            "no",
+            "on",
+            "off",
+        ):
+            return
+        _bad(field, f"{field} must be a boolean (or 0/1, or common true/false strings)")
+
+    _boolish("model_params.rag_multi_hop_enabled", mp.get("rag_multi_hop_enabled"))
+    _boolish("model_params.rag_multi_hop_relax_relevance", mp.get("rag_multi_hop_relax_relevance"))
+
+    if mp.get("rag_multi_hop_max_rounds") is not None:
+        v = mp["rag_multi_hop_max_rounds"]
+        try:
+            if isinstance(v, bool):
+                raise ValueError
+            n = int(v)
+        except (TypeError, ValueError):
+            _bad(
+                "model_params.rag_multi_hop_max_rounds",
+                "model_params.rag_multi_hop_max_rounds must be an integer between 2 and 5",
+            )
+        if n < 2 or n > 5:
+            _bad(
+                "model_params.rag_multi_hop_max_rounds",
+                "model_params.rag_multi_hop_max_rounds must be between 2 and 5",
+                value=n,
+            )
+
+    if mp.get("rag_multi_hop_min_chunks") is not None:
+        v = mp["rag_multi_hop_min_chunks"]
+        try:
+            if isinstance(v, bool):
+                raise ValueError
+            n = int(v)
+        except (TypeError, ValueError):
+            _bad(
+                "model_params.rag_multi_hop_min_chunks",
+                "model_params.rag_multi_hop_min_chunks must be an integer between 0 and 50",
+            )
+        if n < 0 or n > 50:
+            _bad(
+                "model_params.rag_multi_hop_min_chunks",
+                "model_params.rag_multi_hop_min_chunks must be between 0 and 50",
+                value=n,
+            )
+
+    if mp.get("rag_multi_hop_min_best_relevance") is not None:
+        try:
+            x = float(mp["rag_multi_hop_min_best_relevance"])
+        except (TypeError, ValueError):
+            _bad(
+                "model_params.rag_multi_hop_min_best_relevance",
+                "model_params.rag_multi_hop_min_best_relevance must be a number",
+            )
+        if math.isnan(x) or x < 0 or x > 1:
+            _bad(
+                "model_params.rag_multi_hop_min_best_relevance",
+                "model_params.rag_multi_hop_min_best_relevance must be between 0 and 1",
+                value=x,
+            )
+
+    if mp.get("rag_multi_hop_feedback_chars") is not None:
+        v = mp["rag_multi_hop_feedback_chars"]
+        try:
+            if isinstance(v, bool):
+                raise ValueError
+            n = int(v)
+        except (TypeError, ValueError):
+            _bad(
+                "model_params.rag_multi_hop_feedback_chars",
+                "model_params.rag_multi_hop_feedback_chars must be an integer between 80 and 2000",
+            )
+        if n < 80 or n > 2000:
+            _bad(
+                "model_params.rag_multi_hop_feedback_chars",
+                "model_params.rag_multi_hop_feedback_chars must be between 80 and 2000",
+                value=n,
+            )
+
+
 def _apply_response_mode(
     model_params: Optional[Dict[str, Any]],
     response_mode: Optional[str],
@@ -467,7 +624,20 @@ async def list_agents() -> AgentsListEnvelope:
     data = [_agent_with_skills_meta(a) for a in registry.list_agents()]
     return AgentsListEnvelope(object="list", data=data)
 
-@router.post("", response_model=AgentWithSkillsMetaResponse)
+@router.post(
+    "",
+    response_model=AgentWithSkillsMetaResponse,
+    responses={
+        400: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Business validation failed (e.g. invalid model_params / RAG fields).",
+        },
+        503: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Knowledge base store unavailable when validating rag_ids.",
+        },
+    },
+)
 async def create_agent(req: CreateAgentRequest) -> AgentWithSkillsMetaResponse:
     """Create a new agent with validation"""
     registry = get_agent_registry()
@@ -554,6 +724,7 @@ async def create_agent(req: CreateAgentRequest) -> AgentWithSkillsMetaResponse:
     _validate_execution_strategy_field(req.execution_strategy)
     _validate_kernel_opts_consistency(req.execution_strategy, req.max_parallel_nodes, model_params)
     _validate_model_params_tool_failure_reflection(model_params)
+    _validate_model_params_rag(model_params)
 
     agent = AgentDefinition(
         agent_id=agent_id,
@@ -583,7 +754,20 @@ async def create_agent(req: CreateAgentRequest) -> AgentWithSkillsMetaResponse:
     raise_api_error(status_code=500, code="agent_create_failed", message="Failed to create agent")
 
 
-@router.post("/generate-from-nl", response_model=GenerateAgentFromNlResult)
+@router.post(
+    "/generate-from-nl",
+    response_model=GenerateAgentFromNlResult,
+    responses={
+        400: {
+            "model": APIErrorHttpEnvelope,
+            "description": "NL draft validation failed (e.g. description too short, unknown model).",
+        },
+        503: {
+            "model": APIErrorHttpEnvelope,
+            "description": "No models available for NL generation.",
+        },
+    },
+)
 async def generate_agent_from_nl(req: GenerateAgentFromNlRequest) -> GenerateAgentFromNlResult:
     """
     基于本地模型与 Skill 语义发现生成 Agent 草稿；不写入数据库。
@@ -625,7 +809,16 @@ async def generate_agent_from_nl(req: GenerateAgentFromNlRequest) -> GenerateAge
         )
 
 
-@router.get("/{agent_id}", response_model=AgentWithSkillsMetaResponse)
+@router.get(
+    "/{agent_id}",
+    response_model=AgentWithSkillsMetaResponse,
+    responses={
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Agent not found.",
+        },
+    },
+)
 async def get_agent(agent_id: str) -> AgentWithSkillsMetaResponse:
     registry = get_agent_registry()
     agent = registry.get_agent(agent_id)
@@ -638,7 +831,24 @@ async def get_agent(agent_id: str) -> AgentWithSkillsMetaResponse:
         )
     return _agent_with_skills_meta(agent)
 
-@router.put("/{agent_id}", response_model=AgentWithSkillsMetaResponse)
+@router.put(
+    "/{agent_id}",
+    response_model=AgentWithSkillsMetaResponse,
+    responses={
+        400: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Business validation failed (e.g. invalid model_params / RAG fields).",
+        },
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Agent not found.",
+        },
+        503: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Knowledge base store unavailable when validating rag_ids.",
+        },
+    },
+)
 async def update_agent(agent_id: str, req: CreateAgentRequest) -> AgentWithSkillsMetaResponse:
     registry = get_agent_registry()
     
@@ -665,7 +875,26 @@ async def update_agent(agent_id: str, req: CreateAgentRequest) -> AgentWithSkill
                 details={"skill_id": skill_id},
             )
     _enforce_skill_safety(enabled_skills)
-    
+
+    # Normalize and validate rag_ids (knowledge bases), aligned with create_agent
+    rag_ids = _normalize_id_list(req.rag_ids)
+    if rag_ids:
+        kb_store = get_kb_store()
+        if not kb_store:
+            raise_api_error(
+                status_code=503,
+                code="agent_kb_store_unavailable",
+                message="Knowledge base store is not available. Please try again later.",
+            )
+        for kb_id in rag_ids:
+            if not kb_store.get_knowledge_base(kb_id):
+                raise_api_error(
+                    status_code=400,
+                    code="agent_knowledge_base_not_found",
+                    message=f"Knowledge base '{kb_id}' not found. Please select a valid knowledge base.",
+                    details={"knowledge_base_id": kb_id},
+                )
+
     # 深度合并 model_params：保留原有字段，只更新请求中提供的字段
     if req.model_params is not None:
         existing_params = agent_model_params_as_dict(existing_agent.model_params)
@@ -709,6 +938,7 @@ async def update_agent(agent_id: str, req: CreateAgentRequest) -> AgentWithSkill
     _validate_execution_strategy_field(exec_strategy)
     _validate_kernel_opts_consistency(exec_strategy, max_parallel, model_params)
     _validate_model_params_tool_failure_reflection(model_params)
+    _validate_model_params_rag(model_params)
 
     agent = AgentDefinition(
         agent_id=agent_id,
@@ -718,7 +948,7 @@ async def update_agent(agent_id: str, req: CreateAgentRequest) -> AgentWithSkill
         system_prompt=req.system_prompt,
         enabled_skills=enabled_skills,
         tool_ids=[s[8:] for s in enabled_skills if s.startswith("builtin_")],
-        rag_ids=req.rag_ids,
+        rag_ids=rag_ids,
         max_steps=req.max_steps,
         temperature=req.temperature,
         execution_mode=req.execution_mode or "legacy",
@@ -734,7 +964,16 @@ async def update_agent(agent_id: str, req: CreateAgentRequest) -> AgentWithSkill
         return _agent_with_skills_meta(agent)
     raise_api_error(status_code=500, code="agent_update_failed", message="Failed to update agent")
 
-@router.delete("/{agent_id}", response_model=AgentDeleteOkResponse)
+@router.delete(
+    "/{agent_id}",
+    response_model=AgentDeleteOkResponse,
+    responses={
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Agent not found.",
+        },
+    },
+)
 async def delete_agent(agent_id: str) -> AgentDeleteOkResponse:
     registry = get_agent_registry()
     if registry.delete_agent(agent_id):
@@ -1011,16 +1250,16 @@ def _prepare_run_with_files_session(
 
 def _claim_run_idempotency(
     *,
+    db: Session,
     idem_key: Optional[str],
     user_id: str,
     agent_id: str,
     req: RunAgentRequest,
     session_store: Any,
-) -> tuple[Optional[Any], Optional[IdempotencyService], Optional[Any]]:
+) -> tuple[Optional[IdempotencyService], Optional[Any]]:
     if not idem_key:
-        return None, None, None
-    idem_db = SessionLocal()
-    idem_service = IdempotencyService(idem_db)
+        return None, None
+    idem_service = IdempotencyService(db)
     req_hash = _stable_request_hash(
         {
             "agent_id": agent_id,
@@ -1049,14 +1288,14 @@ def _claim_run_idempotency(
         if claim.record.response_ref:
             existing_session = session_store.get_session(claim.record.response_ref)
             if existing_session:
-                return idem_db, idem_service, existing_session
+                return idem_service, existing_session
         raise_api_error(
             status_code=409,
             code="idempotency_in_progress",
             message="Idempotent request is still processing; retry later",
             details={"scope": "agent_run"},
         )
-    return idem_db, idem_service, idem_record
+    return idem_service, idem_record
 
 
 def _prepare_run_session(
@@ -1133,14 +1372,27 @@ async def _execute_run_runtime(
         raise
 
 
-@router.post("/{agent_id}/run", response_model=AgentSession)
-async def run_agent(agent_id: str, req: RunAgentRequest, request: Request) -> AgentSession:
+@router.post(
+    "/{agent_id}/run",
+    response_model=AgentSession,
+    responses={
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Agent not found.",
+        },
+    },
+)
+async def run_agent(
+    agent_id: str,
+    req: RunAgentRequest,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> AgentSession:
     registry = get_agent_registry()
     session_store = get_agent_session_store()
     executor = get_agent_executor()
     user_id = _get_user_id(request)
     idem_key = _extract_idempotency_key(request)
-    idem_db = None
     idem_service = None
     idem_record = None
     
@@ -1153,53 +1405,63 @@ async def run_agent(agent_id: str, req: RunAgentRequest, request: Request) -> Ag
             details={"agent_id": agent_id},
         )
     assert agent is not None
-    
-    try:
-        # 获取或创建会话
-        session_id = req.session_id or f"asess_{uuid.uuid4().hex[:12]}"
 
-        idem_db, idem_service, idem_claim_or_session = _claim_run_idempotency(
-            idem_key=idem_key,
-            user_id=user_id,
-            agent_id=agent_id,
-            req=req,
-            session_store=session_store,
-        )
-        if isinstance(idem_claim_or_session, AgentSession):
-            return idem_claim_or_session
-        idem_record = idem_claim_or_session
+    # 获取或创建会话
+    session_id = req.session_id or f"asess_{uuid.uuid4().hex[:12]}"
 
-        collab = build_api_root_collaboration(
-            agent_id,
-            correlation_id=req.correlation_id,
-            orchestrator_agent_id=req.orchestrator_agent_id,
-            invoked_from=req.invoked_from.model_dump(mode="json") if req.invoked_from is not None else None,
-        )
-        session, workspace = _prepare_run_session(
-            session_store=session_store,
-            session_id=session_id,
-            agent_id=agent_id,
-            messages=req.messages,
-            agent=agent,
-            collaboration=collab,
-        )
-        return await _execute_run_runtime(
-            executor=executor,
-            agent=agent,
-            session=session,
-            workspace=workspace,
-            session_store=session_store,
-            session_id=session_id,
-            agent_id=agent_id,
-            idem_service=idem_service,
-            idem_record=idem_record,
-        )
-    finally:
-        if idem_db is not None:
-            idem_db.close()
+    idem_service, idem_claim_or_session = _claim_run_idempotency(
+        db=db,
+        idem_key=idem_key,
+        user_id=user_id,
+        agent_id=agent_id,
+        req=req,
+        session_store=session_store,
+    )
+    if isinstance(idem_claim_or_session, AgentSession):
+        return idem_claim_or_session
+    idem_record = idem_claim_or_session
+
+    collab = build_api_root_collaboration(
+        agent_id,
+        correlation_id=req.correlation_id,
+        orchestrator_agent_id=req.orchestrator_agent_id,
+        invoked_from=req.invoked_from.model_dump(mode="json") if req.invoked_from is not None else None,
+    )
+    session, workspace = _prepare_run_session(
+        session_store=session_store,
+        session_id=session_id,
+        agent_id=agent_id,
+        messages=req.messages,
+        agent=agent,
+        collaboration=collab,
+    )
+    return await _execute_run_runtime(
+        executor=executor,
+        agent=agent,
+        session=session,
+        workspace=workspace,
+        session_store=session_store,
+        session_id=session_id,
+        agent_id=agent_id,
+        idem_service=idem_service,
+        idem_record=idem_record,
+    )
 
 
-@router.post("/{agent_id}/run/with-files", response_model=AgentSession)
+@router.post(
+    "/{agent_id}/run/with-files",
+    response_model=AgentSession,
+    responses={
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Agent not found.",
+        },
+        413: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Too many uploaded files.",
+        },
+    },
+)
 async def run_agent_with_files(
     agent_id: str,
     messages: Annotated[str, Form(..., description="JSON array of Message objects")],
@@ -1293,7 +1555,16 @@ async def list_agent_sessions(
     sessions = session_store.list_sessions(user_id=user_id, limit=limit, agent_id=agent_id)
     return AgentSessionsListEnvelope(object="list", data=sessions)
 
-@session_router.get("/agent-sessions/{session_id}", response_model=AgentSession)
+@session_router.get(
+    "/agent-sessions/{session_id}",
+    response_model=AgentSession,
+    responses={
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Session not found.",
+        },
+    },
+)
 async def get_agent_session(session_id: str) -> AgentSession:
     session_store = get_agent_session_store()
     session = session_store.get_session(session_id)
@@ -1324,13 +1595,32 @@ def _build_agent_session_delta(session: AgentSession) -> Dict[str, Any]:
     }
 
 
-@session_router.get("/agent-sessions/{session_id}/stream")
+@session_router.get(
+    "/agent-sessions/{session_id}/stream",
+    responses={
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Session not found.",
+        },
+    },
+)
 async def stream_agent_session_status(
     session_id: str,
+    request: Request,
     interval_ms: Annotated[int, Query(ge=300, le=5000, description="SSE 推送间隔（毫秒）")] = 900,
     compact: Annotated[bool, Query(description="true 时推送 status_delta（轻量增量）")] = False,
+    lang: Annotated[
+        Optional[str],
+        Query(description="UI locale for SSE payloads (zh|en); EventSource cannot set Accept-Language"),
+    ] = None,
 ) -> StreamingResponse:
     """SSE 推送 Agent Session 状态，前端可用来替代高频轮询。"""
+    accept_sse = resolve_accept_language_for_sse(request, lang)
+    sse_session_not_found_text = localize_error_message(
+        code="agent_session_not_found",
+        default_message=SESSION_NOT_FOUND_MESSAGE,
+        accept_language=accept_sse,
+    )
     session_store = get_agent_session_store()
     if not session_store.get_session(session_id):
         raise_api_error(
@@ -1356,7 +1646,7 @@ async def stream_agent_session_status(
                         {
                             "type": "error",
                             "error_code": SSE_STREAM_RESOURCE_NOT_FOUND_ERROR_CODE,
-                            "message": SESSION_NOT_FOUND_MESSAGE,
+                            "message": sse_session_not_found_text,
                         }
                     )
                     break
@@ -1409,7 +1699,19 @@ async def stream_agent_session_status(
         },
     )
 
-@session_router.get("/agent-sessions/{session_id}/files/{filename}")
+@session_router.get(
+    "/agent-sessions/{session_id}/files/{filename}",
+    responses={
+        400: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Invalid workspace path.",
+        },
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Session, workspace, or file not found.",
+        },
+    },
+)
 async def get_agent_session_file(session_id: str, filename: str) -> FileResponse:
     """Serve a file from the agent session workspace."""
     session_store = get_agent_session_store()
@@ -1454,7 +1756,20 @@ class UpdateAgentSessionRequest(BaseModel):
     messages: Optional[List[Message]] = None
     status: Optional[str] = None
 
-@session_router.patch("/agent-sessions/{session_id}", response_model=AgentSession)
+@session_router.patch(
+    "/agent-sessions/{session_id}",
+    response_model=AgentSession,
+    responses={
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Session not found.",
+        },
+        500: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Failed to persist session update.",
+        },
+    },
+)
 async def update_agent_session(session_id: str, req: UpdateAgentSessionRequest) -> AgentSession:
     session_store = get_agent_session_store()
     session = session_store.get_session(session_id)
@@ -1487,7 +1802,16 @@ async def get_agent_trace(session_id: str) -> AgentTraceEventsListEnvelope:
     traces = trace_store.get_session_traces(session_id)
     return AgentTraceEventsListEnvelope(object="list", data=traces)
 
-@session_router.delete("/agent-sessions/{session_id}/messages/{message_index}", response_model=AgentSession)
+@session_router.delete(
+    "/agent-sessions/{session_id}/messages/{message_index}",
+    response_model=AgentSession,
+    responses={
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Session or message not found.",
+        },
+    },
+)
 async def delete_agent_session_message(session_id: str, message_index: int) -> AgentSession:
     """Delete a message from agent session by index"""
     session_store = get_agent_session_store()
@@ -1510,7 +1834,16 @@ async def delete_agent_session_message(session_id: str, message_index: int) -> A
         )
     return updated_session
 
-@session_router.delete("/agent-sessions/{session_id}", response_model=AgentSessionDeletedResponse)
+@session_router.delete(
+    "/agent-sessions/{session_id}",
+    response_model=AgentSessionDeletedResponse,
+    responses={
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Session not found or not owned by user.",
+        },
+    },
+)
 async def delete_agent_session(request: Request, session_id: str) -> AgentSessionDeletedResponse:
     """Delete an entire agent session"""
     user_id = _get_user_id(request)

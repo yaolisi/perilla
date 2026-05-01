@@ -31,13 +31,15 @@ class AgentLoop:
         self._rag_cache: Dict[str, Dict[str, tuple]] = {}
         self._cache_ttl = 300  # 5 minutes cache TTL
         
-    def _get_cached_rag_context(self, session_id: str, query: str, rag_ids: List[str]) -> Optional[str]:
+    def _get_cached_rag_context(
+        self, session_id: str, query: str, rag_ids: List[str], extra_sig: str = ""
+    ) -> Optional[str]:
         """Get cached RAG context if available and not expired"""
         if session_id not in self._rag_cache:
             return None
             
-        # Create cache key from query and RAG IDs
-        cache_key = hashlib.md5(f"{query}:{sorted(rag_ids)}".encode()).hexdigest()
+        # Create cache key from query, RAG IDs, and optional RAG mode signature (e.g. multi-hop)
+        cache_key = hashlib.md5(f"{query}:{sorted(rag_ids)}{extra_sig}".encode()).hexdigest()
         
         if cache_key not in self._rag_cache[session_id]:
             return None
@@ -52,12 +54,14 @@ class AgentLoop:
         logger.info(f"[AgentLoop] Using cached RAG context for query")
         return context
         
-    def _set_cached_rag_context(self, session_id: str, query: str, rag_ids: List[str], context: str):
+    def _set_cached_rag_context(
+        self, session_id: str, query: str, rag_ids: List[str], context: str, extra_sig: str = ""
+    ):
         """Cache RAG context"""
         if session_id not in self._rag_cache:
             self._rag_cache[session_id] = {}
             
-        cache_key = hashlib.md5(f"{query}:{sorted(rag_ids)}".encode()).hexdigest()
+        cache_key = hashlib.md5(f"{query}:{sorted(rag_ids)}{extra_sig}".encode()).hexdigest()
         self._rag_cache[session_id][cache_key] = (time.time(), context)
         logger.info(f"[AgentLoop] Cached RAG context for query")
 
@@ -643,19 +647,100 @@ class AgentLoop:
                         if last_user_query:
                             # 检查缓存
                             session_id = getattr(session, "session_id", "unknown")
-                            cached_context = self._get_cached_rag_context(session_id, last_user_query, agent.rag_ids)
-                            
+                            mp = agent_model_params_as_dict(agent.model_params)
+                            try:
+                                r_top_k = int(mp.get("rag_top_k", 5))
+                            except Exception:
+                                r_top_k = 5
+                            r_top_k = max(1, min(50, r_top_k))
+                            thr_raw = mp.get("rag_score_threshold")
+                            try:
+                                r_thr = float(thr_raw) if thr_raw is not None else None
+                            except Exception:
+                                r_thr = None
+                            rm_raw = str(mp.get("rag_retrieval_mode", "hybrid")).strip().lower()
+                            r_mode = rm_raw if rm_raw in ("vector", "hybrid") else "hybrid"
+                            try:
+                                r_mrs = float(mp.get("rag_min_relevance_score", 0.5))
+                            except Exception:
+                                r_mrs = 0.5
+                            r_mrs = max(0.0, min(1.0, r_mrs))
+
+                            def _mp_bool(val: Any, default: bool = False) -> bool:
+                                if val is None:
+                                    return default
+                                if isinstance(val, bool):
+                                    return val
+                                if isinstance(val, (int, float)):
+                                    return bool(val)
+                                s = str(val).strip().lower()
+                                return s in ("1", "true", "yes", "on")
+
+                            rag_mh = _mp_bool(mp.get("rag_multi_hop_enabled"), False)
+                            try:
+                                mh_rounds = int(mp.get("rag_multi_hop_max_rounds", 3))
+                            except Exception:
+                                mh_rounds = 3
+                            mh_rounds = max(2, min(5, mh_rounds))
+                            try:
+                                mh_min_chunks = int(mp.get("rag_multi_hop_min_chunks", 2))
+                            except Exception:
+                                mh_min_chunks = 2
+                            mh_min_chunks = max(0, min(50, mh_min_chunks))
+                            try:
+                                mh_min_best = float(mp.get("rag_multi_hop_min_best_relevance", 0.0))
+                            except Exception:
+                                mh_min_best = 0.0
+                            mh_min_best = max(0.0, min(1.0, mh_min_best))
+                            mh_relax = _mp_bool(mp.get("rag_multi_hop_relax_relevance"), True)
+                            try:
+                                mh_fb = int(mp.get("rag_multi_hop_feedback_chars", 320))
+                            except Exception:
+                                mh_fb = 320
+                            mh_fb = max(80, min(2000, mh_fb))
+
+                            rag_cache_sig = ""
+                            if rag_mh:
+                                rag_cache_sig = (
+                                    f"|mh:{mh_rounds}:{mh_min_chunks}:{mh_min_best}:"
+                                    f"{1 if mh_relax else 0}:{mh_fb}:{r_mode}:{r_top_k}:{r_mrs}"
+                                )
+
+                            cached_context = self._get_cached_rag_context(
+                                session_id, last_user_query, agent.rag_ids, extra_sig=rag_cache_sig
+                            )
+
                             if cached_context is not None:
                                 rag_context = cached_context
                             elif session.step == 0:  # 仅在第一步进行检索
+                                fb_msgs = [
+                                    {"role": m.role, "content": m.content or ""}
+                                    for m in session.messages
+                                ]
                                 rag_context = await self.rag_retrieval.retrieve_context(
                                     query=last_user_query,
                                     knowledge_base_ids=agent.rag_ids,
-                                    top_k=5
+                                    top_k=r_top_k,
+                                    max_distance=r_thr,
+                                    retrieval_mode=r_mode,
+                                    min_relevance_score=r_mrs,
+                                    rag_multi_hop_enabled=rag_mh,
+                                    multi_hop_max_rounds=mh_rounds,
+                                    multi_hop_min_chunks=mh_min_chunks,
+                                    multi_hop_min_best_relevance=mh_min_best,
+                                    multi_hop_relax_relevance=mh_relax,
+                                    multi_hop_feedback_chars=mh_fb,
+                                    fallback_messages=fb_msgs,
                                 )
                                 if rag_context:
                                     # 缓存检索结果
-                                    self._set_cached_rag_context(session_id, last_user_query, agent.rag_ids, rag_context)
+                                    self._set_cached_rag_context(
+                                        session_id,
+                                        last_user_query,
+                                        agent.rag_ids,
+                                        rag_context,
+                                        extra_sig=rag_cache_sig,
+                                    )
                                     logger.info(f"[AgentLoop] Retrieved and cached RAG context ({len(rag_context)} chars) from {len(agent.rag_ids)} knowledge bases")
                             else:
                                 logger.debug(f"[AgentLoop] Skipping RAG retrieval on step {session.step} (not first step and no cache)")

@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from api import workflows as workflows_api
-from api.errors import register_error_handlers
 from core.data.base import get_db
+
+from tests.helpers import make_fastapi_app_router_only
 
 
 def _client() -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(workflows_api.router)
+    app = make_fastapi_app_router_only(workflows_api)
 
-    def _override_get_db():
+    def _override_get_db(_request: Request):
         class _Db:
             pass
 
@@ -222,3 +221,12 @@ def test_openapi_workflow_approvals_response_any_of_named_refs() -> None:
                 item_refs.add(ir)
     assert "#/components/schemas/WorkflowApprovalListResponse" in direct_refs
     assert "#/components/schemas/WorkflowApprovalTaskResponse" in item_refs
+
+
+def test_openapi_workflow_execution_stream_declares_lang_query() -> None:
+    client = _client()
+    spec = client.get("/openapi.json").json()
+    stream_path = spec["paths"]["/api/v1/workflows/{workflow_id}/executions/{execution_id}/stream"]["get"]
+    names = {p["name"] for p in stream_path.get("parameters") or []}
+    assert "lang" in names
+    assert "interval_ms" in names

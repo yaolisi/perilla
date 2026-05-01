@@ -7,13 +7,11 @@ import types
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
-from api.errors import register_error_handlers
 from core.data.base import Base
+from tests.helpers import build_workflow_integration_test_client
 from core.data.models.workflow import WorkflowORM
 from core.workflows.models.workflow_execution import (
     WorkflowExecution,
@@ -60,23 +58,6 @@ def _load_workflows_api_module():
     sys.modules["core.workflows.runtime.graph_runtime_adapter"] = adapter_stub
     sys.modules.pop("api.workflows", None)
     return importlib.import_module("api.workflows")
-
-
-def _build_client(session_factory, workflows_api):
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(workflows_api.router)
-
-    def _override_get_db():
-        db = session_factory()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[workflows_api.get_db] = _override_get_db
-    app.dependency_overrides[workflows_api.get_current_user] = lambda: "u1"
-    return TestClient(app)
 
 
 def _seed_workflow(session_factory):
@@ -166,7 +147,7 @@ def test_api_wait_true_control_flow_success_regression(tmp_path, monkeypatch, fa
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     def _fake_create_execution(self, request, triggered_by=None):
         return WorkflowExecution(
@@ -222,7 +203,7 @@ def test_api_wait_true_loop_failure_regression(tmp_path, monkeypatch, fallback_p
     workflows_api = _load_workflows_api_module()
     session_factory = _make_session_factory(tmp_path)
     _seed_workflow(session_factory)
-    client = _build_client(session_factory, workflows_api)
+    client = build_workflow_integration_test_client(session_factory, workflows_api)
 
     def _fake_create_execution(self, request, triggered_by=None):
         return WorkflowExecution(
@@ -251,7 +232,8 @@ def test_api_wait_true_loop_failure_regression(tmp_path, monkeypatch, fallback_p
         json=_execution_create_payload("loop-failure"),
     )
     assert resp.status_code == 500
-    detail = str(resp.json().get("detail") or "")
-    assert "LOOP_NODE_EXECUTION_FAILED" in detail
-    assert "loop-sync" in detail
+    body = resp.json()
+    assert body.get("detail") == "workflow runtime error"
+    assert body.get("error", {}).get("code") == "workflow_runtime_error"
+    assert body.get("error", {}).get("details", {}).get("execution_id") == "exec_reg_loop_fail"
     assert fallback_probe == []

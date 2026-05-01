@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import backup as backup_api
 from api import model_backups as model_backups_api
-from api.errors import register_error_handlers
 from core.security.deps import require_authenticated_platform_admin
 
+from tests.helpers import make_fastapi_app_router_only
 
-def _client_with(*routers) -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
-    for r in routers:
-        app.include_router(r)
+
+def _client_with(*router_items) -> TestClient:
+    app = make_fastapi_app_router_only(*router_items)
     app.dependency_overrides[require_authenticated_platform_admin] = lambda: None
     return TestClient(app)
 

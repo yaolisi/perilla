@@ -6,14 +6,13 @@ import gzip
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api.errors import register_error_handlers
 from config.settings import settings
 from core.types import Message
 from middleware.csrf_protection import CSRFMiddleware
 from middleware.user_context import UserContextMiddleware
+from tests.helpers import make_fastapi_app_router_only
 from tests.helpers.chat_stream_helpers import chat_prime_csrf
 
 
@@ -51,7 +50,7 @@ def chat_stream_client_mock(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         return st
 
     async def _prep_ctx(*_a: Any, **_k: Any) -> Any:
-        return (None, 0)
+        return (None, 0, None)
 
     monkeypatch.setattr(chat_api, "get_router", lambda: _Router())
     monkeypatch.setattr(chat_api, "_get_user_id", _uid)
@@ -59,8 +58,7 @@ def chat_stream_client_mock(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(chat_api, "_prepare_chat_request_state", _prep_state)
     monkeypatch.setattr(chat_api, "_prepare_chat_runtime_context", _prep_ctx)
 
-    app = FastAPI()
-    register_error_handlers(app)
+    app = make_fastapi_app_router_only(chat_api)
     app.add_middleware(UserContextMiddleware)
     app.add_middleware(CSRFMiddleware)
 
@@ -68,7 +66,6 @@ def chat_stream_client_mock(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     def _ping() -> dict[str, bool]:
         return {"ok": True}
 
-    app.include_router(chat_api.router)
     client = TestClient(app)
     try:
         yield client

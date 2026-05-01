@@ -32,6 +32,12 @@ const headerStreamFormat: ComputedRef<ChatStreamFormat> = computed({
     chat.streamFormat.value = v
   },
 })
+const headerRagMultiHop = computed({
+  get: () => chat.ragMultiHop.value,
+  set: (v: boolean) => {
+    chat.ragMultiHop.value = v
+  },
+})
 
 const abortController = ref<AbortController | null>(null)
 const scrollContainerRef = ref<any>(null)
@@ -453,6 +459,7 @@ onUnmounted(() => {
       v-model="chat.model.value" 
       v-model:stream-gzip="headerStreamGzip"
       v-model:stream-format="headerStreamFormat"
+      v-model:rag-multi-hop="headerRagMultiHop"
       :knowledge-base-id="chat.knowledgeBaseId.value"
       @update:knowledge-base-id="chat.knowledgeBaseId.value = $event"
     />

@@ -1,7 +1,7 @@
 """
 GET/PATCH/DELETE /api/agent-sessions/... 结构化错误响应集成测试。
 
-挂载 session_router + register_error_handlers；内存会话存储，避免真实 DB。
+挂载 ``session_router``（``make_fastapi_app_router_only``）；内存会话存储，避免真实 DB。
 """
 
 from __future__ import annotations
@@ -10,15 +10,14 @@ import json
 from typing import Any, Dict, Optional
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.agents import session_router as agent_sessions_router
-from api.errors import register_error_handlers
 from core.agent_runtime.session import AgentSession
 from core.security.deps import require_authenticated_platform_admin
 from core.security.rbac import PlatformRole
 from core.tools.sandbox import WorkspacePathError
+from tests.helpers import make_fastapi_app_router_only
 
 pytestmark = pytest.mark.no_fallback
 
@@ -72,9 +71,7 @@ def sessions_client(monkeypatch) -> TestClient:
     store = _MemSessionStore()
     monkeypatch.setattr("api.agents.get_agent_session_store", lambda: store)
 
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(agent_sessions_router)
+    app = make_fastapi_app_router_only(agent_sessions_router)
     app.dependency_overrides[require_authenticated_platform_admin] = lambda: PlatformRole.ADMIN
 
     client = TestClient(app)
@@ -240,6 +237,28 @@ def test_stream_agent_session_not_found_returns_structured_error(sessions_client
     assert body["error"]["details"]["session_id"] == "nonexistent-session"
 
 
+def test_stream_agent_session_not_found_localizes_json_when_lang_zh(sessions_client: TestClient):
+    """GET 阶段 404：?lang= 与统一错误处理（与 EventSource URL 对齐）。"""
+    resp = sessions_client.get(
+        "/api/agent-sessions/nonexistent-session/stream?lang=zh",
+        headers=HEADERS_ADMIN,
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "agent_session_not_found"
+    assert body.get("error", {}).get("message") == "智能体会话不存在"
+
+
+def test_stream_agent_session_not_found_localizes_json_when_lang_en(sessions_client: TestClient):
+    resp = sessions_client.get(
+        "/api/agent-sessions/nonexistent-session/stream?lang=en",
+        headers=HEADERS_ADMIN,
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body.get("error", {}).get("message") == "agent session not found"
+
+
 def test_stream_agent_session_idle_emits_status_and_terminal(sessions_client: TestClient):
     store: _MemSessionStore = sessions_client._test_session_store  # type: ignore[assignment]
     store._sessions["s_stream_idle"] = AgentSession(
@@ -336,3 +355,75 @@ def test_stream_agent_session_runtime_missing_emits_error_code(sessions_client: 
     first_obj = json.loads(data_lines[0].replace("data: ", "", 1))
     assert first_obj["type"] == "error"
     assert first_obj["error_code"] == "sse_stream_resource_not_found"
+
+
+def test_stream_agent_session_runtime_missing_sse_message_zh_when_lang_zh(sessions_client: TestClient):
+    """流内首帧 error（预检消耗一次 get_session 后循环内即缺失）：SSE message 随 ?lang= 本地化。"""
+    store: _MemSessionStore = sessions_client._test_session_store  # type: ignore[assignment]
+    session = AgentSession(
+        session_id="s_stream_missing_zh",
+        agent_id="a1",
+        user_id="default",
+        status="running",
+    )
+    store._sessions[session.session_id] = session
+
+    call_count = 0
+
+    def _flaky_get_session(session_id: str):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return session
+        return None
+
+    store.get_session = _flaky_get_session  # type: ignore[method-assign]
+
+    with sessions_client.stream(
+        "GET",
+        f"/api/agent-sessions/{session.session_id}/stream?lang=zh",
+        headers=HEADERS_ADMIN,
+    ) as resp:
+        assert resp.status_code == 200
+        lines = list(resp.iter_lines())
+
+    data_lines = [ln for ln in lines if ln.startswith("data: ")]
+    assert data_lines
+    first_obj = json.loads(data_lines[0].replace("data: ", "", 1))
+    assert first_obj["type"] == "error"
+    assert first_obj["error_code"] == "sse_stream_resource_not_found"
+    assert first_obj["message"] == "智能体会话不存在"
+
+
+def test_stream_agent_session_runtime_missing_sse_message_en_when_lang_en(sessions_client: TestClient):
+    store: _MemSessionStore = sessions_client._test_session_store  # type: ignore[assignment]
+    session = AgentSession(
+        session_id="s_stream_missing_en",
+        agent_id="a1",
+        user_id="default",
+        status="running",
+    )
+    store._sessions[session.session_id] = session
+
+    call_count = 0
+
+    def _flaky_get_session(session_id: str):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return session
+        return None
+
+    store.get_session = _flaky_get_session  # type: ignore[method-assign]
+
+    with sessions_client.stream(
+        "GET",
+        f"/api/agent-sessions/{session.session_id}/stream?lang=en",
+        headers=HEADERS_ADMIN,
+    ) as resp:
+        assert resp.status_code == 200
+        lines = list(resp.iter_lines())
+
+    data_lines = [ln for ln in lines if ln.startswith("data: ")]
+    first_obj = json.loads(data_lines[0].replace("data: ", "", 1))
+    assert first_obj["message"] == "agent session not found"

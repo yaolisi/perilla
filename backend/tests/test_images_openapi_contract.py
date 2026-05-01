@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import images as images_api
-from api.errors import register_error_handlers
+
+from tests.helpers import build_minimal_router_test_client
 
 
 def _client() -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(images_api.router)
-    return TestClient(app)
+    return build_minimal_router_test_client(images_api)
 
 
 def test_openapi_images_json_named_schemas() -> None:

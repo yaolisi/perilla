@@ -41,7 +41,13 @@
           "min_relevance_score": {"type": "number", "default": 0.5, "minimum": 0, "maximum": 1},
           "version_id": {"type": "string"},
           "version_label": {"type": "string"},
-          "score_threshold": {"type": "number", "default": 1.2, "minimum": 0, "maximum": 2}
+          "score_threshold": {"type": "number", "default": 1.2, "minimum": 0, "maximum": 2},
+          "multi_hop_enabled": {"type": "boolean", "default": false},
+          "multi_hop_max_rounds": {"type": "integer", "default": 3, "minimum": 2, "maximum": 5},
+          "multi_hop_min_chunks": {"type": "integer", "default": 2, "minimum": 0, "maximum": 50},
+          "multi_hop_min_best_relevance": {"type": "number", "default": 0, "minimum": 0, "maximum": 1},
+          "multi_hop_relax_relevance": {"type": "boolean", "default": true},
+          "multi_hop_feedback_chars": {"type": "integer", "default": 320, "minimum": 80, "maximum": 2000}
         }
       }
     },

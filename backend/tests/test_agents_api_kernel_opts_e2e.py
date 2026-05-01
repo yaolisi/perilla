@@ -49,10 +49,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.agents import router as agents_router
-from api.errors import register_error_handlers
 from core.agent_runtime.definition import AgentDefinition
 from core.security.deps import require_authenticated_platform_admin
 from core.security.rbac import PlatformRole
+
+from tests.helpers import make_fastapi_app_router_only
 
 pytestmark = pytest.mark.no_fallback
 
@@ -96,17 +97,12 @@ def mem_registry(monkeypatch) -> _MemRegistry:
 @pytest.fixture()
 def agents_client_auth_only(mem_registry: _MemRegistry) -> TestClient:
     """走真实鉴权依赖（不使用 dependency_overrides），用于 401/403。"""
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(agents_router)
-    return TestClient(app)
+    return TestClient(make_fastapi_app_router_only(agents_router))
 
 
 @pytest.fixture()
 def agents_client(mem_registry: _MemRegistry, monkeypatch) -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(agents_router)
+    app = make_fastapi_app_router_only(agents_router)
     app.dependency_overrides[require_authenticated_platform_admin] = lambda: PlatformRole.ADMIN
 
     seed = AgentDefinition(
@@ -164,6 +160,59 @@ def test_put_agent_returns_400_when_execution_strategy_conflicts(
     assert body.get("error", {}).get("code") == "agent_kernel_opts_execution_strategy_conflict"
     assert "kernel options conflict" in body.get("detail", "")
     assert fallback_probe == []
+
+
+def test_put_agent_returns_400_when_model_params_rag_invalid(
+    agents_client: TestClient,
+):
+    resp = agents_client.put(
+        "/api/agents/agent_kernel_e2e",
+        json=_put_payload(model_params={"rag_top_k": 0}),
+        headers={"X-Api-Key": "dummy-admin-key"},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "agent_invalid_model_params_rag"
+    assert body.get("error", {}).get("details", {}).get("field") == "model_params.rag_top_k"
+
+
+def test_put_agent_returns_503_when_kb_store_unavailable_with_rag_ids(
+    agents_client: TestClient,
+    monkeypatch,
+):
+    monkeypatch.setattr("api.agents.get_kb_store", lambda: None)
+    resp = agents_client.put(
+        "/api/agents/agent_kernel_e2e",
+        json=_put_payload(rag_ids=["kb_any"]),
+        headers={"X-Api-Key": "dummy-admin-key"},
+    )
+    assert resp.status_code == 503
+    assert resp.json().get("error", {}).get("code") == "agent_kb_store_unavailable"
+
+
+def test_post_create_agent_returns_400_when_model_params_rag_invalid(
+    agents_client: TestClient,
+):
+    resp = agents_client.post(
+        "/api/agents",
+        json={
+            "name": "Bad RAG Params",
+            "description": "",
+            "model_id": "stub-model",
+            "system_prompt": "",
+            "enabled_skills": ["builtin_create.skill"],
+            "rag_ids": [],
+            "max_steps": 10,
+            "temperature": 0.7,
+            "execution_mode": "legacy",
+            "model_params": {"rag_min_relevance_score": 2},
+        },
+        headers={"X-Api-Key": "dummy-admin-key"},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body.get("error", {}).get("code") == "agent_invalid_model_params_rag"
+    assert body.get("error", {}).get("details", {}).get("field") == "model_params.rag_min_relevance_score"
 
 
 def test_put_agent_returns_400_when_max_parallel_conflicts(

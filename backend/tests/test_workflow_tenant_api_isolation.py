@@ -1,9 +1,10 @@
 from datetime import UTC, datetime
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from core.workflows.tenant_guard import resolve_tenant_id, namespace_matches_tenant
+from tests.helpers import make_fastapi_app_router_only
 
 
 def _ensure_workflow_tenant(workflow: dict, tenant_id: str) -> None:
@@ -12,7 +13,7 @@ def _ensure_workflow_tenant(workflow: dict, tenant_id: str) -> None:
 
 
 def _build_app(service):
-    app = FastAPI()
+    app = make_fastapi_app_router_only()
 
     @app.middleware("http")
     async def inject_tenant(request: Request, call_next):

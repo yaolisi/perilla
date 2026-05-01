@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Body, Depends, Query, Request
+from sqlalchemy.orm import Session
 from fastapi.responses import StreamingResponse
 import asyncio
 import psutil  # type: ignore[import-untyped]
@@ -57,7 +58,7 @@ from core.plugins.compatibility import build_plugin_compatibility_matrix
 from core.models.registry import get_model_registry
 from core.agent_runtime.definition import get_agent_registry
 from core.knowledge.knowledge_base_store import KnowledgeBaseStore
-from core.data.base import SessionLocal
+from core.data.base import get_db
 from core.idempotency.service import (
     IDEMPOTENCY_STATUS_FAILED,
     IDEMPOTENCY_STATUS_SUCCEEDED,
@@ -1341,14 +1342,17 @@ def _raise_idempotency_in_progress() -> None:
     )
 
 
-async def _run_replay_with_optional_idempotency(body: "EventBusDlqReplayBody", request: Request) -> Dict[str, Any]:
+async def _run_replay_with_optional_idempotency(
+    body: "EventBusDlqReplayBody",
+    request: Request,
+    db: Session,
+) -> Dict[str, Any]:
     idem_key = _extract_idempotency_key(request)
     if not idem_key:
         return await _run_replay_with_rate_limit(body)
 
     owner_id = str(getattr(request.state, "user_id", None) or "platform_admin")
-    idem_db = SessionLocal()
-    idem_service = IdempotencyService(idem_db)
+    idem_service = IdempotencyService(db)
     req_hash = _stable_request_hash(
         {
             "event_type": body.event_type,
@@ -1366,7 +1370,6 @@ async def _run_replay_with_optional_idempotency(body: "EventBusDlqReplayBody", r
         ttl_seconds=3600,
     )
     if claim.conflict:
-        idem_db.close()
         raise_api_error(
             status_code=409,
             code="idempotency_conflict",
@@ -1375,7 +1378,6 @@ async def _run_replay_with_optional_idempotency(body: "EventBusDlqReplayBody", r
         )
     if not claim.is_new:
         cached = _resolve_cached_replay_response(claim.record.status, claim.record.error_message)
-        idem_db.close()
         if cached is not None:
             return cached
         _raise_idempotency_in_progress()
@@ -1385,14 +1387,12 @@ async def _run_replay_with_optional_idempotency(body: "EventBusDlqReplayBody", r
         claim.record.status = IDEMPOTENCY_STATUS_SUCCEEDED
         claim.record.response_ref = "inline_json"
         claim.record.error_message = json.dumps(result, ensure_ascii=False)[:2000]
-        idem_db.commit()
+        db.commit()
     except Exception as e:
         claim.record.status = IDEMPOTENCY_STATUS_FAILED
         claim.record.error_message = str(e)[:2000]
-        idem_db.commit()
-        idem_db.close()
+        db.commit()
         raise
-    idem_db.close()
     return result
 
 
@@ -1664,6 +1664,7 @@ async def event_bus_dlq_replay(
     body: EventBusDlqReplayBody,
     request: Request,
     *,
+    db: Annotated[Session, Depends(get_db)],
     _role: Annotated[Any, Depends(require_platform_admin)],
 ) -> EventBusDlqReplayResponse:
     if not body.confirm:
@@ -1672,7 +1673,7 @@ async def event_bus_dlq_replay(
             code="event_bus_dlq_replay_confirmation_required",
             message="confirm=true is required to replay event bus DLQ.",
         )
-    result = await _run_replay_with_optional_idempotency(body, request)
+    result = await _run_replay_with_optional_idempotency(body, request, db)
     grouped_raw = result.get("grouped") or {}
     if not isinstance(grouped_raw, dict):
         grouped_raw = {}
@@ -2143,11 +2144,13 @@ def _load_rag_plugin_manifest() -> Dict[str, Any]:
 
 
 def _detect_multi_hop_retrieval_capability() -> bool:
-    # Phase 2 的“多跳”先以多阶段检索链路参数存在作为能力信号
+    # 多跳：manifest 中含运行时多跳开关，或含 hybrid 多阶段检索参数
     manifest = _load_rag_plugin_manifest()
     rag_props = (
         (((manifest.get("input_schema") or {}).get("properties") or {}).get("rag") or {}).get("properties") or {}
     )
+    if "multi_hop_enabled" in rag_props:
+        return True
     return all(key in rag_props for key in ("keyword_top_k", "vector_top_k", "rerank_top_k"))
 
 

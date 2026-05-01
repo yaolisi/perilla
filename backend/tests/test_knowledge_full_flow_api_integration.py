@@ -5,11 +5,10 @@ import hashlib
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import knowledge as knowledge_api
-from api.errors import register_error_handlers
+from tests.helpers import build_minimal_router_test_client
 from core.knowledge.knowledge_base_store import KnowledgeBaseConfig, KnowledgeBaseStore
 from core.knowledge.status import DocumentStatus
 
@@ -131,10 +130,8 @@ def knowledge_full_flow_client(
     monkeypatch.setattr(KnowledgeBaseStore, "_ensure_vec_table_dimension", lambda self, kb_id, dim: None)
     monkeypatch.setattr(KnowledgeBaseStore, "search_chunks", _fake_search_chunks)
 
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(knowledge_api.router)
-    return TestClient(app), store
+    client = build_minimal_router_test_client(knowledge_api)
+    return client, store
 
 
 def test_knowledge_full_flow_with_version_label(knowledge_full_flow_client: tuple[TestClient, KnowledgeBaseStore]):

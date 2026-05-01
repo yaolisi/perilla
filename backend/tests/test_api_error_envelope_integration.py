@@ -3,15 +3,13 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from api.errors import (
-    raise_api_error,
-    register_error_handlers,
-)
+from api.errors import raise_api_error
+
+from tests.helpers import make_fastapi_app_router_only
 
 
 def _build_app() -> FastAPI:
-    app = FastAPI()
-    register_error_handlers(app)
+    app = make_fastapi_app_router_only()
 
     @app.get("/api/core/raw-http-error")
     async def _raw_http_error():
@@ -61,6 +59,18 @@ def _build_app() -> FastAPI:
             message="tool not found",
         )
 
+    @app.get("/api/core/http-unknown-fields")
+    async def _http_unknown_fields():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "request_unknown_fields",
+                "message": "Request contains unknown fields",
+                "unknown_fields": ["extra_field"],
+                "allowed_fields": ["a", "b"],
+            },
+        )
+
     return app
 
 
@@ -105,6 +115,18 @@ def test_framework_http_exception_uses_fallback_code():
     assert body["detail"] == "unauthorized by framework"
     assert body["error"]["code"] == "http_unexpected_401"
     assert body["error"]["details"]["source"] == "http_exception_fallback"
+
+
+def test_structured_http_exception_merges_top_level_fields_into_error_details():
+    """与 request_whitelist 等中间件一致：顶层 unknown_fields / allowed_fields 进入 ``error.details``。"""
+    client = TestClient(_build_app())
+    resp = client.get("/api/core/http-unknown-fields")
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["code"] == "request_unknown_fields"
+    details = body["error"]["details"]
+    assert details["unknown_fields"] == ["extra_field"]
+    assert details["allowed_fields"] == ["a", "b"]
 
 
 def test_mcp_not_found_message_is_localized():

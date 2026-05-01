@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import knowledge as knowledge_api
-from api.errors import register_error_handlers
+from tests.helpers import build_minimal_router_test_client
 
 
 @pytest.fixture()
@@ -75,15 +74,16 @@ def knowledge_version_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClien
         def create_kb_version(self, kb_id: str, version_label: str, notes=None, status="ACTIVE"):
             return "kbv_new"
 
+        def _ensure_vec_table_dimension(self, kb_id: str, required_dim: int) -> None:
+            _ = (kb_id, required_dim)
+
     monkeypatch.setattr(knowledge_api, "_kb_store", _FakeKBStore())
     monkeypatch.setattr(knowledge_api, "get_model_registry", lambda: _FakeRegistry(), raising=False)
     monkeypatch.setattr("core.models.registry.get_model_registry", lambda: _FakeRegistry())
     monkeypatch.setattr("core.inference.get_inference_client", lambda: _FakeInferenceClient())
 
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(knowledge_api.router)
-    return TestClient(app), calls
+    client = build_minimal_router_test_client(knowledge_api)
+    return client, calls
 
 
 @pytest.mark.no_fallback

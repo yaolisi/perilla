@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import system as system_api
-from api.errors import register_error_handlers
+
+from tests.helpers import make_fastapi_app_router_only
 
 
 def _build_client() -> TestClient:
-    app = FastAPI()
-    register_error_handlers(app)
+    app = make_fastapi_app_router_only(system_api)
 
     @app.middleware("http")
     async def _inject_test_user(request, call_next):  # type: ignore[no-untyped-def]
         request.state.user_id = request.headers.get("X-User-Id")
         return await call_next(request)
 
-    app.include_router(system_api.router)
     app.dependency_overrides[system_api.require_authenticated_platform_admin] = lambda: None
     app.dependency_overrides[system_api.require_platform_admin] = lambda: None
     return TestClient(app)
