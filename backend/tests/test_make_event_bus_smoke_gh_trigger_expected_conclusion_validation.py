@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
+
 import hashlib
 import json
 import subprocess
@@ -18,6 +24,7 @@ def test_make_validate_gh_trigger_expected_conclusion_accepts_empty_default() ->
         ["make", "event-bus-smoke-validate-gh-trigger-expected-conclusion"],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -31,6 +38,7 @@ def test_make_validate_gh_trigger_expected_conclusion_accepts_success() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -44,6 +52,7 @@ def test_make_validate_gh_trigger_expected_conclusion_accepts_failure() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -57,6 +66,7 @@ def test_make_validate_gh_trigger_expected_conclusion_accepts_cancelled() -> Non
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -70,6 +80,7 @@ def test_make_validate_gh_trigger_expected_conclusion_rejects_invalid_value() ->
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode != 0
     assert "EVENT_BUS_SMOKE_GH_TRIGGER_EXPECTED_CONCLUSION must be empty or one of" in (result.stdout + result.stderr)
@@ -111,6 +122,7 @@ def test_make_validate_gh_trigger_inputs_audit_rejects_expected_conclusion_misma
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode != 0
     assert "conclusion in payload must match --expected-conclusion" in (result.stdout + result.stderr)

@@ -8,7 +8,7 @@ InternVLAdapter: InternVL2 / InternVL3 模型适配器
 import base64
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, Iterator, List, Optional, Union
 
 try:
     from PIL import Image
@@ -16,6 +16,8 @@ except ImportError:
     Image = None
 
 from .model_adapter import ModelAdapter
+from .stream_hf import iterate_hf_generate_stream
+from core.system.runtime_settings import get_torch_stream_thread_join_timeout_sec
 
 
 def _load_image(source: Union[str, bytes, "Image.Image"]) -> "Image.Image":
@@ -427,6 +429,123 @@ class InternVLAdapter(ModelAdapter):
                 if s in text:
                     text = text.split(s)[0].strip()
         return text.strip()
+
+    def generate_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        images: Optional[List[Union[str, bytes, "Image.Image"]]],
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+        stop: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> Iterator[str]:
+        """
+        流式生成：不走 model.chat()，统一走 processor + model.generate(streamer=...)，
+        以便 TextIteratorStreamer 按增量解码；多模态路径与 generate() 的非 chat 分支一致。
+        """
+        if not self.is_loaded:
+            raise RuntimeError("Model not loaded")
+        if self._model is None or self._processor is None:
+            raise RuntimeError("InternVL model/processor not initialized")
+
+        model = self._model
+        processor = self._processor
+
+        pil_images, processed_messages = _extract_images_from_messages(messages, images)
+
+        question_parts: List[str] = []
+        system_parts: List[str] = []
+        for m in processed_messages:
+            role = (m.get("role") or "").lower()
+            c = m.get("content")
+            if isinstance(c, str):
+                text = c.strip()
+                if role == "system":
+                    system_parts.append(text)
+                elif role == "user":
+                    question_parts.append(text)
+            elif isinstance(c, list):
+                texts = []
+                for it in c:
+                    if isinstance(it, dict) and it.get("type") == "text":
+                        texts.append((it.get("text") or "").strip())
+                text = "\n".join([t for t in texts if t]).strip()
+                if not text:
+                    continue
+                if role == "system":
+                    system_parts.append(text)
+                elif role == "user":
+                    question_parts.append(text)
+
+        system_prompt = "\n".join([t for t in system_parts if t]).strip()
+        question = "\n".join([t for t in question_parts if t]).strip() or "Hello."
+        if system_prompt:
+            question = f"{system_prompt}\n\n{question}"
+
+        prompt = None
+        if hasattr(processor, "apply_chat_template"):
+            try:
+                prompt = processor.apply_chat_template(
+                    processed_messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except (TypeError, ValueError):
+                pass
+        if not prompt:
+            prompt = question
+
+        if pil_images:
+            image_input = pil_images[0] if len(pil_images) == 1 else pil_images
+            try:
+                inputs = processor(text=prompt, images=image_input, return_tensors="pt").to(model.device)
+            except (TypeError, AttributeError) as e:
+                if "images" in str(e).lower() or "tokenizer" in str(e).lower():
+                    inputs = self._processor_with_images_fallback(prompt, image_input)
+                else:
+                    raise
+        else:
+            inputs = processor(text=prompt, return_tensors="pt").to(model.device)
+
+        tok = getattr(processor, "tokenizer", processor)
+        pad_token_id = getattr(tok, "pad_token_id", None) or getattr(tok, "eos_token_id", None)
+        if getattr(tok, "pad_token_id", None) is None and pad_token_id is not None:
+            tok.pad_token_id = pad_token_id
+        if getattr(model, "generation_config", None) is not None and model.generation_config.pad_token_id is None:
+            model.generation_config.pad_token_id = pad_token_id
+
+        if hasattr(model, "img_context_token_id") and model.img_context_token_id is None:
+            unk_id = getattr(tok, "unk_token_id", None)
+            for placeholder in ("<<IMG_CONTEXT>>", "<img>", "<|im_pixel|>"):
+                ids = tok.encode(placeholder, add_special_tokens=False)
+                if ids and (unk_id is None or ids[0] != unk_id):
+                    model.img_context_token_id = ids[0]
+                    break
+            if model.img_context_token_id is None and hasattr(model.config, "img_context_token_id"):
+                model.img_context_token_id = model.config.img_context_token_id
+
+        if "pixel_values" in inputs:
+            try:
+                model_dtype = next(model.parameters()).dtype
+            except StopIteration:
+                model_dtype = self._torch_dtype
+            if inputs["pixel_values"].dtype != model_dtype:
+                inputs = dict(inputs)
+                inputs["pixel_values"] = inputs["pixel_values"].to(model_dtype)
+
+        inputs_dict = dict(inputs) if hasattr(inputs, "keys") else inputs
+        yield from iterate_hf_generate_stream(
+            model,
+            tok,
+            inputs_dict,
+            max_new_tokens=max_tokens,
+            temperature=float(temperature),
+            top_p=float(top_p),
+            pad_token_id=pad_token_id,
+            stop=stop,
+            thread_join_timeout_sec=float(get_torch_stream_thread_join_timeout_sec()),
+        )
 
     def _processor_with_images_fallback(self, prompt: str, image_input: Union["Image.Image", List["Image.Image"]]) -> Dict[str, Any]:
         """当 processor(text, images=...) 触发 tokenizer 的 images 参数错误时，分离调用 image_processor 与 tokenizer"""

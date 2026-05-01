@@ -1,4 +1,5 @@
 from typing import AsyncIterator, Optional, Dict, Any
+import asyncio
 import time
 
 from core.inference.stats.tracker import record_inference, estimate_tokens
@@ -54,6 +55,15 @@ class UnifiedModelAgent(ModelAgent):
             else:
                 async with self.runtime_factory.model_usage(descriptor.id):
                     text = await queue.run(runtime.chat(descriptor, req))
+        except asyncio.CancelledError:
+            log_structured(
+                "RuntimeStabilization",
+                "inference_cancelled",
+                level="info",
+                model_id=descriptor.id,
+                runtime=runtime_type,
+            )
+            raise
         except Exception:
             metrics.record_request_failed(descriptor.id)
             log_structured("RuntimeStabilization", "inference_error", level="error", model_id=descriptor.id, runtime=runtime_type)
@@ -110,6 +120,15 @@ class UnifiedModelAgent(ModelAgent):
                 async for token in queue.run_stream(_stream()):
                     yield token
             completed_normally = True
+        except asyncio.CancelledError:
+            log_structured(
+                "RuntimeStabilization",
+                "inference_stream_cancelled",
+                level="info",
+                model_id=descriptor.id,
+                runtime=runtime_type,
+            )
+            raise
         except Exception:
             metrics.record_request_failed(descriptor.id)
             log_structured("RuntimeStabilization", "inference_error", level="error", model_id=descriptor.id, runtime=runtime_type)

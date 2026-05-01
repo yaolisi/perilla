@@ -7,14 +7,16 @@ import sys
 
 from pathlib import Path
 
+from tests.repo_paths import repo_path, repo_root
+
 
 def test_roadmap_acceptance_output_json_contract(tmp_path) -> None:  # noqa: ANN001
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     output = tmp_path / "roadmap-acceptance-output-contract.json"
 
     cmd = [
         sys.executable,
-        "backend/scripts/roadmap_acceptance_smoke.py",
+        str(repo_path("backend/scripts/roadmap_acceptance_smoke.py")),
         "--base-url",
         "http://127.0.0.1:1",
         "--output-json",

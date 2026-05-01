@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -15,6 +13,8 @@ from scripts.event_bus_smoke_error_codes import (
 )
 from scripts.event_bus_smoke_gh_contract_keys import GH_INPUTS_SNAPSHOT_EXPECTED_KEYS
 from scripts.validate_event_bus_smoke_gh_inputs_snapshot import validate_payload
+
+from tests.repo_paths import repo_run_python
 
 
 def _with_payload_hash(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -130,8 +130,9 @@ def test_snapshot_expected_keys_match_base_payload() -> None:
 def test_validator_cli_returns_0_for_valid_payload(tmp_path: Path) -> None:
     path = tmp_path / "snapshot.json"
     path.write_text(json.dumps(_base_payload(), ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, "backend/scripts/validate_event_bus_smoke_gh_inputs_snapshot.py", "--input", str(path)],
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_inputs_snapshot.py",
+        ["--input", str(path)],
         capture_output=True,
         text=True,
     )
@@ -144,8 +145,9 @@ def test_validator_cli_returns_1_for_invalid_payload(tmp_path: Path) -> None:
     payload = _base_payload()
     payload["workflow"] = ""
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, "backend/scripts/validate_event_bus_smoke_gh_inputs_snapshot.py", "--input", str(path)],
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_inputs_snapshot.py",
+        ["--input", str(path)],
         capture_output=True,
         text=True,
     )
@@ -158,15 +160,9 @@ def test_validator_cli_accepts_sha256_mode_off(tmp_path: Path) -> None:
     payload = _base_payload()
     payload["workflow"] = "changed.yml"
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_inputs_snapshot.py",
-            "--input",
-            str(path),
-            "--payload-sha256-mode",
-            "off",
-        ],
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_inputs_snapshot.py",
+        ["--input", str(path), "--payload-sha256-mode", "off"],
         capture_output=True,
         text=True,
     )

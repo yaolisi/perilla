@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
+import pytest
+
+from tests.repo_paths import repo_path
+
+pytestmark = pytest.mark.requires_monorepo
 
 
 def test_event_bus_smoke_workflow_contains_contract_guard_step() -> None:
-    workflow = Path(".github/workflows/event-bus-dlq-smoke.yml").read_text(encoding="utf-8")
+    workflow = repo_path(".github/workflows/event-bus-dlq-smoke.yml").read_text(encoding="utf-8")
     assert "Run smoke contract guard gate" in workflow
     assert "make event-bus-smoke-contract-guard" in workflow
     assert 'tee "${EVENT_BUS_SMOKE_CONTRACT_GUARD_LOG_FILE}"' in workflow

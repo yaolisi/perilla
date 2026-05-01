@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 
 from scripts.event_bus_smoke_json_integrity import canonical_json_sha256
 import scripts.event_bus_smoke_preflight as preflight_module
+
+from tests.repo_paths import repo_run_python
 
 
 def _assert_payload_sha256(payload: dict[str, object]) -> None:
@@ -18,13 +18,9 @@ def _assert_payload_sha256(payload: dict[str, object]) -> None:
 
 
 def _run_preflight_json(*args: str) -> tuple[int, dict[str, object]]:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/event_bus_smoke_preflight.py",
-            "--json",
-            *args,
-        ],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_preflight.py",
+        ["--json", *args],
         capture_output=True,
         text=True,
     )

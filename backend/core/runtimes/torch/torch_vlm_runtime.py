@@ -8,15 +8,21 @@ TorchVLMRuntime: 基于 PyTorch + HuggingFace Transformers 的 VLM 运行时
 
 import asyncio
 import json
+import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Union, Optional, Dict, Any, cast
+from queue import Empty, Full, Queue, SimpleQueue
+from typing import Any, AsyncIterator, Dict, Optional, Tuple, Union, cast
+
+from core.system.runtime_settings import get_torch_stream_chunk_queue_max
 
 try:
     from PIL import Image
 except ImportError:
     Image = None
+
+from log import log_structured
 
 from core.types import ChatCompletionChoice, ChatCompletionChoiceMessage
 from core.runtimes.vlm_runtime import VLMRuntime
@@ -25,6 +31,34 @@ from core.runtimes.vlm_types import VLMRequest, VLMResponse, VLMGenerationConfig
 from .model_adapter import ModelAdapter
 from .internvl_adapter import InternVLAdapter
 from .qwen_vl_adapter import QwenVLAdapter
+
+_T_CHUNK = "c"
+_T_ERR = "e"
+_T_DONE = "d"
+
+
+def _make_stream_queue() -> Tuple[Any, bool]:
+    mx = int(get_torch_stream_chunk_queue_max())
+    if mx <= 0:
+        return SimpleQueue(), False
+    return Queue(maxsize=max(1, mx)), True
+
+
+def _put_stream_item(q: Any, item: Tuple[str, Any], *, bounded: bool) -> None:
+    """有界队列在满时丢弃最旧的一条，避免错误信令永久阻塞（极端慢消费者场景）。"""
+    if not bounded:
+        q.put(item)
+        return
+    while True:
+        try:
+            q.put_nowait(item)
+            return
+        except Full:
+            try:
+                q.get_nowait()
+            except Empty:
+                pass
+
 
 _ADAPTER_REGISTRY: Dict[str, type[ModelAdapter]] = {
     "internvl": InternVLAdapter,
@@ -216,6 +250,65 @@ class TorchVLMRuntime(VLMRuntime):
                 ],
                 usage=None,
             )
+
+    async def generate_stream(self, req: VLMRequest) -> AsyncIterator[str]:
+        """
+        流式生成：委托 Adapter.generate_stream，在独立线程中迭代并通过队列交给 asyncio。
+        同步线程内的异常会封装后传到消费者并重新抛出；可选有界队列（见 torchStreamChunkQueueMax）。
+        """
+        async with self._lock.read_lock():
+            if self._adapter is None or not self._adapter.is_loaded:
+                raise RuntimeError("Model not initialized. Call initialize() first.")
+            cfg = req.generation_config or VLMGenerationConfig()
+            messages = req.messages
+            images = req.images
+            adapter = self._adapter
+
+            loop = asyncio.get_running_loop()
+            q, bounded = _make_stream_queue()
+
+            def worker() -> None:
+                try:
+                    for chunk in adapter.generate_stream(
+                        messages=messages,
+                        images=images,
+                        max_tokens=cfg.max_tokens,
+                        temperature=cfg.temperature,
+                        top_p=cfg.top_p,
+                        stop=cfg.stop,
+                    ):
+                        _put_stream_item(q, (_T_CHUNK, chunk), bounded=bounded)
+                except Exception as exc:
+                    _put_stream_item(q, (_T_ERR, exc), bounded=bounded)
+                finally:
+                    _put_stream_item(q, (_T_DONE, None), bounded=bounded)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+            try:
+                while True:
+                    kind, payload = await loop.run_in_executor(None, q.get)
+                    if kind == _T_CHUNK:
+                        yield payload
+                    elif kind == _T_ERR:
+                        log_structured(
+                            "TorchVLMRuntime",
+                            "stream_adapter_error",
+                            level="error",
+                            error=str(payload)[:500],
+                            model_name=str(self._manifest.get("model_name", "") or "")[:256],
+                        )
+                        raise payload
+                    else:
+                        break
+            except asyncio.CancelledError:
+                log_structured(
+                    "TorchVLMRuntime",
+                    "stream_consumer_cancelled",
+                    level="info",
+                    model_name=str(self._manifest.get("model_name", "") or "")[:256],
+                )
+                raise
 
     async def unload(self) -> None:
         async with self._lock.write_lock():

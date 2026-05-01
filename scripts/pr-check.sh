@@ -3,11 +3,11 @@ set -euo pipefail
 # Runs `make pr-check` from repository root (~= frontend-build + backend-static-analysis together).
 # Same targets as `make ci` (alias).
 # Lighter gate: `scripts/quick-check.sh` (nvmrc + lint-backend only).
-# Order: check-nvmrc-align → lint-backend (`scripts/lint-backend.sh`) → test-no-fallback (pytest) → test-frontend-unit → build-frontend.
-# Optional: export ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 to append roadmap acceptance suite.
+# Order: check-nvmrc-align → lint-backend (`scripts/lint-backend.sh`) → test-no-fallback (pytest) → test-frontend-unit → build-frontend → roadmap-acceptance-unit (unless skipped).
+# Skip roadmap: export SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 or pass --skip-roadmap-acceptance.
 # Optional args are forwarded to the no-fallback pytest step only, e.g.:
 #   bash scripts/pr-check.sh -k memory -x
-# Or:
+# Legacy (forces roadmap on; default since roadmap is always on unless skipped):
 #   bash scripts/pr-check.sh --with-roadmap-acceptance -k memory -x
 # If no args are given, existing TEST_ARGS (if set) is preserved.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,7 +17,11 @@ if [[ ! -f Makefile ]]; then
   exit 1
 fi
 if [[ "${1:-}" == "--with-roadmap-acceptance" ]]; then
-  export ROADMAP_ACCEPTANCE_IN_PR_CHECK=1
+  export SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=0
+  shift
+fi
+if [[ "${1:-}" == "--skip-roadmap-acceptance" ]]; then
+  export SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1
   shift
 fi
 if [ "$#" -gt 0 ]; then

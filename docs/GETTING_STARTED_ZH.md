@@ -159,3 +159,6 @@ PYTHONPATH=backend pytest -q \
 - API：`docs/api/API_DOCUMENTATION.md`
 - 本地模型：`docs/local_model/LOCAL_MODEL_DEPLOYMENT.md`
 - 教程索引：`tutorials/tutorial-index.md`
+- 插件开发：`docs/plugins/PLUGIN_DEVELOPMENT_ZH.md`
+- 工作流编排概览：`docs/workflow/WORKFLOW_ORCHESTRATION_OVERVIEW_ZH.md`
+- vLLM / TensorRT-LLM 接入：`docs/inference/VLLM_TENSORRT_BACKEND_ZH.md`

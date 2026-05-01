@@ -7,9 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
+
 
 def test_npm_scripts_help_prints_hints_to_stderr() -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     script = root / "scripts" / "npm-scripts.sh"
 
     result = subprocess.run(
@@ -30,7 +34,7 @@ def test_npm_scripts_help_prints_hints_to_stderr() -> None:
 
 
 def test_npm_scripts_unknown_flag_prints_followups_to_stderr() -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     script = root / "scripts" / "npm-scripts.sh"
 
     result = subprocess.run(
@@ -48,7 +52,7 @@ def test_npm_scripts_json_prints_hint_to_stderr_and_stdout_is_json() -> None:
     if shutil.which("npm") is None:
         pytest.skip("npm not available in this environment")
 
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     script = root / "scripts" / "npm-scripts.sh"
 
     result = subprocess.run(
@@ -76,7 +80,7 @@ def test_npm_scripts_json_prints_hint_to_stderr_and_stdout_is_json() -> None:
 
 
 def test_npm_scripts_missing_package_json_prints_followups_to_stderr(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     script_src = root / "scripts" / "npm-scripts.sh"
 
     fake_root = tmp_path / "fake-repo-root"
@@ -99,7 +103,7 @@ def test_npm_scripts_missing_package_json_prints_followups_to_stderr(tmp_path: P
 
 
 def test_npm_scripts_missing_package_json_json_flag_still_fails_fast(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     script_src = root / "scripts" / "npm-scripts.sh"
 
     fake_root = tmp_path / "fake-repo-root-json"
@@ -123,7 +127,7 @@ def test_npm_scripts_missing_package_json_json_flag_still_fails_fast(tmp_path: P
 
 
 def test_npm_scripts_missing_package_json_default_invocation_fails_fast(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     script_src = root / "scripts" / "npm-scripts.sh"
 
     fake_root = tmp_path / "fake-repo-root-default"
@@ -147,7 +151,7 @@ def test_npm_scripts_missing_package_json_default_invocation_fails_fast(tmp_path
 
 
 def test_npm_scripts_missing_package_json_unknown_flag_still_reports_missing_package_json(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     script_src = root / "scripts" / "npm-scripts.sh"
 
     fake_root = tmp_path / "fake-repo-root-unknown"

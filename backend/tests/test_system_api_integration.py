@@ -381,6 +381,32 @@ def test_update_config_accepts_valid_smart_routing_policy(monkeypatch):
     assert float(captured.get("workflowGovernanceWarningThreshold")) == pytest.approx(0.3)
 
 
+def test_update_config_accepts_torch_stream_settings(monkeypatch):
+    client = _build_client()
+    captured: dict[str, object] = {}
+
+    class _FakeStore:
+        def set_setting(self, key, value):
+            captured[key] = value
+
+    monkeypatch.setattr(system_api, "get_system_settings_store", lambda: _FakeStore())
+    resp = client.post(
+        "/api/system/config",
+        json={
+            "torchStreamThreadJoinTimeoutSec": 120,
+            "torchStreamChunkQueueMax": 32,
+            "chatStreamWallClockMaxSeconds": 1800,
+            "chatStreamResumeCancelUpstreamOnDisconnect": True,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json().get("success") is True
+    assert captured.get("torchStreamThreadJoinTimeoutSec") == 120
+    assert captured.get("torchStreamChunkQueueMax") == 32
+    assert captured.get("chatStreamWallClockMaxSeconds") == 1800
+    assert captured.get("chatStreamResumeCancelUpstreamOnDisconnect") is True
+
+
 def test_update_config_rejects_invalid_governance_threshold_order(monkeypatch):
     client = _build_client()
 

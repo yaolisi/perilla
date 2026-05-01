@@ -5,6 +5,19 @@ from collections.abc import Iterator
 
 import pytest
 
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    from tests.repo_paths import monorepo_contract_layout_available
+
+    if monorepo_contract_layout_available():
+        return
+    skip = pytest.mark.skip(
+        reason="需要完整 monorepo（顶层 Makefile、scripts/）；当前为仅 backend 拷贝",
+    )
+    for item in items:
+        if item.get_closest_marker("requires_monorepo"):
+            item.add_marker(skip)
+
 # 与 requirements/base.txt 中 pytest-asyncio 配套，支持 @pytest.mark.asyncio
 pytest_plugins = ("pytest_asyncio",)
 from fastapi.testclient import TestClient
@@ -13,6 +26,7 @@ from api.errors import set_http_exception_fallback_observer
 from api.stream_resume_store import StreamResumeStore
 from config.settings import settings
 from middleware.csrf_protection import CSRFMiddleware
+from middleware.request_trace import RequestTraceMiddleware
 from middleware.user_context import UserContextMiddleware
 from tests.helpers import make_fastapi_app_router_only
 from tests.helpers.chat_stream_helpers import chat_prime_csrf, chat_seed_stream_store
@@ -51,7 +65,7 @@ def chat_stream_resume_client(monkeypatch: pytest.MonkeyPatch):
 
     Includes:
     - patched in-memory StreamResumeStore
-    - CSRF + UserContext middlewares
+    - RequestTrace + UserContext + CSRF（与主应用链路对齐，便于断言 request.state 追踪字段）
     - temporary chat_stream_resume/csrf settings overrides
     """
     from api import chat as chat_api
@@ -70,6 +84,8 @@ def chat_stream_resume_client(monkeypatch: pytest.MonkeyPatch):
     settings.csrf_header_name = "X-CSRF-Token"
 
     app = make_fastapi_app_router_only(chat_api)
+    # 先注册更靠近路由（与 main.py 一致：RequestTrace 在内层）
+    app.add_middleware(RequestTraceMiddleware, header_name="X-Request-Id")
     app.add_middleware(UserContextMiddleware)
     app.add_middleware(CSRFMiddleware)
 

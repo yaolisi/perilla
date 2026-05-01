@@ -25,6 +25,9 @@ class _NoopMetric:
     def observe(self, _value: float) -> None:
         return
 
+    def set(self, _value: float) -> None:
+        return
+
 
 class PrometheusBusinessMetrics:
     def __init__(self) -> None:
@@ -33,6 +36,13 @@ class PrometheusBusinessMetrics:
             self.inference_latency_seconds = noop
             self.inference_requests_in_flight = noop
             self.inference_errors_total = noop
+            self.inference_cancelled_total = noop
+            self.chat_stream_wall_clock_limit_total = noop
+            self.chat_stream_client_disconnect_stop_total = noop
+            self.chat_stream_resume_upstream_cancel_total = noop
+            self.stream_resume_store_pressure_evictions_total = noop
+            self.stream_resume_store_sessions = noop
+            self.chat_stream_resume_wait_timeouts_total = noop
             self.agent_runs_total = noop
             self.agent_run_failures_total = noop
             self._legacy_mirror = False
@@ -52,6 +62,42 @@ class PrometheusBusinessMetrics:
             "perilla_inference_errors_total",
             "Total inference errors",
             labelnames=("operation", "provider"),
+        )
+        self.inference_cancelled_total = Counter(
+            "perilla_inference_cancelled_total",
+            "Stream inference cancelled (client disconnect / task cancellation); does not increment errors_total",
+            labelnames=("operation", "provider"),
+        )
+        self.chat_stream_wall_clock_limit_total = Counter(
+            "perilla_chat_stream_wall_clock_limit_total",
+            "Chat SSE stopped due to chat_stream_wall_clock_max_seconds",
+            labelnames=(),
+        )
+        self.chat_stream_client_disconnect_stop_total = Counter(
+            "perilla_chat_stream_client_disconnect_stop_total",
+            "Chat SSE stopped early (client disconnected, stream resume disabled)",
+            labelnames=(),
+        )
+        self.chat_stream_resume_upstream_cancel_total = Counter(
+            "perilla_chat_stream_resume_upstream_cancel_total",
+            "Chat SSE: resume enabled but upstream cancelled on disconnect (chat_stream_resume_cancel_upstream_on_disconnect)",
+            labelnames=(),
+        )
+        self.stream_resume_store_pressure_evictions_total = Counter(
+            "perilla_stream_resume_store_pressure_evictions_total",
+            "Oldest stream resume session evicted because chat_stream_resume_max_sessions reached with unfinished buffers",
+            labelnames=(),
+        )
+        self.stream_resume_store_sessions = Gauge(
+            "perilla_stream_resume_store_sessions",
+            "Stream resume buffer sessions currently in the in-memory store (includes finished until TTL eviction)",
+            labelnames=(),
+        )
+        self.stream_resume_store_sessions.set(0.0)
+        self.chat_stream_resume_wait_timeouts_total = Counter(
+            "perilla_chat_stream_resume_wait_timeouts_total",
+            "POST /v1/chat/completions/stream/resume iter_resume_chunks wait_for(cond) exceeded chat_stream_resume_wait_timeout_seconds",
+            labelnames=(),
         )
         self.agent_runs_total = Counter(
             "perilla_agent_runs_total",
@@ -81,6 +127,11 @@ class PrometheusBusinessMetrics:
                 "Total inference errors (legacy alias)",
                 labelnames=("operation", "provider"),
             )
+            self._legacy_inference_cancelled_total = Counter(
+                "openvitamin_inference_cancelled_total",
+                "Stream inference cancelled (legacy alias)",
+                labelnames=("operation", "provider"),
+            )
             self._legacy_agent_runs_total = Counter(
                 "openvitamin_agent_runs_total",
                 "Total agent runtime runs (legacy alias)",
@@ -95,6 +146,7 @@ class PrometheusBusinessMetrics:
             self._legacy_inference_latency_seconds = noop
             self._legacy_inference_requests_in_flight = noop
             self._legacy_inference_errors_total = noop
+            self._legacy_inference_cancelled_total = noop
             self._legacy_agent_runs_total = noop
             self._legacy_agent_run_failures_total = noop
 
@@ -125,6 +177,34 @@ class PrometheusBusinessMetrics:
         if self._legacy_mirror:
             self._legacy_inference_requests_in_flight.labels(operation=operation).dec()
             self._legacy_inference_errors_total.labels(operation=operation, provider=provider or "unknown").inc()
+
+    def observe_chat_stream_wall_clock_limit(self) -> None:
+        self.chat_stream_wall_clock_limit_total.inc()
+
+    def observe_chat_stream_client_disconnect_stop(self) -> None:
+        self.chat_stream_client_disconnect_stop_total.inc()
+
+    def observe_chat_stream_resume_upstream_cancel(self) -> None:
+        self.chat_stream_resume_upstream_cancel_total.inc()
+
+    def observe_stream_resume_store_pressure_eviction(self) -> None:
+        self.stream_resume_store_pressure_evictions_total.inc()
+
+    def set_stream_resume_store_sessions(self, n: int) -> None:
+        self.stream_resume_store_sessions.set(max(0.0, float(int(n))))
+
+    def observe_chat_stream_resume_wait_timeout(self) -> None:
+        self.chat_stream_resume_wait_timeouts_total.inc()
+
+    def observe_inference_cancelled(self, *, operation: str, provider: str) -> None:
+        """
+        释放 stream 请求的 in-flight 计数，不计入 errors_total，不写 latency histogram。
+        """
+        self.inference_requests_in_flight.labels(operation=operation).dec()
+        self.inference_cancelled_total.labels(operation=operation, provider=provider or "unknown").inc()
+        if self._legacy_mirror:
+            self._legacy_inference_requests_in_flight.labels(operation=operation).dec()
+            self._legacy_inference_cancelled_total.labels(operation=operation, provider=provider or "unknown").inc()
 
     def observe_agent_run(self, *, mode: str, engine: str, success: bool) -> None:
         norm_mode = mode or "unknown"

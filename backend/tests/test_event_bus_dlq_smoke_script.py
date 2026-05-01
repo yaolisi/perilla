@@ -9,8 +9,9 @@ from typing import Any, Dict
 
 
 def _load_smoke_module() -> ModuleType:
-    repo_root = Path(__file__).resolve().parents[2]
-    script_path = repo_root / "backend" / "scripts" / "event_bus_dlq_smoke.py"
+    from tests.repo_paths import repo_path
+
+    script_path = repo_path("backend/scripts/event_bus_dlq_smoke.py")
     spec = importlib.util.spec_from_file_location("event_bus_dlq_smoke", script_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scripts.event_bus_smoke_gh_trigger_audit_arg_map import (
     GH_TRIGGER_AUDIT_ARG_MAPPINGS,
     GH_TRIGGER_AUDIT_BASE_ARG_SPECS,
@@ -9,10 +11,13 @@ from scripts.event_bus_smoke_gh_trigger_audit_arg_map import (
     GH_TRIGGER_AUDIT_THRESHOLD_ARG_SPECS,
     GH_TRIGGER_AUDIT_VALIDATE_PAYLOAD_ARG_BINDINGS,
 )
+from tests.repo_paths import repo_path
+
+pytestmark = pytest.mark.requires_monorepo
 
 
 def test_makefile_validate_target_contains_all_declared_mappings() -> None:
-    makefile = Path("Makefile").read_text(encoding="utf-8")
+    makefile = repo_path("Makefile").read_text(encoding="utf-8")
     anchor = "event-bus-smoke-validate-gh-trigger-inputs-audit:"
     next_anchor = "\nevent-bus-smoke-gh-strict-watch:"
     start = makefile.find(anchor)
@@ -25,7 +30,7 @@ def test_makefile_validate_target_contains_all_declared_mappings() -> None:
 
 
 def test_validator_cli_exposes_all_declared_flags() -> None:
-    script_content = Path("backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py").read_text(encoding="utf-8")
+    script_content = repo_path("backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py").read_text(encoding="utf-8")
     for flag, _make_pattern in GH_TRIGGER_AUDIT_ARG_MAPPINGS:
         if (
             flag.startswith("--expected-")
@@ -45,7 +50,7 @@ def test_expected_arg_specs_cover_all_expected_flags_in_mapping() -> None:
 
 
 def test_validator_uses_shared_expected_arg_builder() -> None:
-    script_content = Path("backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py").read_text(encoding="utf-8")
+    script_content = repo_path("backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py").read_text(encoding="utf-8")
     assert "add_expected_field_arguments(parser)" in script_content
 
 
@@ -58,7 +63,7 @@ def test_base_arg_specs_cover_all_base_flags_in_mapping() -> None:
 
 
 def test_validator_uses_shared_base_arg_builder() -> None:
-    script_content = Path("backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py").read_text(encoding="utf-8")
+    script_content = repo_path("backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py").read_text(encoding="utf-8")
     assert "add_base_arguments(parser)" in script_content
 
 
@@ -71,7 +76,7 @@ def test_threshold_arg_specs_cover_all_threshold_flags_in_mapping() -> None:
 
 
 def test_validator_uses_shared_threshold_arg_builder() -> None:
-    script_content = Path("backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py").read_text(encoding="utf-8")
+    script_content = repo_path("backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py").read_text(encoding="utf-8")
     assert "add_threshold_arguments(parser)" in script_content
 
 
@@ -87,5 +92,5 @@ def test_validate_payload_arg_bindings_cover_expected_flags_and_runtime_fields()
 
 
 def test_validator_uses_shared_validate_payload_kwargs_builder() -> None:
-    script_content = Path("backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py").read_text(encoding="utf-8")
+    script_content = repo_path("backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py").read_text(encoding="utf-8")
     assert "build_validate_payload_kwargs(args)" in script_content

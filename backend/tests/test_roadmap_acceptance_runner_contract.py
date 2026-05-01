@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
 
 
 def test_run_roadmap_acceptance_script_supports_strict_gate_envs() -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     script = (root / "scripts" / "acceptance" / "run_roadmap_acceptance.sh").read_text(encoding="utf-8")
 
     assert 'ROADMAP_GATE_LOG_PREFIX="${ROADMAP_GATE_LOG_PREFIX:-[roadmap-gate]}"' in script

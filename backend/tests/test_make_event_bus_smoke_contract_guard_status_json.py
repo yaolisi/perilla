@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
+
 import json
 import subprocess
 from pathlib import Path
@@ -14,6 +20,7 @@ def test_make_contract_guard_status_json_for_missing_log() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
     payload = json.loads(result.stdout)
@@ -34,6 +41,7 @@ def test_make_contract_guard_status_json_for_existing_log(tmp_path: Path) -> Non
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
     payload = json.loads(result.stdout)

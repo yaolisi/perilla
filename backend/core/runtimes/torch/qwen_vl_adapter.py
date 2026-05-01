@@ -6,7 +6,7 @@ QwenVLAdapter: Qwen2-VL / Qwen3-VL 模型适配器
 """
 
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, Iterator, List, Optional, Union
 import base64
 from io import BytesIO
 
@@ -17,6 +17,8 @@ except ImportError:
 
 from .model_adapter import ModelAdapter
 from .internvl_adapter import _load_image, _extract_images_from_messages
+from .stream_hf import iterate_hf_generate_stream
+from core.system.runtime_settings import get_torch_stream_thread_join_timeout_sec
 
 
 class QwenVLAdapter(ModelAdapter):
@@ -396,6 +398,133 @@ class QwenVLAdapter(ModelAdapter):
                 if s in result:
                     result = result.split(s)[0].strip()
         return str(result).strip()
+
+    def generate_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        images: Optional[List[Union[str, bytes, "Image.Image"]]],
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+        stop: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> Iterator[str]:
+        """
+        流式生成：跳过 model.chat()，与 generate() 中 processor + model.generate 分支对齐，
+        使用 TextIteratorStreamer 增量输出。
+        """
+        if not self.is_loaded:
+            raise RuntimeError("Model not loaded")
+        if self._model is None or self._processor is None:
+            raise RuntimeError("Qwen model/processor not initialized")
+
+        model = self._model
+        processor = self._processor
+
+        pil_images, processed_messages = _extract_images_from_messages(messages, images)
+        if pil_images:
+            pil_images = [self._normalize_image(im) for im in pil_images]
+
+        text = processor.apply_chat_template(
+            processed_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        if pil_images:
+            if len(pil_images) == 1:
+                inputs = processor(
+                    text=[text],
+                    images=[pil_images[0]],
+                    padding=True,
+                    return_tensors="pt",
+                )
+            else:
+                inputs = processor(
+                    text=[text],
+                    images=[pil_images],
+                    padding=True,
+                    return_tensors="pt",
+                )
+        else:
+            inputs = processor(
+                text=[text],
+                padding=True,
+                return_tensors="pt",
+            )
+
+        inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+
+        if "pixel_values" in inputs:
+            try:
+                model_dtype = next(model.parameters()).dtype
+            except StopIteration:
+                model_dtype = self._torch_dtype
+            if inputs["pixel_values"].dtype != model_dtype:
+                inputs = dict(inputs)
+                inputs["pixel_values"] = inputs["pixel_values"].to(model_dtype)
+
+        tok = getattr(processor, "tokenizer", processor)
+        pad_token_id = getattr(tok, "pad_token_id", None) or getattr(tok, "eos_token_id", None)
+        if getattr(tok, "pad_token_id", None) is None and pad_token_id is not None:
+            tok.pad_token_id = pad_token_id
+        if getattr(model, "generation_config", None) is not None and model.generation_config.pad_token_id is None:
+            model.generation_config.pad_token_id = pad_token_id
+
+        if not hasattr(model, "generate"):
+            raise RuntimeError(
+                f"Model {type(model).__name__} does not have 'generate' method."
+            )
+
+        try:
+            yield from iterate_hf_generate_stream(
+                model,
+                tok,
+                inputs,
+                max_new_tokens=max_tokens,
+                temperature=float(temperature),
+                top_p=float(top_p),
+                pad_token_id=pad_token_id,
+                stop=stop,
+                thread_join_timeout_sec=float(get_torch_stream_thread_join_timeout_sec()),
+            )
+        except RuntimeError as e:
+            if "Invalid buffer size" not in str(e) or not pil_images:
+                raise
+            smaller = [self._normalize_image(im, max_side=896, max_pixels=786_432) for im in pil_images]
+            if len(smaller) == 1:
+                retry_inputs = processor(
+                    text=[text],
+                    images=[smaller[0]],
+                    padding=True,
+                    return_tensors="pt",
+                )
+            else:
+                retry_inputs = processor(
+                    text=[text],
+                    images=[smaller],
+                    padding=True,
+                    return_tensors="pt",
+                )
+            retry_inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in retry_inputs.items()}
+            if "pixel_values" in retry_inputs:
+                try:
+                    model_dtype = next(model.parameters()).dtype
+                except StopIteration:
+                    model_dtype = self._torch_dtype
+                retry_inputs = dict(retry_inputs)
+                retry_inputs["pixel_values"] = retry_inputs["pixel_values"].to(model_dtype)
+            yield from iterate_hf_generate_stream(
+                model,
+                tok,
+                retry_inputs,
+                max_new_tokens=max_tokens,
+                temperature=float(temperature),
+                top_p=float(top_p),
+                pad_token_id=pad_token_id,
+                stop=stop,
+                thread_join_timeout_sec=float(get_torch_stream_thread_join_timeout_sec()),
+            )
 
     def unload(self) -> None:
         self._model = None

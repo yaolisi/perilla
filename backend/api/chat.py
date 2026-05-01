@@ -33,7 +33,12 @@ from core.conversation.history_store import HistoryStore, HistoryStoreConfig
 from core.memory.memory_store import MemoryStore, MemoryStoreConfig
 from core.memory.memory_injector import MemoryInjector, MemoryInjectorConfig
 from core.memory.memory_extractor import MemoryExtractor, MemoryExtractorConfig
-from core.system.runtime_settings import get_auto_unload_local_model_on_switch
+from core.observability import get_prometheus_business_metrics
+from core.system.runtime_settings import (
+    get_auto_unload_local_model_on_switch,
+    get_chat_stream_resume_cancel_upstream_on_disconnect,
+    get_chat_stream_wall_clock_max_seconds,
+)
 from core.runtime.queue.async_chat_jobs import get_async_chat_job_manager
 
 router = APIRouter()
@@ -774,6 +779,34 @@ def _stream_build_chunk(
     )
 
 
+def _sse_buffers_include_done_line(chunks: list[str]) -> bool:
+    """续传缓冲是否已包含终端 DONE 行（避免压力驱逐后再追加重复 DONE）。"""
+    for frag in chunks:
+        if frag and "[DONE]" in frag:
+            return True
+    return False
+
+
+def _correlation_from_request(request: Request) -> dict[str, str]:
+    """供续传等结构化日志附带追踪字段（request.state 优先，其次常用请求头）。"""
+    out: dict[str, str] = {}
+    rid = getattr(request.state, "request_id", None)
+    if rid:
+        out["request_id"] = str(rid)[:128]
+    else:
+        rh = (request.headers.get("X-Request-Id") or request.headers.get("x-request-id") or "").strip()
+        if rh:
+            out["request_id"] = rh[:128]
+    tid = getattr(request.state, "trace_id", None)
+    if tid:
+        out["trace_id"] = str(tid)[:128]
+    else:
+        th = (request.headers.get("X-Trace-Id") or request.headers.get("x-trace-id") or "").strip()
+        if th:
+            out["trace_id"] = th[:128]
+    return out
+
+
 async def _stream_on_success(
     *,
     req: ChatCompletionRequest,
@@ -873,6 +906,62 @@ def _stream_handle_client_disconnect(
             )
     except Exception as save_error:
         logger.warning(f"Failed to save incomplete message: {save_error}")
+
+
+def _stream_handle_wall_clock_limit(
+    *,
+    req: ChatCompletionRequest,
+    request: Request,
+    session_id: Optional[str],
+    completion_id: str,
+    user_text: str,
+    user_id: str,
+    full_text: str,
+    stream_start: float,
+    persistence_mode: str,
+    request_id: Optional[str],
+    conv_manager: ConversationManager,
+    wall_seconds: float,
+) -> None:
+    model_id = cast(str, req.model)
+    duration_ms = round((time.perf_counter() - stream_start) * 1000, 2)
+    log_structured(
+        "Chat",
+        "chat_stream_wall_clock_limit",
+        level="info",
+        model_id=model_id,
+        session_id=session_id or "",
+        stream=True,
+        completion_id=completion_id,
+        duration_ms=duration_ms,
+        response_len=len(full_text),
+        wall_clock_max_seconds=float(wall_seconds),
+    )
+    logger.info(f"Wall clock limit reached during streaming for {completion_id}")
+    if not (user_text and full_text and persistence_mode == "full" and session_id):
+        return
+    try:
+        partial_text = _sanitize_assistant_output(full_text)
+        if partial_text:
+            rmeta: dict[str, Any] = {
+                "completion_id": completion_id,
+                "stream": True,
+                "incomplete": True,
+                "error": "wall_clock_limit",
+            }
+            rout = _routing_submeta_for_persist(request)
+            if rout:
+                rmeta["routing"] = rout
+            conv_manager.append_assistant_message(
+                user_id=user_id,
+                session_id=session_id,
+                content=partial_text,
+                model_id=model_id,
+                meta=rmeta,
+                request_id=f"{request_id}:assistant:incomplete" if request_id else None,
+            )
+    except Exception as save_error:
+        logger.warning(f"Failed to save incomplete message (wall clock): {save_error}")
 
 
 def _stream_on_exception(
@@ -994,98 +1083,245 @@ async def _stream_event_generator(
         yield meta_sse
 
     try:
-        async for token in agent.stream_chat(req):
-            if await request.is_disconnected():
-                if resume_enabled:
-                    disconnected = True
+        stream_wall_clock_start = time.monotonic()
+        wall_limit_sec = float(get_chat_stream_wall_clock_max_seconds())
+        wall_exceeded = False
+        client_disconnect_hard_stop = False
+        resume_upstream_cancel = False
+        stream_gen = agent.stream_chat(req)
+        try:
+            stream_it = stream_gen.__aiter__()
+            while True:
+                if wall_limit_sec > 0:
+                    elapsed = time.monotonic() - stream_wall_clock_start
+                    if elapsed >= wall_limit_sec:
+                        wall_exceeded = True
+                        break
+                    remaining = wall_limit_sec - elapsed
                 else:
-                    logger.info(f"Client disconnected for {completion_id}, stopping stream")
+                    remaining = None
+                try:
+                    if remaining is not None:
+                        token = await asyncio.wait_for(stream_it.__anext__(), timeout=remaining)
+                    else:
+                        token = await stream_it.__anext__()
+                except StopAsyncIteration:
                     break
-            full_text += token
-            sse = _stream_delta_event(
-                stream_format=stream_format,
+                except asyncio.TimeoutError:
+                    wall_exceeded = True
+                    break
+
+                full_text += token
+                sse = _stream_delta_event(
+                    stream_format=stream_format,
+                    completion_id=completion_id,
+                    created_time=created_time,
+                    model_id=model_id,
+                    content=token,
+                    cidx=content_cidx,
+                    char_off=char_offset,
+                )
+                char_offset += len(token)
+                content_cidx += 1
+                if resume_enabled and stream_id and resume_store:
+                    await resume_store.append_chunk(stream_id, sse)
+                if not disconnected:
+                    yield sse
+
+                if await request.is_disconnected():
+                    if resume_enabled:
+                        if get_chat_stream_resume_cancel_upstream_on_disconnect():
+                            resume_upstream_cancel = True
+                            log_structured(
+                                "Chat",
+                                "chat_stream_resume_upstream_cancel",
+                                level="info",
+                                model_id=model_id,
+                                session_id=session_id or "",
+                                completion_id=completion_id,
+                                response_len=len(full_text),
+                            )
+                            logger.info(
+                                "[Chat] resume upstream cancel on disconnect for %s",
+                                completion_id,
+                            )
+                            break
+                        disconnected = True
+                    else:
+                        client_disconnect_hard_stop = True
+                        log_structured(
+                            "Chat",
+                            "chat_stream_disconnect_stop",
+                            level="info",
+                            model_id=model_id,
+                            session_id=session_id or "",
+                            completion_id=completion_id,
+                            response_len=len(full_text),
+                        )
+                        logger.info(f"Client disconnected for {completion_id}, stopping stream")
+                        break
+        finally:
+            try:
+                await stream_gen.aclose()
+            except Exception as ac_err:
+                logger.debug("[Chat] stream_chat aclose: %s", ac_err)
+
+        if wall_exceeded:
+            get_prometheus_business_metrics().observe_chat_stream_wall_clock_limit()
+            _stream_handle_wall_clock_limit(
+                req=req,
+                request=request,
+                session_id=session_id,
+                completion_id=completion_id,
+                user_text=user_text,
+                user_id=user_id,
+                full_text=full_text,
+                stream_start=stream_start,
+                persistence_mode=persistence_mode,
+                request_id=request_id,
+                conv_manager=conv_manager,
+                wall_seconds=wall_limit_sec,
+            )
+            err_body = "\nError: stream wall clock limit exceeded"
+            err_sse = _stream_build_chunk(
                 completion_id=completion_id,
                 created_time=created_time,
                 model_id=model_id,
-                content=token,
-                cidx=content_cidx,
-                char_off=char_offset,
+                content=err_body,
+                stream_format=stream_format,
             )
-            char_offset += len(token)
-            content_cidx += 1
+            done_err = "data: [DONE]\n\n"
+            for chunk in (err_sse, done_err):
+                if resume_enabled and stream_id and resume_store:
+                    await resume_store.append_chunk(stream_id, chunk)
+                if not disconnected:
+                    yield chunk
             if resume_enabled and stream_id and resume_store:
-                await resume_store.append_chunk(stream_id, sse)
-            if not disconnected:
-                yield sse
-
-        await _stream_on_success(
-            req=req,
-            request=request,
-            session_id=session_id,
-            completion_id=completion_id,
-            trace_id=trace_id,
-            user_text=user_text,
-            user_id=user_id,
-            full_text=full_text,
-            stream_start=stream_start,
-            persist_success_turn=persist_success_turn,
-        )
-        routing_meta = getattr(request.state, "chat_routing_metadata", None)
-        final_metadata: dict[str, Any] = {}
-        if isinstance(routing_meta, dict):
-            final_metadata.update(routing_meta)
-        elif routing_meta is not None:
-            try:
-                final_metadata.update(dict(routing_meta))
-            except Exception:
-                pass
-        if req.rag is not None:
-            rag_dict: dict[str, Any] = {
-                "used": bool(trace_id),
-                "trace_id": trace_id,
-                "retrieved_count": int(retrieved_count or 0),
-            }
-            if rag_extra:
-                rag_dict.update(rag_extra)
-            final_metadata["rag"] = rag_dict
-
-        if final_metadata and not disconnected:
-            if stream_format == "openai":
-                final_chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created_time,
-                    "model": model_id,
-                    "metadata": final_metadata,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                await resume_store.finish(stream_id)
+        elif resume_upstream_cancel:
+            get_prometheus_business_metrics().observe_chat_stream_resume_upstream_cancel()
+            err_cancel = "\nError: client disconnected (upstream cancelled)"
+            err_sse_cancel = _stream_build_chunk(
+                completion_id=completion_id,
+                created_time=created_time,
+                model_id=model_id,
+                content=err_cancel,
+                stream_format=stream_format,
+            )
+            done_cancel = "data: [DONE]\n\n"
+            for chunk in (err_sse_cancel, done_cancel):
+                if stream_id and resume_store:
+                    await resume_store.append_chunk(stream_id, chunk)
+            if stream_id and resume_store:
+                await resume_store.finish(stream_id)
+            _stream_handle_client_disconnect(
+                req=req,
+                request=request,
+                session_id=session_id,
+                completion_id=completion_id,
+                user_text=user_text,
+                user_id=user_id,
+                full_text=full_text,
+                stream_start=stream_start,
+                persistence_mode=persistence_mode,
+                request_id=request_id,
+                conv_manager=conv_manager,
+            )
+        elif client_disconnect_hard_stop:
+            get_prometheus_business_metrics().observe_chat_stream_client_disconnect_stop()
+            _stream_handle_client_disconnect(
+                req=req,
+                request=request,
+                session_id=session_id,
+                completion_id=completion_id,
+                user_text=user_text,
+                user_id=user_id,
+                full_text=full_text,
+                stream_start=stream_start,
+                persistence_mode=persistence_mode,
+                request_id=request_id,
+                conv_manager=conv_manager,
+            )
+        else:
+            await _stream_on_success(
+                req=req,
+                request=request,
+                session_id=session_id,
+                completion_id=completion_id,
+                trace_id=trace_id,
+                user_text=user_text,
+                user_id=user_id,
+                full_text=full_text,
+                stream_start=stream_start,
+                persist_success_turn=persist_success_turn,
+            )
+            routing_meta = getattr(request.state, "chat_routing_metadata", None)
+            final_metadata: dict[str, Any] = {}
+            if isinstance(routing_meta, dict):
+                final_metadata.update(routing_meta)
+            elif routing_meta is not None:
+                try:
+                    final_metadata.update(dict(routing_meta))
+                except Exception:
+                    pass
+            if req.rag is not None:
+                rag_dict: dict[str, Any] = {
+                    "used": bool(trace_id),
+                    "trace_id": trace_id,
+                    "retrieved_count": int(retrieved_count or 0),
                 }
-                final_sse = _stream_sse_data(final_chunk)
-            elif stream_format == "jsonl":
-                final_sse = _stream_sse_data(
-                    {
-                        "object": "perilla.stream.jsonl",
-                        "d": True,
+                if rag_extra:
+                    rag_dict.update(rag_extra)
+                final_metadata["rag"] = rag_dict
+
+            if final_metadata and not disconnected:
+                if stream_format == "openai":
+                    final_chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created_time,
+                        "model": model_id,
                         "metadata": final_metadata,
-                        "finish_reason": "stop",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                     }
-                )
-            else:
-                final_sse = _stream_sse_data(
-                    {
-                        "object": "perilla.stream.md",
-                        "d": True,
-                        "metadata": final_metadata,
-                    }
-                )
+                    final_sse = _stream_sse_data(final_chunk)
+                elif stream_format == "jsonl":
+                    final_sse = _stream_sse_data(
+                        {
+                            "object": "perilla.stream.jsonl",
+                            "d": True,
+                            "metadata": final_metadata,
+                            "finish_reason": "stop",
+                        }
+                    )
+                else:
+                    final_sse = _stream_sse_data(
+                        {
+                            "object": "perilla.stream.md",
+                            "d": True,
+                            "metadata": final_metadata,
+                        }
+                    )
+                if resume_enabled and stream_id and resume_store:
+                    await resume_store.append_chunk(stream_id, final_sse)
+                yield final_sse
+            done_sse = "data: [DONE]\n\n"
             if resume_enabled and stream_id and resume_store:
-                await resume_store.append_chunk(stream_id, final_sse)
-            yield final_sse
-        done_sse = "data: [DONE]\n\n"
-        if resume_enabled and stream_id and resume_store:
-            await resume_store.append_chunk(stream_id, done_sse)
-            await resume_store.finish(stream_id)
-        if not disconnected:
-            yield done_sse
+                await resume_store.append_chunk(stream_id, done_sse)
+                await resume_store.finish(stream_id)
+            if not disconnected:
+                yield done_sse
+    except asyncio.CancelledError:
+        log_structured(
+            "Chat",
+            "chat_stream_cancelled",
+            level="info",
+            model_id=model_id,
+            session_id=session_id or "",
+            completion_id=completion_id,
+            stream_resume=bool(resume_enabled and stream_id),
+        )
+        raise
     except Exception as e:
         for chunk in _stream_on_exception(
             req=req,
@@ -1109,6 +1345,12 @@ async def _stream_event_generator(
                 yield chunk
         if resume_enabled and stream_id and resume_store:
             await resume_store.finish(stream_id)
+    finally:
+        if resume_enabled and stream_id and resume_store:
+            try:
+                await resume_store.finish(stream_id)
+            except Exception as fin_e:
+                logger.warning("[Chat] stream resume finish (finally): %s", fin_e)
 
 
 async def _handle_nonstream_chat(
@@ -1531,6 +1773,7 @@ async def chat_stream_resume(body: ChatStreamResumeBody, request: Request) -> St
         stream_headers["Content-Encoding"] = "gzip"
 
     async def _gen() -> AsyncIterator[str]:
+        skip_pressure_tail = False
         try:
             async for piece in iter_resume_chunks(
                 store,
@@ -1540,6 +1783,22 @@ async def chat_stream_resume(body: ChatStreamResumeBody, request: Request) -> St
             ):
                 yield piece
         except asyncio.TimeoutError:
+            skip_pressure_tail = True
+            try:
+                get_prometheus_business_metrics().observe_chat_stream_resume_wait_timeout()
+            except Exception:
+                pass
+            log_structured(
+                "Chat",
+                "chat_stream_resume_wait_timeout",
+                level="warning",
+                **_correlation_from_request(request),
+                stream_id=str(body.stream_id)[:48],
+                chunk_index=int(body.chunk_index),
+                wait_timeout_sec=round(float(wait_timeout), 3),
+                chunk_buffer_len=len(sess.chunks),
+                stream_finished=bool(sess.finished),
+            )
             yield _stream_build_chunk(
                 completion_id=sess.completion_id or "chatcmpl-unknown",
                 created_time=int(sess.sse_created or sess.created_at),
@@ -1548,6 +1807,31 @@ async def chat_stream_resume(body: ChatStreamResumeBody, request: Request) -> St
                 stream_format=rfmt,
             )
             yield "data: [DONE]\n\n"
+        except asyncio.CancelledError:
+            skip_pressure_tail = True
+            log_structured(
+                "Chat",
+                "chat_stream_resume_cancelled",
+                level="info",
+                **_correlation_from_request(request),
+                stream_id=str(body.stream_id)[:48],
+                chunk_index=int(body.chunk_index),
+            )
+            raise
+        finally:
+            if (
+                not skip_pressure_tail
+                and getattr(sess, "pressure_evicted", False)
+                and not _sse_buffers_include_done_line(sess.chunks)
+            ):
+                yield _stream_build_chunk(
+                    completion_id=sess.completion_id or "chatcmpl-unknown",
+                    created_time=int(sess.sse_created or sess.created_at),
+                    model_id=sess.model_id or "unknown",
+                    content="\nError: stream resume session ended (server buffer pressure)",
+                    stream_format=rfmt,
+                )
+                yield "data: [DONE]\n\n"
 
     str_iter = _gen()
     out = gzip_async_str_iterator(str_iter) if use_gzip else str_iter

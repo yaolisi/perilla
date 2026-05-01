@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
+
 import hashlib
 import json
 import subprocess
@@ -16,6 +22,7 @@ def test_make_write_gh_inputs_json_file_writes_valid_snapshot(tmp_path: Path) ->
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
     assert output_file.exists()

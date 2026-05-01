@@ -31,8 +31,38 @@ MAKEFILE_ERROR_CODE_GUARD_TARGET_SPECS = (
     ("event-bus-smoke-unit", "event-bus-smoke-contract-guard"),
     ("event-bus-smoke-contract-guard-validator", "event-bus-smoke-contract-guard-workflow"),
 )
+
+
+def _resolve_repo_path(rel: str) -> Path:
+    """解析仓库内路径：兼容 cwd 为仓库根或 ``backend/``（pytest 常见）。"""
+    candidates: list[Path] = [Path(rel)]
+    if rel.startswith("backend/"):
+        candidates.append(Path(rel[len("backend/") :]))
+    if rel == "Makefile":
+        candidates.append(Path("../Makefile"))
+    for c in candidates:
+        try:
+            if c.exists():
+                return c
+        except OSError:
+            continue
+    return Path(rel)
+
+
+def monorepo_requires_makefile_in_preflight() -> bool:
+    """存在顶层 ``Makefile`` 与 ``backend/`` 子目录时视为完整 monorepo，preflight 才强制 ``Makefile``。"""
+    script_dir = Path(__file__).resolve().parent
+    backend_dir = script_dir.parent
+    outer = backend_dir.parent
+    return (
+        (outer / "Makefile").is_file()
+        and (outer / "backend").is_dir()
+        and (outer / "backend" / "api").is_dir()
+    )
+
+
 DEFAULT_REQUIRED_MODULES = ("pytest",)
-DEFAULT_REQUIRED_FILES = (
+_RAW_DEFAULT_REQUIRED_FILES = (
     "backend/scripts/event_bus_smoke_preflight.py",
     "backend/scripts/validate_event_bus_smoke_result.py",
     "backend/scripts/validate_event_bus_smoke_summary_result.py",
@@ -75,13 +105,22 @@ DEFAULT_REQUIRED_FILES = (
 )
 
 
+def _build_default_required_files() -> tuple[str, ...]:
+    if monorepo_requires_makefile_in_preflight():
+        return _RAW_DEFAULT_REQUIRED_FILES
+    return tuple(x for x in _RAW_DEFAULT_REQUIRED_FILES if x != MAKEFILE_PATH)
+
+
+DEFAULT_REQUIRED_FILES = _build_default_required_files()
+
+
 def _find_missing_modules(modules: Iterable[str]) -> List[str]:
     missing = [m for m in _unique(modules) if importlib.util.find_spec(m) is None]
     return sorted(missing)
 
 
 def _find_missing_files(files: Iterable[str]) -> List[str]:
-    missing = [p for p in _unique(files) if not Path(p).exists()]
+    missing = [p for p in _unique(files) if not _resolve_repo_path(p).exists()]
     return sorted(missing)
 
 
@@ -119,10 +158,14 @@ def _validate_pytest_smoke_ini(path: str) -> List[str]:
 def _validate_required_file_contracts(required_files: Iterable[str]) -> List[str]:
     errors: List[str] = []
     files = set(_unique(required_files))
-    if SMOKE_PYTEST_INI_PATH in files and Path(SMOKE_PYTEST_INI_PATH).exists():
-        errors.extend(_validate_pytest_smoke_ini(SMOKE_PYTEST_INI_PATH))
-    if MAKEFILE_PATH in files and Path(MAKEFILE_PATH).exists():
-        errors.extend(_validate_makefile_error_code_guard_blocks(MAKEFILE_PATH))
+    if SMOKE_PYTEST_INI_PATH in files:
+        spi = _resolve_repo_path(SMOKE_PYTEST_INI_PATH)
+        if spi.exists():
+            errors.extend(_validate_pytest_smoke_ini(str(spi)))
+    if MAKEFILE_PATH in files:
+        mk = _resolve_repo_path(MAKEFILE_PATH)
+        if mk.exists():
+            errors.extend(_validate_makefile_error_code_guard_blocks(str(mk)))
     return errors
 
 

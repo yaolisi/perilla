@@ -1,4 +1,4 @@
-# Vitest + TypeScript/Vite 生产构建。本地：`make test-frontend-unit`、`make build-frontend`；`make pr-check` 含 Vitest + build + backend lint/no-fallback。**`make pr-check-fast`** 跑到 Vitest 为止，跳过下文 Production build。
+# Vitest + TypeScript/Vite 生产构建。本地：`make test-frontend-unit`、`make build-frontend`；**`make pr-check`** 含 Vitest + **`roadmap-acceptance-unit`** + build + backend lint/no-fallback；**`make pr-check-fast`** 同上但跳过 Production build； roadmap 可用 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`** 跳过。
 # Node：`setup-node` 读仓库根 `.nvmrc`；`scripts/check-nvmrc-align.sh` 保证其与 **`frontend/.nvmrc`** 字节一致。
 name: frontend-build
 

@@ -57,7 +57,8 @@ MONITORING_ALERTMANAGER_URL ?= http://127.0.0.1:9093
 MONITORING_GRAFANA_URL ?= http://127.0.0.1:3000
 ROADMAP_BASE_URL ?= http://127.0.0.1:8000
 ROADMAP_RUN_LIVE_SMOKE ?= 0
-ROADMAP_ACCEPTANCE_IN_PR_CHECK ?= 0
+# 设为 1 时，`make pr-check` / `pr-check-fast` 跳过 roadmap-acceptance-unit（默认运行以更贴近生产合并门禁）。
+SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK ?= 0
 ROADMAP_OUTPUT_JSON ?=
 ROADMAP_OUTPUT_SCHEMA_VERSION ?= 1
 ROADMAP_GATE_LOG_PREFIX ?= [roadmap-gate]
@@ -176,17 +177,17 @@ help:
 	@echo "  npm run quick-check"
 	@echo "                   - Same without make"
 	@echo "  make pr-check"
-	@echo "                   - check-nvmrc-align, then lint + no-fallback + vitest + build"
+	@echo "                   - check-nvmrc-align, then lint + no-fallback + vitest + build + roadmap-acceptance-unit"
 	@echo "  make ci"
 	@echo "                   - Alias for make pr-check"
-	@echo "  ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 make pr-check"
-	@echo "                   - Append roadmap-acceptance-unit to pr-check gate (optional)"
+	@echo "  SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 make pr-check"
+	@echo "                   - Same as pr-check but skip roadmap-acceptance-unit (optional)"
 	@echo "  make pr-check-fast"
-	@echo "                   - Same as pr-check but skips build-frontend (faster local loop)"
+	@echo "                   - Same as pr-check but skips build-frontend (faster local loop; includes roadmap-acceptance-unit)"
 	@echo "  make ci-fast"
 	@echo "                   - Alias for make pr-check-fast"
-	@echo "  ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 make pr-check-fast"
-	@echo "                   - Append roadmap-acceptance-unit to pr-check-fast gate (optional)"
+	@echo "  SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 make pr-check-fast"
+	@echo "                   - Same as pr-check-fast but skip roadmap-acceptance-unit (optional)"
 	@echo "  bash scripts/pr-check.sh / scripts/pr-check-fast.sh"
 	@echo "                   - Same as make pr-check / pr-check-fast (any cwd; optional pytest args)"
 	@echo "  npm run ci / npm run ci-fast"
@@ -547,18 +548,18 @@ build-frontend: check-nvmrc-align
 	@cd frontend && npm run build
 
 pr-check: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-frontend-unit build-frontend
-	@if [ "$(ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
-		$(MAKE) roadmap-acceptance-unit; \
+	@if [ "$(SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
+		echo "pr-check: skip roadmap-acceptance-unit (SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1)"; \
 	else \
-		echo "pr-check: skip roadmap-acceptance-unit (set ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 to enable)"; \
+		$(MAKE) roadmap-acceptance-unit; \
 	fi
 	@echo "pr-check: OK"
 
 pr-check-fast: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-frontend-unit
-	@if [ "$(ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
-		$(MAKE) roadmap-acceptance-unit; \
+	@if [ "$(SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
+		echo "pr-check-fast: skip roadmap-acceptance-unit (SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1)"; \
 	else \
-		echo "pr-check-fast: skip roadmap-acceptance-unit (set ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 to enable)"; \
+		$(MAKE) roadmap-acceptance-unit; \
 	fi
 	@echo "pr-check-fast: OK (no build-frontend)"
 

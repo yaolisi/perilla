@@ -230,30 +230,23 @@ export function useChat(options: UseChatOptions = {}) {
     }
   }
 
-  function updateMessageRouting(id: string, routing: ChatRoutingMetadata): void {
-    const message = messages.value.find((m) => m.id === id)
-    if (message) {
-      message.routing = routing
-    }
-  }
-
   /** 流式最后一帧携带与非流式相同的 metadata（含 rag / multi_hop），写入 assistant 消息以便无需刷新即可溯源 */
   function applyStreamCompletionMetadata(id: string, chunk: ChatStreamChunk): void {
     let raw: Record<string, unknown> | undefined
     if (chunk.object === 'chat.completion.chunk') {
       const c = chunk as ChatStreamResponse
       if (c.choices?.[0]?.finish_reason === 'stop' && c.metadata && typeof c.metadata === 'object') {
-        raw = c.metadata as Record<string, unknown>
+        raw = c.metadata as unknown as Record<string, unknown>
       }
     } else if (chunk.object === 'perilla.stream.jsonl') {
       const j = chunk as ChatStreamJsonlChunk
       if (j.d === true && j.metadata && typeof j.metadata === 'object') {
-        raw = j.metadata as Record<string, unknown>
+        raw = j.metadata as unknown as Record<string, unknown>
       }
     } else if (chunk.object === 'perilla.stream.md') {
       const m = chunk as ChatStreamMarkdownChunk
       if (m.d === true && m.metadata && typeof m.metadata === 'object') {
-        raw = m.metadata as Record<string, unknown>
+        raw = m.metadata as unknown as Record<string, unknown>
       }
     }
     if (!raw) return
@@ -437,7 +430,7 @@ export function useChat(options: UseChatOptions = {}) {
               : undefined
           const metaFull =
             response.metadata && typeof response.metadata === 'object'
-              ? { ...(response.metadata as Record<string, unknown>) }
+              ? { ...(response.metadata as unknown as Record<string, unknown>) }
               : undefined
           addMessage(
             'assistant',

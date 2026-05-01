@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from api.stream_resume_store import StreamResumeStore, iter_resume_chunks
 
 
@@ -34,6 +36,44 @@ def test_iter_resume_waits_for_chunks_then_finishes() -> None:
         assert out[-1].strip().endswith("data: [DONE]")
 
     asyncio.run(_run())
+
+
+@pytest.mark.asyncio
+async def test_pressure_eviction_finishes_victim_so_resume_iterator_unblocks() -> None:
+    """驱逐时会标记 victim finished，持有 Session 的 iter_resume_chunks 应迅速结束，而非卡到 wait_timeout。"""
+    store = StreamResumeStore(ttl_seconds=3600.0, max_sessions=1)
+    store.create("s_first", "u1")
+    await store.append_chunk("s_first", 'data: {"x":1}\n\n')
+
+    chunks_out: list[str] = []
+
+    async def drain() -> None:
+        async for piece in iter_resume_chunks(store, "s_first", 0, wait_timeout=60.0):
+            chunks_out.append(piece)
+
+    task = asyncio.create_task(drain())
+    await asyncio.sleep(0.02)
+    store.create("s_second", "u2")
+    await asyncio.wait_for(task, timeout=2.0)
+    assert len(chunks_out) >= 1
+    assert 'data: {"x":1}' in chunks_out[0] or "x" in chunks_out[0]
+    assert store.get("s_first") is None
+
+
+def test_create_evicts_oldest_when_at_cap_even_if_unfinished() -> None:
+    """生产边界：仅已完成 TTL 回收不足以腾出槽位时，驱逐最旧会话，防止内存无限增长。"""
+    store = StreamResumeStore(ttl_seconds=3600.0, max_sessions=2)
+    store.create("s1", user_id="u1")
+    store.create("s2", user_id="u2")
+    assert len(store._sessions) == 2
+    victim_ref = store.get("s1")
+    assert victim_ref is not None
+    store.create("s3", user_id="u3")
+    assert len(store._sessions) == 2
+    assert store.get("s1") is None
+    assert victim_ref.pressure_evicted is True
+    assert store.get("s2") is not None
+    assert store.get("s3") is not None
 
 
 def test_iter_resume_from_offset() -> None:

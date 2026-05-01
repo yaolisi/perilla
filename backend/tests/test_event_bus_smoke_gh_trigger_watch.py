@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from collections import deque
 from pathlib import Path
 
@@ -10,6 +9,8 @@ import scripts.event_bus_smoke_gh_trigger_watch as mod
 from scripts.event_bus_smoke_gh_constants import ALLOWED_GH_RUN_CONCLUSIONS, GH_TRIGGER_AUDIT_SOURCE
 from scripts.event_bus_smoke_gh_contract_keys import GH_TRIGGER_INPUTS_AUDIT_EXPECTED_KEYS
 from scripts.event_bus_smoke_json_integrity import canonical_json_sha256
+
+from tests.repo_paths import repo_run_python
 
 
 def _argv() -> list[str]:
@@ -211,8 +212,9 @@ def test_main_returns_2_when_trigger_command_fails(monkeypatch, capsys) -> None:
 
 
 def test_cli_help_returns_0() -> None:
-    result = subprocess.run(
-        [sys.executable, "backend/scripts/event_bus_smoke_gh_trigger_watch.py", "--help"],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_gh_trigger_watch.py",
+        ["--help"],
         capture_output=True,
         text=True,
     )
@@ -221,8 +223,9 @@ def test_cli_help_returns_0() -> None:
 
 
 def test_cli_returns_2_when_required_args_missing() -> None:
-    result = subprocess.run(
-        [sys.executable, "backend/scripts/event_bus_smoke_gh_trigger_watch.py"],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_gh_trigger_watch.py",
+        [],
         capture_output=True,
         text=True,
     )
@@ -231,10 +234,9 @@ def test_cli_returns_2_when_required_args_missing() -> None:
 
 
 def test_cli_returns_2_when_mode_invalid() -> None:
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_gh_trigger_watch.py",
         [
-            sys.executable,
-            "backend/scripts/event_bus_smoke_gh_trigger_watch.py",
             "--workflow",
             "event-bus-dlq-smoke.yml",
             "--mode",

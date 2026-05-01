@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
+
 import subprocess
 
 
@@ -8,6 +14,7 @@ def test_make_validate_gh_inputs_accepts_valid_defaults() -> None:
         ["make", "event-bus-smoke-validate-gh-inputs"],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -21,6 +28,7 @@ def test_make_validate_gh_inputs_rejects_invalid_summary_mode() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode != 0
     assert "must be one of: strict,compatible" in (result.stdout + result.stderr)
@@ -35,6 +43,7 @@ def test_make_validate_gh_inputs_rejects_invalid_summary_schema_version() -> Non
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode != 0
     assert "EVENT_BUS_SMOKE_SUMMARY_SCHEMA_VERSION must be a positive integer" in (result.stdout + result.stderr)
@@ -49,6 +58,7 @@ def test_make_validate_gh_inputs_rejects_invalid_stale_threshold() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode != 0
     assert "EVENT_BUS_SMOKE_RESULT_FILE_STALE_THRESHOLD_MS must be a non-negative integer" in (
@@ -65,6 +75,7 @@ def test_make_validate_gh_inputs_rejects_invalid_payload_sha256_mode() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode != 0
     assert "EVENT_BUS_SMOKE_PAYLOAD_SHA256_MODE must be one of: strict,off" in (result.stdout + result.stderr)
@@ -79,6 +90,7 @@ def test_make_validate_gh_inputs_rejects_invalid_expected_schema_version() -> No
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode != 0
     assert "EVENT_BUS_SMOKE_SCHEMA_VERSION must be a positive integer" in (result.stdout + result.stderr)

@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Dict
 
 from scripts.validate_event_bus_smoke_result import validate_payload
+
+from tests.repo_paths import repo_run_python
+
+
+def _run_result_cli(input_path: Path, *extra: str):
+    return repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_result.py",
+        ["--input", str(input_path), *extra],
+        capture_output=True,
+        text=True,
+    )
 
 
 def _base_payload() -> Dict[str, Any]:
@@ -281,16 +290,7 @@ def test_validate_payload_accepts_generated_at_equal_last_step_ts() -> None:
 
 def test_validator_cli_returns_2_when_input_missing(tmp_path: Path) -> None:
     missing = tmp_path / "not-found.json"
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_result.py",
-            "--input",
-            str(missing),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = _run_result_cli(missing)
     assert result.returncode == 2
     assert "result file not found" in result.stdout
 
@@ -298,16 +298,7 @@ def test_validator_cli_returns_2_when_input_missing(tmp_path: Path) -> None:
 def test_validator_cli_returns_0_when_contract_valid(tmp_path: Path) -> None:
     valid = tmp_path / "valid.json"
     valid.write_text(json.dumps(_base_payload(), ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_result.py",
-            "--input",
-            str(valid),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = _run_result_cli(valid)
     assert result.returncode == 0
     assert "contract validation passed" in result.stdout
 
@@ -315,16 +306,7 @@ def test_validator_cli_returns_0_when_contract_valid(tmp_path: Path) -> None:
 def test_validator_cli_returns_2_when_json_invalid(tmp_path: Path) -> None:
     bad = tmp_path / "bad.json"
     bad.write_text("{not-json", encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_result.py",
-            "--input",
-            str(bad),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = _run_result_cli(bad)
     assert result.returncode == 2
     assert "failed to parse JSON" in result.stdout
 
@@ -349,16 +331,7 @@ def test_validator_cli_returns_1_when_contract_invalid(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_result.py",
-            "--input",
-            str(bad_contract),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = _run_result_cli(bad_contract)
     assert result.returncode == 1
     assert "contract validation failed" in result.stdout
     assert "ok_steps must equal count(step.ok == true)" in result.stdout
@@ -369,18 +342,7 @@ def test_validator_cli_accepts_expected_schema_version_override(tmp_path: Path) 
     payload = _base_payload()
     payload["schema_version"] = 2
     valid.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_result.py",
-            "--input",
-            str(valid),
-            "--expected-schema-version",
-            "2",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = _run_result_cli(valid, "--expected-schema-version", "2")
     assert result.returncode == 0
     assert "contract validation passed" in result.stdout
 
@@ -390,18 +352,7 @@ def test_validator_cli_rejects_when_expected_schema_version_mismatch(tmp_path: P
     payload = _base_payload()
     payload["schema_version"] = 2
     valid.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_result.py",
-            "--input",
-            str(valid),
-            "--expected-schema-version",
-            "1",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = _run_result_cli(valid, "--expected-schema-version", "1")
     assert result.returncode == 1
     assert "schema_version must be 1" in result.stdout
 
@@ -411,16 +362,7 @@ def test_validator_cli_rejects_non_positive_schema_version(tmp_path: Path) -> No
     payload = _base_payload()
     payload["schema_version"] = 0
     invalid.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_result.py",
-            "--input",
-            str(invalid),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = _run_result_cli(invalid)
     assert result.returncode == 1
     assert "schema_version must be > 0" in result.stdout
 
@@ -428,18 +370,7 @@ def test_validator_cli_rejects_non_positive_schema_version(tmp_path: Path) -> No
 def test_validator_cli_rejects_non_positive_expected_schema_version(tmp_path: Path) -> None:
     valid = tmp_path / "valid.json"
     valid.write_text(json.dumps(_base_payload(), ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_result.py",
-            "--input",
-            str(valid),
-            "--expected-schema-version",
-            "0",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = _run_result_cli(valid, "--expected-schema-version", "0")
     assert result.returncode == 2
     assert "expected-schema-version must be a positive integer" in result.stdout
 
@@ -447,18 +378,7 @@ def test_validator_cli_rejects_non_positive_expected_schema_version(tmp_path: Pa
 def test_validator_cli_rejects_negative_expected_schema_version(tmp_path: Path) -> None:
     valid = tmp_path / "valid.json"
     valid.write_text(json.dumps(_base_payload(), ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_result.py",
-            "--input",
-            str(valid),
-            "--expected-schema-version",
-            "-1",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = _run_result_cli(valid, "--expected-schema-version", "-1")
     assert result.returncode == 2
     assert "expected-schema-version must be a positive integer" in result.stdout
 
@@ -466,15 +386,6 @@ def test_validator_cli_rejects_negative_expected_schema_version(tmp_path: Path) 
 def test_validator_cli_returns_2_when_root_is_not_object(tmp_path: Path) -> None:
     arr_root = tmp_path / "array-root.json"
     arr_root.write_text(json.dumps([1, 2, 3], ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_result.py",
-            "--input",
-            str(arr_root),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = _run_result_cli(arr_root)
     assert result.returncode == 2
     assert "root JSON value must be object" in result.stdout

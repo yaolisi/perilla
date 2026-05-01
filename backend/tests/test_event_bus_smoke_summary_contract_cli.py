@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -13,20 +11,17 @@ from scripts.event_bus_smoke_summary_keys import (
     KEY_SUMMARY_SCHEMA_VERSION,
 )
 from tests._event_bus_smoke_summary_fixtures import base_summary_payload
+from tests.repo_paths import repo_run_python
+
 
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def _run_validator(input_path: Path, *extra_args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_summary_result.py",
-            "--input",
-            str(input_path),
-            *extra_args,
-        ],
+    return repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_summary_result.py",
+        ["--input", str(input_path), *extra_args],
         capture_output=True,
         text=True,
     )

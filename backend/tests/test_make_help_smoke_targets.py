@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from tests.repo_paths import repo_root
+
 import subprocess
-from pathlib import Path
 
 import pytest
 from typing import Dict, List, TypedDict
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.requires_monorepo
 
 
 class HelpTargetGroupConfig(TypedDict):
@@ -60,7 +61,7 @@ HELP_TARGET_GROUP_CONFIG: Dict[str, HelpTargetGroupConfig] = {
             "roadmap-acceptance-validate-output",
             "roadmap-acceptance-run-validated",
             "roadmap-release-gate",
-            "ROADMAP_ACCEPTANCE_IN_PR_CHECK=1",
+            "SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1",
             "pr-check-fast",
         ],
         "min_count": 3,
@@ -71,9 +72,9 @@ HELP_TARGET_GROUP_CONFIG: Dict[str, HelpTargetGroupConfig] = {
 def _make_help_output() -> str:
     result = subprocess.run(
         ["make", "help"],
-        cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
     return result.stdout

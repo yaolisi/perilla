@@ -5,6 +5,7 @@ Central inference routing hub.
 Coordinates ModelRouter and ProviderRuntimeAdapter.
 """
 from typing import Any, AsyncIterator, Optional
+import asyncio
 import hashlib
 import json
 import time
@@ -561,6 +562,10 @@ class InferenceGateway:
                     request
                 ):
                     yield token
+        except asyncio.CancelledError:
+            # Python 3.11+: CancelledError 继承 BaseException，不会进入 except Exception；须显式释放 in-flight
+            self.prom_metrics.observe_inference_cancelled(operation=operation, provider=routing.provider)
+            raise
         except Exception:
             self.prom_metrics.observe_inference_failed(operation=operation, provider=routing.provider)
             raise

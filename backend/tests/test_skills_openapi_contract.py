@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 
 from api import skills as skills_api
@@ -71,7 +73,8 @@ def test_openapi_skills_named_schemas() -> None:
     assert ex_body == "#/components/schemas/ExecuteSkillBody"
     assert schemas["ExecuteSkillBody"]["properties"]["inputs"]["$ref"] == jmap
 
-    lst = client.get("/api/skills")
+    with patch.object(skills_api, "list_skills", return_value=[]):
+        lst = client.get("/api/skills")
     assert lst.status_code == 200
     body = lst.json()
     assert body["object"] == "list" and isinstance(body["data"], list)

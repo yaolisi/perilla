@@ -7,14 +7,16 @@ from pathlib import Path
 
 import pytest
 
+from tests.repo_paths import repo_path, repo_root
+
 
 @pytest.mark.skipif(
     not os.getenv("EVENT_BUS_SMOKE_BASE_URL") or not os.getenv("EVENT_BUS_SMOKE_ADMIN_TOKEN"),
     reason="Set EVENT_BUS_SMOKE_BASE_URL and EVENT_BUS_SMOKE_ADMIN_TOKEN to enable external smoke test.",
 )
 def test_event_bus_dlq_external_smoke_script() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    script = repo_root / "backend" / "scripts" / "event_bus_dlq_smoke.py"
+    root = repo_root()
+    script = repo_path("backend/scripts/event_bus_dlq_smoke.py")
     cmd = [
         sys.executable,
         str(script),
@@ -32,7 +34,7 @@ def test_event_bus_dlq_external_smoke_script() -> None:
 
     result = subprocess.run(
         cmd,
-        cwd=str(repo_root),
+        cwd=str(root),
         capture_output=True,
         text=True,
         timeout=120,

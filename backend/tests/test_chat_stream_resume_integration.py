@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.stream_resume_store import StreamResumeStore
@@ -166,3 +167,104 @@ def test_stream_resume_chunk_index_out_of_range_returns_timeout_error_chunk(
         assert "[DONE]" in body
     finally:
         settings.chat_stream_resume_wait_timeout_seconds = prev_wait
+
+
+def test_stream_resume_wait_timeout_log_includes_header_correlation(
+    chat_stream_resume_client: tuple[TestClient, StreamResumeStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式传入 X-Request-Id / X-Trace-Id 时，续传超时日志应与请求头一致（便于与上游对账）。"""
+    captured: list[dict] = []
+
+    def _fake_log_structured(_component: str, event: str, **kwargs) -> None:
+        if event == "chat_stream_resume_wait_timeout":
+            captured.append(dict(kwargs))
+
+    monkeypatch.setattr("api.chat.log_structured", _fake_log_structured)
+
+    client, store = chat_stream_resume_client
+    uid = "resume-log-corr-user"
+    sid = "resume-integration-sid-0005"
+    chat_seed_stream_store(
+        store,
+        stream_id=sid,
+        user_id=uid,
+        completion_id="chatcmpl-corr",
+        created=1700000003,
+        contents=["x"],
+        append_done=False,
+        finish=False,
+    )
+
+    token = chat_prime_csrf(client)
+    prev_wait = int(getattr(settings, "chat_stream_resume_wait_timeout_seconds", 120) or 120)
+    settings.chat_stream_resume_wait_timeout_seconds = 1
+    try:
+        client.post(
+            "/v1/chat/completions/stream/resume",
+            json={"stream_id": sid, "chunk_index": 9},
+            headers={
+                "X-User-Id": uid,
+                "X-CSRF-Token": token,
+                "X-Request-Id": "custom-req-99",
+                "X-Trace-Id": "custom-trace-88",
+            },
+        )
+    finally:
+        settings.chat_stream_resume_wait_timeout_seconds = prev_wait
+
+    assert len(captured) == 1
+    assert captured[0].get("request_id") == "custom-req-99"
+    assert captured[0].get("trace_id") == "custom-trace-88"
+    assert captured[0].get("stream_id")
+
+
+def test_stream_resume_wait_timeout_log_matches_request_trace_response_headers(
+    chat_stream_resume_client: tuple[TestClient, StreamResumeStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未自定义追踪头时，续传超时日志中的 request_id/trace_id 应与响应头（RequestTrace 注入）一致。"""
+    captured: list[dict] = []
+
+    def _fake_log_structured(_component: str, event: str, **kwargs) -> None:
+        if event == "chat_stream_resume_wait_timeout":
+            captured.append(dict(kwargs))
+
+    monkeypatch.setattr("api.chat.log_structured", _fake_log_structured)
+
+    client, store = chat_stream_resume_client
+    uid = "resume-log-state-user"
+    sid = "resume-integration-sid-0006"
+    chat_seed_stream_store(
+        store,
+        stream_id=sid,
+        user_id=uid,
+        completion_id="chatcmpl-state",
+        created=1700000004,
+        contents=["y"],
+        append_done=False,
+        finish=False,
+    )
+
+    token = chat_prime_csrf(client)
+    prev_wait = int(getattr(settings, "chat_stream_resume_wait_timeout_seconds", 120) or 120)
+    settings.chat_stream_resume_wait_timeout_seconds = 1
+    try:
+        resp = client.post(
+            "/v1/chat/completions/stream/resume",
+            json={"stream_id": sid, "chunk_index": 9},
+            headers={
+                "X-User-Id": uid,
+                "X-CSRF-Token": token,
+            },
+        )
+    finally:
+        settings.chat_stream_resume_wait_timeout_seconds = prev_wait
+
+    assert resp.status_code == 200, resp.text
+    hdr_rid = resp.headers.get("X-Request-Id")
+    hdr_tid = resp.headers.get("X-Trace-Id")
+    assert hdr_rid and hdr_tid
+    assert len(captured) == 1
+    assert captured[0].get("request_id") == hdr_rid
+    assert captured[0].get("trace_id") == hdr_tid

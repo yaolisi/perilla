@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
+
 import json
 import subprocess
 
@@ -9,6 +15,7 @@ def test_make_print_gh_inputs_json_is_valid_json_with_expected_keys() -> None:
         ["make", "event-bus-smoke-print-gh-inputs-json"],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
     payload = json.loads(result.stdout)

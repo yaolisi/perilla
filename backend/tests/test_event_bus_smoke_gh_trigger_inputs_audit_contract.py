@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -25,6 +23,12 @@ from scripts.event_bus_smoke_error_codes import (
 from scripts.event_bus_smoke_gh_constants import ALLOWED_GH_RUN_CONCLUSIONS_SET, GH_TRIGGER_AUDIT_SOURCE
 from scripts.event_bus_smoke_gh_contract_keys import GH_TRIGGER_INPUTS_AUDIT_EXPECTED_KEYS
 from scripts.validate_event_bus_smoke_gh_trigger_inputs_audit import validate_payload
+
+from tests.repo_paths import repo_make_run, repo_run_python
+
+import pytest
+
+pytestmark = pytest.mark.requires_monorepo
 
 
 def _with_payload_hash(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -305,9 +309,8 @@ def test_make_validate_gh_trigger_inputs_audit_passes(tmp_path: Path) -> None:
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_make_run(
         [
-            "make",
             "event-bus-smoke-validate-gh-trigger-inputs-audit",
             f"EVENT_BUS_SMOKE_GH_TRIGGER_INPUTS_AUDIT_FILE={path}",
             "EVENT_BUS_SMOKE_PAYLOAD_SHA256_MODE=strict",
@@ -322,9 +325,8 @@ def test_make_validate_gh_trigger_inputs_audit_passes(tmp_path: Path) -> None:
 
 
 def test_make_validate_gh_trigger_inputs_audit_rejects_empty_file_var() -> None:
-    result = subprocess.run(
+    result = repo_make_run(
         [
-            "make",
             "event-bus-smoke-validate-gh-trigger-inputs-audit",
             "EVENT_BUS_SMOKE_GH_TRIGGER_INPUTS_AUDIT_FILE=",
         ],
@@ -341,9 +343,8 @@ def test_make_validate_gh_trigger_inputs_audit_rejects_invalid_schema_mode(tmp_p
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_make_run(
         [
-            "make",
             "event-bus-smoke-validate-gh-trigger-inputs-audit",
             f"EVENT_BUS_SMOKE_GH_TRIGGER_INPUTS_AUDIT_FILE={path}",
             "EVENT_BUS_SMOKE_GH_TRIGGER_INPUTS_AUDIT_SCHEMA_MODE=invalid",
@@ -363,9 +364,8 @@ def test_make_validate_gh_trigger_inputs_audit_rejects_invalid_max_duration(tmp_
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_make_run(
         [
-            "make",
             "event-bus-smoke-validate-gh-trigger-inputs-audit",
             f"EVENT_BUS_SMOKE_GH_TRIGGER_INPUTS_AUDIT_FILE={path}",
             "EVENT_BUS_SMOKE_GH_TRIGGER_MAX_DURATION_MS=-1",
@@ -385,10 +385,9 @@ def test_validator_cli_returns_0_for_valid_payload(tmp_path: Path) -> None:
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
         ],
@@ -408,10 +407,9 @@ def test_validator_cli_accepts_compatible_schema_mode(tmp_path: Path) -> None:
         json.dumps(_with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"}), ensure_ascii=False),
         encoding="utf-8",
     )
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--expected-schema-version",
@@ -440,10 +438,9 @@ def test_validator_cli_rejects_trigger_mode_mismatch(tmp_path: Path) -> None:
     payload["mode"] = "compatible"
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--expected-trigger-mode",
@@ -469,10 +466,9 @@ def test_validator_cli_rejects_expected_workflow_mismatch(tmp_path: Path) -> Non
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--expected-workflow",
@@ -570,10 +566,9 @@ def test_validator_cli_rejects_expected_base_url_mismatch(tmp_path: Path) -> Non
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--expected-base-url",
@@ -592,10 +587,9 @@ def test_validator_cli_rejects_expected_limit_mismatch(tmp_path: Path) -> None:
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--expected-limit",
@@ -614,10 +608,9 @@ def test_validator_cli_rejects_expected_result_schema_version_mismatch(tmp_path:
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--expected-result-schema-version",
@@ -636,10 +629,9 @@ def test_validator_cli_rejects_expected_file_suffix_mismatch(tmp_path: Path) -> 
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--expected-file-suffix",
@@ -658,10 +650,9 @@ def test_validator_cli_rejects_expected_conclusion_mismatch(tmp_path: Path) -> N
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--expected-conclusion",
@@ -680,10 +671,9 @@ def test_validator_cli_rejects_invalid_expected_conclusion_value(tmp_path: Path)
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--expected-conclusion",
@@ -702,10 +692,9 @@ def test_validator_cli_rejects_duration_exceeding_max(tmp_path: Path) -> None:
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--max-duration-ms",
@@ -725,10 +714,9 @@ def test_validator_cli_rejects_audit_older_than_max_age(tmp_path: Path) -> None:
     payload["completed_at_ms"] = 1
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--max-age-ms",
@@ -747,9 +735,8 @@ def test_make_validate_gh_trigger_inputs_audit_rejects_invalid_max_age(tmp_path:
     payload["trigger_inputs_audit_file"] = str(path)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_make_run(
         [
-            "make",
             "event-bus-smoke-validate-gh-trigger-inputs-audit",
             f"EVENT_BUS_SMOKE_GH_TRIGGER_INPUTS_AUDIT_FILE={path}",
             "EVENT_BUS_SMOKE_GH_TRIGGER_MAX_AGE_MS=-1",
@@ -770,9 +757,8 @@ def test_make_validate_gh_trigger_inputs_audit_rejects_aged_payload_by_max_age(t
     payload["completed_at_ms"] = 1
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_make_run(
         [
-            "make",
             "event-bus-smoke-validate-gh-trigger-inputs-audit",
             f"EVENT_BUS_SMOKE_GH_TRIGGER_INPUTS_AUDIT_FILE={path}",
             "EVENT_BUS_SMOKE_GH_TRIGGER_MAX_AGE_MS=10",
@@ -790,10 +776,9 @@ def test_validator_cli_rejects_declared_path_mismatch(tmp_path: Path) -> None:
     payload["trigger_inputs_audit_file"] = str(tmp_path / "other.json")
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
         ],
@@ -812,10 +797,9 @@ def test_validator_cli_rejects_payload_sha_mode_mismatch(tmp_path: Path) -> None
     payload["payload_sha256_mode"] = "off"
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
             "--payload-sha256-mode",
@@ -837,10 +821,9 @@ def test_validator_cli_accepts_path_match_after_normalization(tmp_path: Path) ->
     payload["trigger_inputs_audit_file"] = str(declared_equivalent)
     payload = _with_payload_hash({k: v for k, v in payload.items() if k != "payload_sha256"})
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    result = subprocess.run(
+    result = repo_run_python(
+        "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
         [
-            sys.executable,
-            "backend/scripts/validate_event_bus_smoke_gh_trigger_inputs_audit.py",
             "--input",
             str(path),
         ],

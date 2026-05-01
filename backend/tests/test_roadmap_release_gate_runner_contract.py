@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
 
 
 def test_roadmap_release_gate_runner_keeps_exit_code_hint_contract() -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     script = root / "scripts" / "acceptance" / "roadmap_release_gate.sh"
     content = script.read_text(encoding="utf-8")
 

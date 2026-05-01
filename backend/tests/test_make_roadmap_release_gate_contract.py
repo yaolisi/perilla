@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
 
 
 def test_makefile_roadmap_release_gate_has_strict_defaults() -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     makefile = (root / "Makefile").read_text(encoding="utf-8")
 
     assert "roadmap-release-gate:" in makefile

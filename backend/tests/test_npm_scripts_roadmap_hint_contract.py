@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
 
 
 def test_npm_scripts_sh_prints_roadmap_gate_hint_on_default_list() -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = repo_root()
     script = root / "scripts" / "npm-scripts.sh"
     content = script.read_text(encoding="utf-8")
 

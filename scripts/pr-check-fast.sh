@@ -3,8 +3,8 @@ set -euo pipefail
 # Runs `make pr-check-fast` from repository root (no prod build).
 # Same targets as `make ci-fast` (alias).
 # Lighter gate: `scripts/quick-check.sh` (nvmrc + lint-backend only).
-# Order: check-nvmrc-align → lint-backend (`scripts/lint-backend.sh`) → test-no-fallback → test-frontend-unit.
-# Optional: export ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 to append roadmap acceptance suite.
+# Order: check-nvmrc-align → lint-backend (`scripts/lint-backend.sh`) → test-no-fallback → test-frontend-unit → roadmap-acceptance-unit (unless skipped).
+# Skip roadmap: export SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 or pass --skip-roadmap-acceptance.
 # Optional args → TEST_ARGS for pytest (same as pr-check.sh).
 # Or:
 #   bash scripts/pr-check-fast.sh --with-roadmap-acceptance -k memory -x
@@ -15,7 +15,11 @@ if [[ ! -f Makefile ]]; then
   exit 1
 fi
 if [[ "${1:-}" == "--with-roadmap-acceptance" ]]; then
-  export ROADMAP_ACCEPTANCE_IN_PR_CHECK=1
+  export SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=0
+  shift
+fi
+if [[ "${1:-}" == "--skip-roadmap-acceptance" ]]; then
+  export SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1
   shift
 fi
 if [ "$#" -gt 0 ]; then

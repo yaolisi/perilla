@@ -148,6 +148,10 @@ ALLOWED_SYSTEM_CONFIG_KEYS = {
     "continuousBatchEnabled",
     "continuousBatchWaitMs",
     "continuousBatchMaxSize",
+    "torchStreamThreadJoinTimeoutSec",
+    "torchStreamChunkQueueMax",
+    "chatStreamWallClockMaxSeconds",
+    "chatStreamResumeCancelUpstreamOnDisconnect",
     "skillDiscoveryTagMatchWeight",
     "skillDiscoveryMinSemanticSimilarity",
     "skillDiscoveryMinHybridScore",
@@ -232,6 +236,30 @@ SYSTEM_CONFIG_SCHEMA_HINTS: Dict[str, Dict[str, Any]] = {
         "recommended": "{}",
         "description": "路线图阶段能力开关（JSON 字符串），如 {\"hybrid_retrieval\": true}。",
     },
+    "torchStreamThreadJoinTimeoutSec": {
+        "type": "integer",
+        "default": 600,
+        "recommended": 600,
+        "description": "Torch VLM HF 流式：后台 generate 线程 join 超时（秒）；超时仍存活记 TorchStreamHF 错误日志。",
+    },
+    "torchStreamChunkQueueMax": {
+        "type": "integer",
+        "default": 0,
+        "recommended": 0,
+        "description": "Torch VLM 流式异步桥接队列深度；0 为不限制，>0 时满则丢最旧 chunk 以腾出槽位。",
+    },
+    "chatStreamWallClockMaxSeconds": {
+        "type": "integer",
+        "default": 0,
+        "recommended": 0,
+        "description": "Chat SSE 墙钟上限（秒），含等待下一 token；0 表示不限制。触顶会结束上游并下发错误 chunk，见 perilla_chat_stream_wall_clock_limit_total。",
+    },
+    "chatStreamResumeCancelUpstreamOnDisconnect": {
+        "type": "boolean",
+        "default": False,
+        "recommended": False,
+        "description": "启用断点续传时，是否在检测到客户端断连后立即取消上游； True 省算力但 resume 缓冲可能不完整；False 继续生成直至结束以填满缓冲。见 perilla_chat_stream_resume_upstream_cancel_total。",
+    },
 }
 
 SYSTEM_CONFIG_EXAMPLE_PAYLOAD: Dict[str, Any] = {
@@ -289,6 +317,10 @@ class SystemConfigUpdate(BaseModel):
     continuousBatchEnabled: Optional[bool] = None
     continuousBatchWaitMs: Optional[int] = Field(default=None, ge=0, le=500)
     continuousBatchMaxSize: Optional[int] = Field(default=None, ge=1, le=64)
+    torchStreamThreadJoinTimeoutSec: Optional[int] = Field(default=None, ge=30, le=86400)
+    torchStreamChunkQueueMax: Optional[int] = Field(default=None, ge=0, le=4096)
+    chatStreamWallClockMaxSeconds: Optional[int] = Field(default=None, ge=0, le=86400)
+    chatStreamResumeCancelUpstreamOnDisconnect: Optional[bool] = None
     skillDiscoveryTagMatchWeight: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     skillDiscoveryMinSemanticSimilarity: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     skillDiscoveryMinHybridScore: Optional[float] = Field(default=None, ge=0.0, le=1.0)

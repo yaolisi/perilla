@@ -92,6 +92,10 @@ const {
   runtimeMaxCachedLocalImageGenerationRuntimes,
   runtimeReleaseIdleTtlSeconds,
   runtimeReleaseMinIntervalSeconds,
+  torchStreamThreadJoinTimeoutSec,
+  torchStreamChunkQueueMax,
+  chatStreamWallClockMaxSeconds,
+  chatStreamResumeCancelUpstreamOnDisconnect,
   inferenceSmartRoutingEnabled,
   inferenceSmartRoutingPoliciesJson,
   skillDiscoveryTagMatchWeight,
@@ -568,6 +572,83 @@ watch(
                   @update:modelValue="isEditing = true"
                 />
                 <p class="text-xs text-muted-foreground">{{ t('settings.runtime.min_interval_desc') }}</p>
+              </div>
+              <div class="rounded-2xl border border-border/60 bg-background/40 p-5 space-y-4">
+                <div>
+                  <h3 class="text-sm font-semibold text-foreground">{{ t('settings.runtime.torch_vlm_stream_title') }}</h3>
+                  <p class="text-xs text-muted-foreground mt-1 leading-relaxed">
+                    {{ t('settings.runtime.torch_vlm_stream_desc') }}
+                  </p>
+                </div>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <div class="space-y-2">
+                    <label for="torch-stream-join-timeout" class="text-sm font-medium text-foreground">{{
+                      t('settings.runtime.torch_stream_join_timeout')
+                    }}</label>
+                    <Input
+                      id="torch-stream-join-timeout"
+                      v-model.number="torchStreamThreadJoinTimeoutSec"
+                      type="number"
+                      min="30"
+                      max="86400"
+                      class="w-full h-12 bg-background border-border text-foreground rounded-xl px-4"
+                      @update:modelValue="isEditing = true"
+                    />
+                    <p class="text-xs text-muted-foreground">{{ t('settings.runtime.torch_stream_join_timeout_hint') }}</p>
+                  </div>
+                  <div class="space-y-2">
+                    <label for="torch-stream-queue-max" class="text-sm font-medium text-foreground">{{
+                      t('settings.runtime.torch_stream_queue_max')
+                    }}</label>
+                    <Input
+                      id="torch-stream-queue-max"
+                      v-model.number="torchStreamChunkQueueMax"
+                      type="number"
+                      min="0"
+                      max="4096"
+                      class="w-full h-12 bg-background border-border text-foreground rounded-xl px-4"
+                      @update:modelValue="isEditing = true"
+                    />
+                    <p class="text-xs text-muted-foreground">{{ t('settings.runtime.torch_stream_queue_max_hint') }}</p>
+                  </div>
+                </div>
+              </div>
+              <div class="rounded-2xl border border-border/60 bg-background/40 p-5 space-y-4">
+                <div>
+                  <h3 class="text-sm font-semibold text-foreground">{{ t('settings.runtime.chat_sse_wall_clock_title') }}</h3>
+                  <p class="text-xs text-muted-foreground mt-1 leading-relaxed">
+                    {{ t('settings.runtime.chat_sse_wall_clock_desc') }}
+                  </p>
+                </div>
+                <div class="space-y-2 max-w-md">
+                  <label for="chat-sse-wall-clock" class="text-sm font-medium text-foreground">{{
+                    t('settings.runtime.chat_sse_wall_clock_seconds')
+                  }}</label>
+                  <Input
+                    id="chat-sse-wall-clock"
+                    v-model.number="chatStreamWallClockMaxSeconds"
+                    type="number"
+                    min="0"
+                    max="86400"
+                    class="w-full h-12 bg-background border-border text-foreground rounded-xl px-4"
+                    @update:modelValue="isEditing = true"
+                  />
+                  <p class="text-xs text-muted-foreground">{{ t('settings.runtime.chat_sse_wall_clock_hint') }}</p>
+                </div>
+                <div class="flex items-center justify-between gap-4 pt-1">
+                  <div class="space-y-1 min-w-0 pr-2">
+                    <p class="text-sm font-medium text-foreground">
+                      {{ t('settings.runtime.chat_resume_cancel_upstream') }}
+                    </p>
+                    <p class="text-xs text-muted-foreground leading-relaxed">
+                      {{ t('settings.runtime.chat_resume_cancel_upstream_desc') }}
+                    </p>
+                  </div>
+                  <Switch
+                    :checked="chatStreamResumeCancelUpstreamOnDisconnect"
+                    @update:checked="(v: boolean) => { chatStreamResumeCancelUpstreamOnDisconnect = v; isEditing = true }"
+                  />
+                </div>
               </div>
               <div class="rounded-2xl border border-border/60 bg-background/40 p-5 space-y-4">
                 <div>

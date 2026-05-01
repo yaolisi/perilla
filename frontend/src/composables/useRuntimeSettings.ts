@@ -69,6 +69,14 @@ export function useRuntimeSettings() {
   const runtimeMaxCachedLocalImageGenerationRuntimes = ref(1)
   const runtimeReleaseIdleTtlSeconds = ref(300)
   const runtimeReleaseMinIntervalSeconds = ref(5)
+  /** Torch VLM HF 流式：generate 线程 join 超时（秒），与后端 torchStreamThreadJoinTimeoutSec 对齐 */
+  const torchStreamThreadJoinTimeoutSec = ref(600)
+  /** 异步 chunk 队列深度；0 为不限制 */
+  const torchStreamChunkQueueMax = ref(0)
+  /** Chat SSE 墙钟上限（秒）；0 为不限制，与后端 chatStreamWallClockMaxSeconds 对齐 */
+  const chatStreamWallClockMaxSeconds = ref(0)
+  /** 断点续传开启时：断连即取消上游；与 chatStreamResumeCancelUpstreamOnDisconnect 对齐 */
+  const chatStreamResumeCancelUpstreamOnDisconnect = ref(false)
   const inferenceSmartRoutingEnabled = ref(true)
   const inferenceSmartRoutingPoliciesJson = ref('')
   /** 技能语义发现：混合分中标签匹配权重（0–1），语义为 1 - 该值 */
@@ -151,6 +159,39 @@ export function useRuntimeSettings() {
       )
       runtimeReleaseIdleTtlSeconds.value = Math.min(86400, Math.max(30, Number(s.runtimeReleaseIdleTtlSeconds) || 300))
       runtimeReleaseMinIntervalSeconds.value = Math.min(3600, Math.max(1, Number(s.runtimeReleaseMinIntervalSeconds) || 5))
+      {
+        const tj = s.torchStreamThreadJoinTimeoutSec
+        if (tj !== undefined && tj !== null && String(tj) !== '') {
+          const n = Math.floor(Number(tj))
+          torchStreamThreadJoinTimeoutSec.value = Number.isNaN(n)
+            ? 600
+            : Math.min(86400, Math.max(30, n))
+        } else {
+          torchStreamThreadJoinTimeoutSec.value = 600
+        }
+      }
+      {
+        const qc = s.torchStreamChunkQueueMax
+        if (qc !== undefined && qc !== null && String(qc) !== '') {
+          const n = Math.floor(Number(qc))
+          torchStreamChunkQueueMax.value = Number.isNaN(n) ? 0 : Math.min(4096, Math.max(0, n))
+        } else {
+          torchStreamChunkQueueMax.value = 0
+        }
+      }
+      {
+        const cw = s.chatStreamWallClockMaxSeconds
+        if (cw !== undefined && cw !== null && String(cw) !== '') {
+          const n = Math.floor(Number(cw))
+          chatStreamWallClockMaxSeconds.value = Number.isNaN(n) ? 0 : Math.min(86400, Math.max(0, n))
+        } else {
+          chatStreamWallClockMaxSeconds.value = 0
+        }
+      }
+      chatStreamResumeCancelUpstreamOnDisconnect.value = parseBool(
+        s.chatStreamResumeCancelUpstreamOnDisconnect,
+        false,
+      )
       inferenceSmartRoutingEnabled.value = parseBool(s.inferenceSmartRoutingEnabled, true)
       inferenceSmartRoutingPoliciesJson.value = String(s.inferenceSmartRoutingPoliciesJson || '')
       skillDiscoveryTagMatchWeight.value = parseFloat01(s.skillDiscoveryTagMatchWeight, 0.3)
@@ -283,6 +324,19 @@ export function useRuntimeSettings() {
           0,
           Math.floor(Number(inferencePriorityPanelPreemptionCooldownBusyThreshold.value) || 10),
         ),
+        torchStreamThreadJoinTimeoutSec: Math.min(
+          86400,
+          Math.max(30, Math.floor(Number(torchStreamThreadJoinTimeoutSec.value) || 600)),
+        ),
+        torchStreamChunkQueueMax: Math.min(
+          4096,
+          Math.max(0, Math.floor(Number(torchStreamChunkQueueMax.value) || 0)),
+        ),
+        chatStreamWallClockMaxSeconds: Math.min(
+          86400,
+          Math.max(0, Math.floor(Number(chatStreamWallClockMaxSeconds.value) || 0)),
+        ),
+        chatStreamResumeCancelUpstreamOnDisconnect: Boolean(chatStreamResumeCancelUpstreamOnDisconnect.value),
       })
       await loadConfig()
       if (policyText) {
@@ -768,6 +822,10 @@ export function useRuntimeSettings() {
     runtimeMaxCachedLocalImageGenerationRuntimes,
     runtimeReleaseIdleTtlSeconds,
     runtimeReleaseMinIntervalSeconds,
+    torchStreamThreadJoinTimeoutSec,
+    torchStreamChunkQueueMax,
+    chatStreamWallClockMaxSeconds,
+    chatStreamResumeCancelUpstreamOnDisconnect,
     inferenceSmartRoutingEnabled,
     inferenceSmartRoutingPoliciesJson,
     skillDiscoveryTagMatchWeight,

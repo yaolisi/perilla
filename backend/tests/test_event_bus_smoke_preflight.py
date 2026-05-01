@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
-import subprocess
-import sys
 import json
 from pathlib import Path
+
+import pytest
 
 from scripts.event_bus_smoke_error_code_guard_targets import (
     ERROR_CODE_GUARD_TEST_GLOB,
@@ -13,12 +13,14 @@ from scripts.event_bus_smoke_error_code_guard_targets import (
     error_code_guard_test_path_regex,
 )
 import scripts.event_bus_smoke_preflight as preflight_module
+from tests.repo_paths import repo_path, repo_run_python
 from scripts.event_bus_smoke_error_code_guard_targets import ERROR_CODE_GUARD_TEST_FILES
 from scripts.event_bus_smoke_preflight import (
     DEFAULT_REQUIRED_FILES,
     MAKEFILE_PATH,
     PREFLIGHT_JSON_SCHEMA_VERSION,
     SMOKE_PYTEST_INI_PATH,
+    monorepo_requires_makefile_in_preflight,
     _normalize_newlines,
     _validate_makefile_error_code_guard_blocks,
     _validate_pytest_smoke_ini,
@@ -147,7 +149,10 @@ def test_default_required_files_include_makefile_utils_module() -> None:
 
 
 def test_default_required_files_include_makefile_path() -> None:
-    assert MAKEFILE_PATH in DEFAULT_REQUIRED_FILES
+    if monorepo_requires_makefile_in_preflight():
+        assert MAKEFILE_PATH in DEFAULT_REQUIRED_FILES
+    else:
+        assert MAKEFILE_PATH not in DEFAULT_REQUIRED_FILES
 
 
 def test_default_required_files_include_error_code_contract_test() -> None:
@@ -420,12 +425,14 @@ def test_preflight_error_details_is_valid_json_suffix(capsys) -> None:
     assert isinstance(details["missing_modules"], list)
 
 
+@pytest.mark.requires_monorepo
 def test_validate_makefile_error_code_guard_blocks_passes_for_repo_makefile() -> None:
-    assert _validate_makefile_error_code_guard_blocks(MAKEFILE_PATH) == []
+    assert _validate_makefile_error_code_guard_blocks(str(repo_path("Makefile"))) == []
 
 
+@pytest.mark.requires_monorepo
 def test_validate_makefile_error_code_guard_blocks_accepts_crlf_makefile(tmp_path) -> None:
-    source_text = Path(MAKEFILE_PATH).read_text(encoding="utf-8")
+    source_text = repo_path("Makefile").read_text(encoding="utf-8")
     makefile_path = tmp_path / "Makefile"
     makefile_path.write_text(source_text.replace("\n", "\r\n"), encoding="utf-8")
     assert _validate_makefile_error_code_guard_blocks(str(makefile_path)) == []
@@ -459,8 +466,9 @@ def test_normalize_newlines_converts_crlf_and_cr_to_lf() -> None:
 
 
 def test_preflight_cli_returns_0_by_default() -> None:
-    result = subprocess.run(
-        [sys.executable, "backend/scripts/event_bus_smoke_preflight.py"],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_preflight.py",
+        [],
         capture_output=True,
         text=True,
     )
@@ -473,13 +481,9 @@ def test_preflight_cli_returns_0_by_default() -> None:
 
 
 def test_preflight_cli_returns_2_for_missing_module_arg() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/event_bus_smoke_preflight.py",
-            "--module",
-            "definitely_missing_module_for_preflight_cli_test",
-        ],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_preflight.py",
+        ["--module", "definitely_missing_module_for_preflight_cli_test"],
         capture_output=True,
         text=True,
     )
@@ -490,13 +494,9 @@ def test_preflight_cli_returns_2_for_missing_module_arg() -> None:
 
 
 def test_preflight_cli_returns_2_for_missing_file_arg() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/event_bus_smoke_preflight.py",
-            "--file",
-            "backend/tests/__definitely_missing_cli_file__.txt",
-        ],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_preflight.py",
+        ["--file", "backend/tests/__definitely_missing_cli_file__.txt"],
         capture_output=True,
         text=True,
     )
@@ -507,15 +507,9 @@ def test_preflight_cli_returns_2_for_missing_file_arg() -> None:
 
 
 def test_preflight_cli_accepts_existing_extra_requirements() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/event_bus_smoke_preflight.py",
-            "--module",
-            "pytest",
-            "--file",
-            "backend/tests/pytest.smoke.ini",
-        ],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_preflight.py",
+        ["--module", "pytest", "--file", "backend/tests/pytest.smoke.ini"],
         capture_output=True,
         text=True,
     )
@@ -524,15 +518,9 @@ def test_preflight_cli_accepts_existing_extra_requirements() -> None:
 
 
 def test_preflight_cli_ignores_blank_extra_requirements() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/event_bus_smoke_preflight.py",
-            "--module",
-            "   ",
-            "--file",
-            "   ",
-        ],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_preflight.py",
+        ["--module", "   ", "--file", "   "],
         capture_output=True,
         text=True,
     )
@@ -541,13 +529,9 @@ def test_preflight_cli_ignores_blank_extra_requirements() -> None:
 
 
 def test_preflight_cli_error_lines_are_code_prefixed() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/event_bus_smoke_preflight.py",
-            "--module",
-            "definitely_missing_module_for_preflight_cli_error_prefix_test",
-        ],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_preflight.py",
+        ["--module", "definitely_missing_module_for_preflight_cli_error_prefix_test"],
         capture_output=True,
         text=True,
     )
@@ -558,8 +542,9 @@ def test_preflight_cli_error_lines_are_code_prefixed() -> None:
 
 
 def test_preflight_cli_json_success_output() -> None:
-    result = subprocess.run(
-        [sys.executable, "backend/scripts/event_bus_smoke_preflight.py", "--json"],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_preflight.py",
+        ["--json"],
         capture_output=True,
         text=True,
     )
@@ -576,14 +561,9 @@ def test_preflight_cli_json_success_output() -> None:
 
 
 def test_preflight_cli_json_failure_output() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "backend/scripts/event_bus_smoke_preflight.py",
-            "--json",
-            "--module",
-            "definitely_missing_module_for_preflight_cli_json_failure_test",
-        ],
+    result = repo_run_python(
+        "backend/scripts/event_bus_smoke_preflight.py",
+        ["--json", "--module", "definitely_missing_module_for_preflight_cli_json_failure_test"],
         capture_output=True,
         text=True,
     )

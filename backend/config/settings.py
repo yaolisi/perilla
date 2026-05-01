@@ -310,6 +310,11 @@ class Settings(BaseSettings):
     model_json_backup_daily_time: str = "02:00"
     # MPS 内存压力阈值（current/recommended），超阈值触发积极回收
     runtime_mps_pressure_threshold: float = 0.85
+    # Torch VLM HF 流式：generate 线程 join 超时（秒）；超时仍存活则记结构化错误日志（无法强制终止 CUDA kernel）
+    torch_stream_thread_join_timeout_sec: int = 600
+    # Torch VLM 流式异步桥接队列是否限制深度：0 表示不限制（等同无限队列，依赖下游消费速度）
+    torch_stream_chunk_queue_max: int = 0
+
     # 系统内存压力阈值（psutil.virtual_memory().percent），超阈值触发积极回收
     # 用于覆盖 llama.cpp 等不计入 torch.mps 统计的内存占用场景。
     runtime_ram_pressure_threshold: float = 85.0
@@ -418,6 +423,10 @@ class Settings(BaseSettings):
     chat_stream_resume_ttl_seconds: int = 600
     chat_stream_resume_max_sessions: int = 500
     chat_stream_resume_wait_timeout_seconds: int = 120
+    # Chat SSE 墙钟上限（秒）：从首 token 起算，含等待下一 chunk 的时间；0 表示不限制
+    chat_stream_wall_clock_max_seconds: int = 0
+    # 断点续传开启时：客户端断连后是否立即停止上游（默认 False=继续生成直至结束以便 resume 缓冲完整）
+    chat_stream_resume_cancel_upstream_on_disconnect: bool = False
     # HTTP 响应 GZip（GZip 中间件对 text/event-stream 不压缩；SSE 请用 ChatCompletionRequest.stream_gzip）
     response_gzip_enabled: bool = True
     response_gzip_minimum_size: int = 256

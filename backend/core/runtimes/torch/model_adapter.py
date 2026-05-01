@@ -10,7 +10,7 @@ ModelAdapter 抽象层
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, Iterator, List, Optional, Union
 
 try:
     from PIL import Image
@@ -59,6 +59,31 @@ class ModelAdapter(ABC):
             生成的文本
         """
         pass
+
+    def generate_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        images: Optional[List[Union[str, bytes, "Image.Image"]]],
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        stop: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> Iterator[str]:
+        """
+        流式生成。默认实现退化为单次 yield（与非流式一致）；子类可覆盖以实现 tokenizer 级流式输出。
+        """
+        text = self.generate(
+            messages,
+            images,
+            max_tokens,
+            temperature,
+            top_p,
+            stop,
+            **kwargs,
+        )
+        if text:
+            yield text
 
     @abstractmethod
     def unload(self) -> None:

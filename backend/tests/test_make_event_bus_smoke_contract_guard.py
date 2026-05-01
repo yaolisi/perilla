@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from tests.repo_paths import repo_path, repo_root
+
+pytestmark = pytest.mark.requires_monorepo
+
 import subprocess
 from pathlib import Path
 
@@ -15,6 +21,7 @@ def test_make_event_bus_smoke_contract_guard_passes() -> None:
         ["make", "event-bus-smoke-contract-guard"],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
     output = result.stdout + result.stderr
@@ -31,6 +38,7 @@ def test_make_event_bus_smoke_contract_guard_mapping_passes() -> None:
         ["make", "event-bus-smoke-contract-guard-mapping"],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -40,6 +48,7 @@ def test_make_event_bus_smoke_contract_guard_payload_passes() -> None:
         ["make", "event-bus-smoke-contract-guard-payload"],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -49,6 +58,7 @@ def test_make_event_bus_smoke_contract_guard_validator_passes() -> None:
         ["make", "event-bus-smoke-contract-guard-validator"],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -58,12 +68,13 @@ def test_make_event_bus_smoke_contract_guard_workflow_passes() -> None:
         ["make", "event-bus-smoke-contract-guard-workflow"],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
 
 def test_contract_guard_validator_includes_all_error_code_guard_tests() -> None:
-    makefile = Path("Makefile").read_text(encoding="utf-8")
+    makefile = repo_path("Makefile").read_text(encoding="utf-8")
     section = slice_make_target(
         makefile,
         "event-bus-smoke-contract-guard-validator",
@@ -75,7 +86,7 @@ def test_contract_guard_validator_includes_all_error_code_guard_tests() -> None:
 
 
 def test_smoke_unit_includes_all_error_code_guard_tests() -> None:
-    makefile = Path("Makefile").read_text(encoding="utf-8")
+    makefile = repo_path("Makefile").read_text(encoding="utf-8")
     section = slice_make_target(
         makefile,
         "event-bus-smoke-unit",
@@ -87,7 +98,7 @@ def test_smoke_unit_includes_all_error_code_guard_tests() -> None:
 
 
 def test_makefile_invokes_scripts_package_smoke_helpers_with_pythonpath_backend() -> None:
-    makefile = Path("Makefile").read_text(encoding="utf-8")
+    makefile = repo_path("Makefile").read_text(encoding="utf-8")
     needles = (
         "backend/scripts/event_bus_dlq_smoke.py",
         "backend/scripts/event_bus_smoke_preflight.py",

@@ -195,6 +195,47 @@ def get_continuous_batch_max_size() -> int:
     )
 
 
+def get_torch_stream_thread_join_timeout_sec() -> int:
+    """Torch HF 流式：后台 generate 线程 join 超时（秒）。"""
+    return _get_int(
+        "torchStreamThreadJoinTimeoutSec",
+        int(getattr(settings, "torch_stream_thread_join_timeout_sec", 600)),
+        30,
+        86400,
+    )
+
+
+def get_chat_stream_wall_clock_max_seconds() -> int:
+    """Chat 流式响应墙钟上限（秒）；0 为不限制。含等待上游产出下一 token 的等待时间。"""
+    return _get_int(
+        "chatStreamWallClockMaxSeconds",
+        int(getattr(settings, "chat_stream_wall_clock_max_seconds", 0)),
+        0,
+        86400,
+    )
+
+
+def get_chat_stream_resume_cancel_upstream_on_disconnect() -> bool:
+    """断点续传开启时，是否在检测到客户端断连后立即 aclose 上游（牺牲缓冲完整性换算力）。"""
+    return _get_bool(
+        "chatStreamResumeCancelUpstreamOnDisconnect",
+        bool(getattr(settings, "chat_stream_resume_cancel_upstream_on_disconnect", False)),
+    )
+
+
+def get_torch_stream_chunk_queue_max() -> int:
+    """
+    Torch VLM 流式 chunk 队列最大深度；0 表示不限制（SimpleQueue）。
+    非 0 时使用有界 queue.Queue；极慢消费端下可限制内存，但需保证错误包可入队（见实现侧丢最旧块策略）。
+    """
+    return _get_int(
+        "torchStreamChunkQueueMax",
+        int(getattr(settings, "torch_stream_chunk_queue_max", 0)),
+        0,
+        4096,
+    )
+
+
 def get_mcp_http_emit_server_push_events() -> bool:
     """MCP Streamable HTTP：GET SSE 服务端推送是否写入事件总线；系统设置可覆盖 .env。"""
     return _get_bool(

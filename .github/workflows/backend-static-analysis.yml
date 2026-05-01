@@ -1,4 +1,4 @@
-# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`**（ruff E9 + 目标 mypy）→ `scripts/test-no-fallback.sh`（同一 pip）。对应 `make pr-check` 中前段：仅 **lint-backend + test-no-fallback**；`pr-check` 还含 **test-frontend-unit + build-frontend**（见 `frontend-build`）。本地 **`make pr-check-fast`** = 本段 + Vitest，**不**跑前端生产构建。
+# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`**（ruff E9 + 目标 mypy）→ `scripts/test-no-fallback.sh`（同一 pip）。对应 `make pr-check` 中前段：仅 **lint-backend + test-no-fallback**；完整 **`make pr-check`** / **`make pr-check-fast`** 另含 Vitest、默认同源的 **`roadmap-acceptance-unit`**（可用 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`** 跳过）、以及 **`build-frontend`**（仅 `pr-check`；见 `frontend-build`）。
 name: backend-static-analysis
 
 on:
@@ -19,6 +19,7 @@ on:
       - ".nvmrc"
       - "frontend/.nvmrc"
       - "pytest.ini"
+      - "backend/pytest.ini"
       - ".github/workflows/backend-static-analysis.yml"
   push:
     branches:
@@ -40,6 +41,7 @@ on:
       - ".nvmrc"
       - "frontend/.nvmrc"
       - "pytest.ini"
+      - "backend/pytest.ini"
       - ".github/workflows/backend-static-analysis.yml"
 
 concurrency:

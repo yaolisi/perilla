@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
+
 import subprocess
 
 
@@ -8,6 +14,7 @@ def test_make_print_gh_inputs_contains_expected_keys() -> None:
         ["make", "event-bus-smoke-print-gh-inputs"],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
     output = result.stdout

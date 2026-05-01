@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
+
 import subprocess
 
 
@@ -12,6 +18,7 @@ def test_make_validate_summary_schema_version_accepts_positive_integer() -> None
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -25,6 +32,7 @@ def test_make_validate_summary_schema_version_rejects_zero() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode != 0
     assert "must be a positive integer" in (result.stdout + result.stderr)
@@ -39,6 +47,7 @@ def test_make_validate_summary_schema_version_rejects_non_numeric() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode != 0
     assert "must be a positive integer" in (result.stdout + result.stderr)

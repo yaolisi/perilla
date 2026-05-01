@@ -465,6 +465,15 @@ class ProviderRuntimeAdapter:
             ):
                 yield token
             completed_normally = True
+        except asyncio.CancelledError:
+            log_structured(
+                "RuntimeStabilization",
+                "inference_stream_cancelled",
+                level="info",
+                model_id=model_id_key,
+                runtime=runtime_type,
+            )
+            raise
         except Exception as e:
             metrics.record_request_failed(model_id_key, priority=req_priority)
             log_structured(

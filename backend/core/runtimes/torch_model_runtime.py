@@ -175,10 +175,36 @@ class TorchModelRuntime(ModelRuntime):
         return result
 
     async def stream_chat(self, descriptor: ModelDescriptor, req: ChatCompletionRequest) -> AsyncIterator[str]:
-        # TorchVLMRuntime 暂不支持流式，一次性返回
-        text = await self.chat(descriptor, req)
-        if text:
-            yield text
+        from core.runtimes.factory import get_runtime_factory
+
+        vlm = get_runtime_factory().create_vlm_runtime(descriptor)
+        if not vlm.is_loaded:
+            await vlm.initialize()
+
+        if not hasattr(vlm, "generate_stream"):
+            text = await self.chat(descriptor, req)
+            if text:
+                yield text
+            return
+
+        _images, vlm_messages = _extract_images_from_messages(req.messages)
+        system_prompt, user_prompt = _messages_to_prompt_and_system(req.messages)
+        normalized_messages = _normalize_vlm_messages(vlm_messages, system_prompt)
+        if not normalized_messages:
+            normalized_messages = [{"role": "user", "content": user_prompt or "Hello."}]
+
+        vlm_req = VLMRequest(
+            messages=normalized_messages,
+            images=None,
+            generation_config=VLMGenerationConfig(
+                max_tokens=req.max_tokens if (req.max_tokens is not None and req.max_tokens > 0) else 2048,
+                temperature=req.temperature,
+                top_p=req.top_p,
+            ),
+        )
+        async for chunk in vlm.generate_stream(vlm_req):
+            if chunk:
+                yield chunk
 
     async def load(self, descriptor: ModelDescriptor) -> bool:
         try:

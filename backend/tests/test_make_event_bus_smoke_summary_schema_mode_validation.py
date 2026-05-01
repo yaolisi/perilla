@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from tests.repo_paths import repo_root
+
+pytestmark = pytest.mark.requires_monorepo
+
 import subprocess
 
 
@@ -12,6 +18,7 @@ def test_make_validate_summary_schema_mode_accepts_strict() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -25,6 +32,7 @@ def test_make_validate_summary_schema_mode_accepts_compatible() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode == 0
 
@@ -38,6 +46,7 @@ def test_make_validate_summary_schema_mode_rejects_invalid_value() -> None:
         ],
         capture_output=True,
         text=True,
+        cwd=repo_root(),
     )
     assert result.returncode != 0
     assert "must be one of: strict,compatible" in (result.stdout + result.stderr)

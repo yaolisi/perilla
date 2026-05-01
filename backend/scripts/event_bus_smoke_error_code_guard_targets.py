@@ -52,9 +52,17 @@ def extract_error_code_guard_tests_from_text(text: str) -> tuple[str, ...]:
     return tuple(extracted)
 
 
-def discover_error_code_guard_test_files(base_dir: str = "backend/tests") -> tuple[str, ...]:
-    discovered = [
-        str(path).replace("\\", "/")
-        for path in Path(base_dir).glob(ERROR_CODE_GUARD_TEST_GLOB)
-    ]
+def discover_error_code_guard_test_files(base_dir: str | None = None) -> tuple[str, ...]:
+    """扫描合约测试文件；兼容 ``cwd`` 为仓库根或 ``backend/``（pytest 常见）。"""
+    if base_dir is not None:
+        candidates = (Path(base_dir),)
+    else:
+        candidates = (Path("backend/tests"), Path("tests"))
+    tests_root = next((p for p in candidates if p.is_dir()), Path("backend/tests"))
+    discovered: list[str] = []
+    for path in tests_root.glob(ERROR_CODE_GUARD_TEST_GLOB):
+        rel = path.as_posix().replace("\\", "/")
+        if rel.startswith("tests/"):
+            rel = "backend/" + rel
+        discovered.append(rel)
     return tuple(sorted(discovered))
