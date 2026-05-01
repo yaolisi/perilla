@@ -45,6 +45,15 @@ class PrometheusBusinessMetrics:
             self.chat_stream_resume_wait_timeouts_total = noop
             self.agent_runs_total = noop
             self.agent_run_failures_total = noop
+            self.workflow_scheduler_platform_max_concurrency = noop
+            self.event_bus_published_total = noop
+            self.event_bus_publish_latency_seconds = noop
+            self.health_ready_event_bus_degraded = noop
+            self.health_ready_inference_cache_redis_degraded = noop
+            self.http_rate_limit_blocked_total = noop
+            self.http_rate_limit_redis_backend_errors_total = noop
+            self.health_ready_api_rate_limit_redis_degraded = noop
+            self.health_ready_shutting_down = noop
             self._legacy_mirror = False
             return
 
@@ -108,6 +117,59 @@ class PrometheusBusinessMetrics:
             "perilla_agent_run_failures_total",
             "Total failed agent runtime runs",
             labelnames=("mode", "engine"),
+        )
+
+        self.workflow_scheduler_platform_max_concurrency = Gauge(
+            "perilla_workflow_scheduler_platform_max_concurrency",
+            "Effective workflow DAG parallel node cap (runtime_settings / env WORKFLOW_SCHEDULER_MAX_CONCURRENCY)",
+            labelnames=(),
+        )
+        self.event_bus_published_total = Counter(
+            "perilla_event_bus_published_total",
+            "Event bus publish operations completed",
+            labelnames=("backend",),
+        )
+        self.event_bus_publish_latency_seconds = Histogram(
+            "perilla_event_bus_publish_latency_seconds",
+            "Wall time for event bus publish (includes in-process handler execution for InProcessEventBus)",
+            labelnames=("backend",),
+            buckets=(0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 60.0),
+        )
+        self.health_ready_event_bus_degraded = Gauge(
+            "perilla_health_ready_event_bus_degraded",
+            "1 if the last /api/health/ready check reported event bus degraded (else 0)",
+            labelnames=(),
+        )
+        self.health_ready_event_bus_degraded.set(0.0)
+        self.health_ready_inference_cache_redis_degraded = Gauge(
+            "perilla_health_ready_inference_cache_redis_degraded",
+            "1 if the last /api/health/ready check reported inference-cache Redis degraded (else 0)",
+            labelnames=(),
+        )
+        self.health_ready_inference_cache_redis_degraded.set(0.0)
+
+        self.health_ready_api_rate_limit_redis_degraded = Gauge(
+            "perilla_health_ready_api_rate_limit_redis_degraded",
+            "1 if the last /api/health/ready check reported API rate-limit Redis degraded (else 0)",
+            labelnames=(),
+        )
+        self.health_ready_api_rate_limit_redis_degraded.set(0.0)
+        self.health_ready_shutting_down = Gauge(
+            "perilla_health_ready_shutting_down",
+            "1 while the application is in graceful shutdown (readiness should fail)",
+            labelnames=(),
+        )
+        self.health_ready_shutting_down.set(0.0)
+
+        self.http_rate_limit_blocked_total = Counter(
+            "perilla_http_rate_limit_blocked_total",
+            "Requests rejected by API rate limit middleware (429)",
+            labelnames=("reason", "identity_type", "backend"),
+        )
+        self.http_rate_limit_redis_backend_errors_total = Counter(
+            "perilla_http_rate_limit_redis_backend_errors_total",
+            "Redis-backed rate limit operations that raised (before fail-open or fail-closed)",
+            labelnames=("phase",),
         )
 
         self._legacy_mirror = bool(getattr(settings, "metrics_legacy_openvitamin_names_enabled", True))
@@ -216,6 +278,38 @@ class PrometheusBusinessMetrics:
             self._legacy_agent_runs_total.labels(mode=norm_mode, engine=norm_engine).inc()
             if not success:
                 self._legacy_agent_run_failures_total.labels(mode=norm_mode, engine=norm_engine).inc()
+
+    def set_workflow_scheduler_platform_max_concurrency(self, n: int) -> None:
+        v = float(max(1, min(256, int(n))))
+        self.workflow_scheduler_platform_max_concurrency.set(v)
+
+    def observe_event_bus_publish(self, *, backend: str, latency_seconds: float) -> None:
+        b = backend or "unknown"
+        lat = max(0.0, float(latency_seconds))
+        self.event_bus_published_total.labels(backend=b).inc()
+        self.event_bus_publish_latency_seconds.labels(backend=b).observe(lat)
+
+    def set_health_ready_event_bus_degraded(self, degraded: bool) -> None:
+        self.health_ready_event_bus_degraded.set(1.0 if degraded else 0.0)
+
+    def set_health_ready_inference_cache_redis_degraded(self, degraded: bool) -> None:
+        self.health_ready_inference_cache_redis_degraded.set(1.0 if degraded else 0.0)
+
+    def set_health_ready_api_rate_limit_redis_degraded(self, degraded: bool) -> None:
+        self.health_ready_api_rate_limit_redis_degraded.set(1.0 if degraded else 0.0)
+
+    def set_health_ready_shutting_down(self, shutting_down: bool) -> None:
+        self.health_ready_shutting_down.set(1.0 if shutting_down else 0.0)
+
+    def observe_rate_limit_blocked(self, *, reason: str, identity_type: str, backend: str) -> None:
+        r = reason if reason in ("window", "concurrency") else "window"
+        it = identity_type if identity_type in ("user", "api_key", "ip", "unknown") else "unknown"
+        b = backend if backend in ("memory", "redis") else "memory"
+        self.http_rate_limit_blocked_total.labels(reason=r, identity_type=it, backend=b).inc()
+
+    def observe_rate_limit_redis_backend_error(self, *, phase: str) -> None:
+        p = phase if phase in ("allow", "acquire", "release") else "allow"
+        self.http_rate_limit_redis_backend_errors_total.labels(phase=p).inc()
 
 
 _metrics: Optional[PrometheusBusinessMetrics] = None

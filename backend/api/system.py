@@ -156,6 +156,7 @@ ALLOWED_SYSTEM_CONFIG_KEYS = {
     "skillDiscoveryMinSemanticSimilarity",
     "skillDiscoveryMinHybridScore",
     "agentPlanMaxParallelSteps",
+    "workflowSchedulerMaxConcurrency",
     "agentStepDefaultTimeoutSeconds",
     "agentStepDefaultMaxRetries",
     "agentStepDefaultRetryIntervalSeconds",
@@ -211,6 +212,12 @@ SYSTEM_CONFIG_SCHEMA_HINTS: Dict[str, Dict[str, Any]] = {
         "default": "",
         "recommended": "",
         "description": "Reflector 全局默认备用 Agent ID（节点可覆盖）。",
+    },
+    "workflowSchedulerMaxConcurrency": {
+        "type": "integer",
+        "default": 10,
+        "recommended": 16,
+        "description": "工作流/execution_kernel 单实例内可并行节点同时执行上限；与 Agent 图 max_parallel_nodes 取较小值。",
     },
     "workflowGovernanceHealthyThreshold": {
         "type": "number",
@@ -325,6 +332,7 @@ class SystemConfigUpdate(BaseModel):
     skillDiscoveryMinSemanticSimilarity: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     skillDiscoveryMinHybridScore: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     agentPlanMaxParallelSteps: Optional[int] = Field(default=None, ge=1, le=32)
+    workflowSchedulerMaxConcurrency: Optional[int] = Field(default=None, ge=1, le=256)
     agentStepDefaultTimeoutSeconds: Optional[float] = Field(default=None, ge=0.0, le=3600.0)
     agentStepDefaultMaxRetries: Optional[int] = Field(default=None, ge=0, le=20)
     agentStepDefaultRetryIntervalSeconds: Optional[float] = Field(default=None, ge=0.0, le=60.0)

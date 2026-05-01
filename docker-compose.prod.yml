@@ -2,13 +2,29 @@ services:
   backend:
     environment:
       DEBUG: "false"
+      SECURITY_HEADERS_ENABLED: "${SECURITY_HEADERS_ENABLED:-true}"
       CSRF_ENABLED: "true"
       CSRF_COOKIE_SECURE: "true"
       RBAC_ENABLED: "${RBAC_ENABLED:-true}"
       RBAC_ENFORCEMENT: "${RBAC_ENFORCEMENT:-true}"
       TENANT_ENFORCEMENT_ENABLED: "${TENANT_ENFORCEMENT_ENABLED:-true}"
       TENANT_API_KEY_BINDING_ENABLED: "${TENANT_API_KEY_BINDING_ENABLED:-true}"
+      # DEBUG=false 时后端会强制 RBAC；须在环境/Secret 中至少配置一项（见 validate_production_security_guardrails）
+      RBAC_DEFAULT_ROLE: "${RBAC_DEFAULT_ROLE:-viewer}"
+      RBAC_ADMIN_API_KEYS: "${RBAC_ADMIN_API_KEYS:-}"
+      RBAC_OPERATOR_API_KEYS: "${RBAC_OPERATOR_API_KEYS:-}"
+      RBAC_VIEWER_API_KEYS: "${RBAC_VIEWER_API_KEYS:-}"
       SECURITY_GUARDRAILS_STRICT: "${SECURITY_GUARDRAILS_STRICT:-true}"
+      # 与 Ingress client_max_body_size / Nginx client_max_body_size 对齐；0 表示不设上限（apply 会收敛为 52MiB）
+      HTTP_MAX_REQUEST_BODY_BYTES: "${HTTP_MAX_REQUEST_BODY_BYTES:-52428800}"
+      DATA_REDACTION_ENABLED: "${DATA_REDACTION_ENABLED:-true}"
+      CHAT_STREAM_RESUME_CANCEL_UPSTREAM_ON_DISCONNECT: "${CHAT_STREAM_RESUME_CANCEL_UPSTREAM_ON_DISCONNECT:-true}"
+      # 设 EVENT_BUS_ENABLED=true 时须为 true，否则生产门禁会拒绝启动
+      EVENT_BUS_STRICT_STARTUP: "${EVENT_BUS_STRICT_STARTUP:-true}"
+      # 与 INFERENCE_CACHE_ENABLED 协同；为 true 时推理缓存 Redis 不可达则 /ready 失败（摘流）
+      HEALTH_READY_STRICT_INFERENCE_REDIS: "${HEALTH_READY_STRICT_INFERENCE_REDIS:-true}"
+      # 与 API_RATE_LIMIT_REDIS_URL 配套；Redis 故障时拒绝依赖 Redis 的限流路径（fail-open 易被滥用）
+      API_RATE_LIMIT_REDIS_FAIL_CLOSED: "${API_RATE_LIMIT_REDIS_FAIL_CLOSED:-true}"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-https://console.example.com}"
     ports: []
 

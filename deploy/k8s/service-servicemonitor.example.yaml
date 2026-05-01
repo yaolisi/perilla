@@ -1,0 +1,40 @@
+# 示例：ClusterIP Service + Prometheus Operator ServiceMonitor，抓取与 deploy/monitoring/prometheus.yml 一致的 /metrics。
+# Helm：deploy/helm/perilla-backend（--set serviceMonitor.enabled=true；与 VMServiceScrape 勿叠加）。
+# VictoriaMetrics Operator 用户请改用 vm-servicescrape.example.yaml（勿与 ServiceMonitor 叠加同一抓取目标）。
+# 与 backend-deployment.example.yaml 同 namespace 部署；按集群调整 ServiceMonitor 的 release 等标签以匹配你的 Prometheus 实例选择器。
+#
+# 安全提示：/metrics 通常无鉴权，请勿将 Service 类型改为 LoadBalancer 暴露指标；可用 NetworkPolicy 仅允许监控命名空间访问。
+#
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: perilla-backend
+  labels:
+    app: perilla-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: perilla-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: perilla-backend
+  labels:
+    app: perilla-backend
+    # kube-prometheus-stack 等常要求匹配 Prometheus 的 serviceMonitorSelector，例如：
+    # release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: perilla-backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

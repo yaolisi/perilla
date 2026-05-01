@@ -1,0 +1,22 @@
+# VictoriaMetrics Operator：抓取 perilla-backend Service 上的业务指标。
+# Helm：deploy/helm/perilla-backend（--set vmServiceScrape.enabled=true）。
+# 依赖与 service-servicemonitor.example.yaml 中相同的 Service（selector app=perilla-backend，端口名 http）。
+# 请勿与 Prometheus Operator 的 ServiceMonitor 重复挂载同一 Service（二选一即可）。
+#
+# 若 kubectl apply 报 apiVersion 不存在，请执行: kubectl api-resources | grep -i vmservicescrape
+#
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: perilla-backend
+  labels:
+    app: perilla-backend
+spec:
+  selector:
+    matchLabels:
+      app: perilla-backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

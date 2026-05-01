@@ -48,3 +48,49 @@ groups:
         annotations:
           summary: "Agent failure rate is high"
           description: "Agent run failure rate > 10% for 10 minutes."
+
+  - name: perilla.event_bus
+    rules:
+      - alert: perillaHealthReadyEventBusDegraded
+        expr: perilla_health_ready_event_bus_degraded == 1
+        for: 3m
+        labels:
+          severity: warning
+          service: perilla-backend
+        annotations:
+          summary: "Event bus appears degraded per last /api/health/ready evaluation"
+          description: "Gauge perilla_health_ready_event_bus_degraded is 1 for 3m; check degraded_reasons on /api/health/ready and event bus backends."
+
+  - name: perilla.inference_cache
+    rules:
+      - alert: perillaHealthReadyInferenceCacheRedisDegraded
+        expr: perilla_health_ready_inference_cache_redis_degraded == 1
+        for: 3m
+        labels:
+          severity: warning
+          service: perilla-backend
+        annotations:
+          summary: "Inference-cache Redis appears degraded per last /api/health/ready evaluation"
+          description: "Gauge perilla_health_ready_inference_cache_redis_degraded is 1 for 3m; verify INFERENCE_CACHE_REDIS_URL / Redis Cluster and ping_for_health errors on /api/health/ready."
+
+  - name: perilla.rate_limit
+    rules:
+      - alert: perillaHealthReadyApiRateLimitRedisDegraded
+        expr: perilla_health_ready_api_rate_limit_redis_degraded == 1
+        for: 3m
+        labels:
+          severity: warning
+          service: perilla-backend
+        annotations:
+          summary: "API rate-limit Redis appears degraded per last /api/health/ready evaluation"
+          description: "Gauge perilla_health_ready_api_rate_limit_redis_degraded is 1 for 3m; check API_RATE_LIMIT_REDIS_URL and api_rate_limit_redis_ping_* fields on /api/health/ready."
+
+      - alert: perillaHttpRateLimitRedisBackendErrors
+        expr: sum(rate(perilla_http_rate_limit_redis_backend_errors_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: perilla-backend
+        annotations:
+          summary: "Sustained Redis errors in API rate-limit middleware"
+          description: "perilla_http_rate_limit_redis_backend_errors_total rate high; Redis may be unstable or network partitioned (fail-open may be masking user-visible impact)."

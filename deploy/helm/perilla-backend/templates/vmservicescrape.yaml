@@ -1,0 +1,20 @@
+{{- if .Values.vmServiceScrape.enabled }}
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: {{ include "perilla-backend.fullname" . }}
+  labels:
+    {{- include "perilla-backend.labels" . | nindent 4 }}
+    {{- with .Values.vmServiceScrape.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app: perilla-backend
+  endpoints:
+    - port: http
+      path: {{ .Values.metrics.path | quote }}
+      interval: {{ .Values.metrics.interval | quote }}
+      scrapeTimeout: {{ .Values.metrics.scrapeTimeout | quote }}
+{{- end }}

@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Dict, Optional, cast
 
 from config.settings import settings
+from core.redis_client_factory import create_async_redis_client
 from log import logger
 
 
@@ -41,6 +42,7 @@ class InProcessEventBus(EventBus):
         self._lock = asyncio.Lock()
 
     async def publish(self, event_type: str, payload: Dict[str, Any], source: str = "system") -> None:
+        t0 = time.perf_counter()
         await _record_publish_metric(event_type)
         envelope = {
             "event_id": f"evt_{uuid.uuid4().hex[:16]}",
@@ -53,6 +55,7 @@ class InProcessEventBus(EventBus):
         handlers = list(self._handlers.get(event_type, {}).values())
         for handler in handlers:
             await _run_handler_with_retry(handler, envelope, event_type)
+        _observe_event_bus_transport("inprocess", t0)
 
     async def subscribe(self, event_type: str, handler: EventHandler) -> str:
         subscription_id = f"sub_{uuid.uuid4().hex[:16]}"
@@ -83,9 +86,7 @@ class RedisEventBus(EventBus):
         if self._client is not None:
             return self._client
         try:
-            from redis.asyncio import Redis  # type: ignore[import-untyped]
-
-            self._client = Redis.from_url(self._redis_url, decode_responses=True)
+            self._client = create_async_redis_client(self._redis_url, decode_responses=True)
             return self._client
         except Exception as exc:
             logger.warning("[EventBus] redis unavailable, skip redis event bus: %s", exc)
@@ -107,6 +108,23 @@ class RedisEventBus(EventBus):
             with suppress(asyncio.CancelledError):
                 await self._listen_task
             self._listen_task = None
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        try:
+            fn = getattr(client, "aclose", None)
+            if callable(fn):
+                await fn()
+                logger.info("[EventBus] Redis event bus client closed")
+                return
+            fn = getattr(client, "close", None)
+            if callable(fn):
+                out = fn()
+                if asyncio.iscoroutine(out):
+                    await out
+        except Exception as exc:
+            logger.debug("[EventBus] Redis event bus client close failed: %s", exc)
 
     async def _listen_loop(self) -> None:
         client = self._client_or_none()
@@ -155,9 +173,11 @@ class RedisEventBus(EventBus):
             logger.warning("[EventBus] invalid redis event message: %s", exc)
 
     async def publish(self, event_type: str, payload: Dict[str, Any], source: str = "system") -> None:
+        t0 = time.perf_counter()
         await _record_publish_metric(event_type)
         client = self._client_or_none()
         if client is None:
+            _observe_event_bus_transport("redis", t0)
             return
         envelope = {
             "event_id": f"evt_{uuid.uuid4().hex[:16]}",
@@ -172,6 +192,8 @@ class RedisEventBus(EventBus):
             await client.publish(self._channel(event_type), json.dumps(envelope, ensure_ascii=False))
         except Exception as exc:
             logger.warning("[EventBus] redis publish failed for %s: %s", event_type, exc)
+        finally:
+            _observe_event_bus_transport("redis", t0)
 
     async def subscribe(self, event_type: str, handler: EventHandler) -> str:
         # 当前阶段仅保证统一接口，跨进程消费由后续 worker 接入
@@ -189,6 +211,19 @@ class RedisEventBus(EventBus):
 class CompositeEventBus(EventBus):
     def __init__(self, *buses: EventBus) -> None:
         self._buses = buses
+
+    def list_backend_kinds(self) -> list[str]:
+        """人类可读的后端列表（用于 /metrics 旁路与运维自检）。"""
+        mapping = {
+            "InProcessEventBus": "inprocess",
+            "RedisEventBus": "redis",
+            "KafkaEventBus": "kafka",
+        }
+        out: list[str] = []
+        for b in self._buses:
+            cls_name = type(b).__name__
+            out.append(mapping.get(cls_name, cls_name))
+        return out
 
     async def publish(self, event_type: str, payload: Dict[str, Any], source: str = "system") -> None:
         for bus in self._buses:
@@ -273,6 +308,20 @@ async def _record_publish_metric(event_type: str) -> None:
         etm["published"] = int(etm.get("published", 0)) + 1
 
 
+def _observe_event_bus_transport(backend: str, started: float) -> None:
+    """Prometheus：publish 路径墙钟延迟（按后端维度）。"""
+    elapsed = max(0.0, time.perf_counter() - float(started))
+    try:
+        from core.observability import get_prometheus_business_metrics
+
+        get_prometheus_business_metrics().observe_event_bus_publish(
+            backend=backend,
+            latency_seconds=elapsed,
+        )
+    except Exception:
+        pass
+
+
 async def _record_replay_metric(
     *,
     dry_run: bool,
@@ -349,10 +398,19 @@ async def _persist_dlq(item: Dict[str, Any]) -> None:
 
 async def get_event_bus_runtime_status() -> Dict[str, Any]:
     async with _metrics_lock:
-        return {
+        payload: Dict[str, Any] = {
             **_event_bus_metrics,
             "dlq_size": len(_event_bus_dlq),
         }
+    try:
+        bus = get_event_bus()
+        if isinstance(bus, CompositeEventBus):
+            payload["bus_backends"] = bus.list_backend_kinds()
+        else:
+            payload["bus_backends"] = [type(bus).__name__]
+    except Exception:
+        pass
+    return payload
 
 
 async def get_event_bus_dlq(
@@ -578,5 +636,24 @@ def get_event_bus() -> EventBus:
                     channel_prefix=str(getattr(settings, "event_bus_channel_prefix", "perilla:event")),
                 )
             )
+        elif backend == "kafka":
+            kafka_servers = str(getattr(settings, "event_bus_kafka_bootstrap_servers", "") or "").strip()
+            if kafka_servers:
+                try:
+                    from core.events.kafka_bus import KafkaEventBus
+
+                    buses.append(
+                        KafkaEventBus(
+                            bootstrap_servers=kafka_servers,
+                            topic_prefix=str(getattr(settings, "event_bus_kafka_topic_prefix", "perilla.events")),
+                            consumer_group=str(
+                                getattr(settings, "event_bus_kafka_consumer_group", "perilla-event-bus")
+                            ),
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning("[EventBus] kafka backend init failed: %s", exc)
+            else:
+                logger.warning("[EventBus] kafka backend selected but event_bus_kafka_bootstrap_servers is empty")
     _event_bus = CompositeEventBus(*buses)
     return _event_bus

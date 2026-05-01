@@ -1,0 +1,21 @@
+# HorizontalPodAutoscaler：按 CPU（及可选内存）扩缩副本，配合多节点负载。
+# Helm：deploy/helm/perilla-backend（--set horizontalPodAutoscaler.enabled=true）；scaleTargetRef 与 Release 名对齐。
+# metrics-server 需已安装；targetDeploymentName 需与 Deployment metadata.name 一致。
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: perilla-backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: perilla-backend
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

@@ -1,0 +1,920 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "perilla-backend.fullname" . }}
+  labels:
+    {{- include "perilla-backend.labels" . | nindent 4 }}
+  {{- with .Values.deploymentAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: perilla-backend
+  template:
+    metadata:
+      labels:
+        {{- include "perilla-backend.labels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - perilla-backend
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: perilla-backend
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if or .Values.serviceAccount.create .Values.serviceAccount.name }}
+      serviceAccountName: {{ include "perilla-backend.serviceAccountName" . }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName | quote }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: backend
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+          {{- if .Values.secretEnvFrom.enabled }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secretEnvFrom.name }}
+                optional: {{ .Values.secretEnvFrom.optional }}
+          {{- end }}
+          env:
+            - name: DEBUG
+              value: {{ .Values.env.debug | quote }}
+            - name: HOST
+              value: {{ .Values.env.host | quote }}
+            - name: PORT
+              value: {{ .Values.env.port | quote }}
+            {{- if .Values.env.logFormat }}
+            - name: LOG_FORMAT
+              value: {{ .Values.env.logFormat | quote }}
+            {{- end }}
+            {{- if .Values.env.logLevel }}
+            - name: LOG_LEVEL
+              value: {{ .Values.env.logLevel | quote }}
+            {{- end }}
+            {{- if .Values.env.defaultModel }}
+            - name: DEFAULT_MODEL
+              value: {{ .Values.env.defaultModel | quote }}
+            {{- end }}
+            {{- if .Values.env.apiPrefix }}
+            - name: API_PREFIX
+              value: {{ .Values.env.apiPrefix | quote }}
+            {{- end }}
+            {{- if .Values.env.trustedHosts }}
+            - name: TRUSTED_HOSTS
+              value: {{ .Values.env.trustedHosts | quote }}
+            {{- end }}
+            {{- if .Values.env.trustedHostExemptOpsPaths }}
+            - name: TRUSTED_HOST_EXEMPT_OPS_PATHS
+              value: {{ .Values.env.trustedHostExemptOpsPaths | quote }}
+            {{- end }}
+            {{- if .Values.env.forwardedAllowIps }}
+            - name: FORWARDED_ALLOW_IPS
+              value: {{ .Values.env.forwardedAllowIps | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornLimitConcurrency }}
+            - name: UVICORN_LIMIT_CONCURRENCY
+              value: {{ .Values.env.uvicornLimitConcurrency | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornLimitMaxRequests }}
+            - name: UVICORN_LIMIT_MAX_REQUESTS
+              value: {{ .Values.env.uvicornLimitMaxRequests | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornServerHeader }}
+            - name: UVICORN_SERVER_HEADER
+              value: {{ .Values.env.uvicornServerHeader | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornH11MaxIncompleteEventSize }}
+            - name: UVICORN_H11_MAX_INCOMPLETE_EVENT_SIZE
+              value: {{ .Values.env.uvicornH11MaxIncompleteEventSize | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornAccessLog }}
+            - name: UVICORN_ACCESS_LOG
+              value: {{ .Values.env.uvicornAccessLog | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornBacklog }}
+            - name: UVICORN_BACKLOG
+              value: {{ .Values.env.uvicornBacklog | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornWsMaxSize }}
+            - name: UVICORN_WS_MAX_SIZE
+              value: {{ .Values.env.uvicornWsMaxSize | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornLimitMaxRequestsJitter }}
+            - name: UVICORN_LIMIT_MAX_REQUESTS_JITTER
+              value: {{ .Values.env.uvicornLimitMaxRequestsJitter | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornDateHeader }}
+            - name: UVICORN_DATE_HEADER
+              value: {{ .Values.env.uvicornDateHeader | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornWsPingIntervalSeconds }}
+            - name: UVICORN_WS_PING_INTERVAL_SECONDS
+              value: {{ .Values.env.uvicornWsPingIntervalSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornWsPingTimeoutSeconds }}
+            - name: UVICORN_WS_PING_TIMEOUT_SECONDS
+              value: {{ .Values.env.uvicornWsPingTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornTimeoutWorkerHealthcheckSeconds }}
+            - name: UVICORN_TIMEOUT_WORKER_HEALTHCHECK_SECONDS
+              value: {{ .Values.env.uvicornTimeoutWorkerHealthcheckSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.databaseUrl }}
+            - name: DATABASE_URL
+              value: {{ .Values.env.databaseUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.dbConnectTimeoutSeconds }}
+            - name: DB_CONNECT_TIMEOUT_SECONDS
+              value: {{ .Values.env.dbConnectTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.dbPoolTimeoutSeconds }}
+            - name: DB_POOL_TIMEOUT_SECONDS
+              value: {{ .Values.env.dbPoolTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.dbStatementTimeoutMs }}
+            - name: DB_STATEMENT_TIMEOUT_MS
+              value: {{ .Values.env.dbStatementTimeoutMs | quote }}
+            {{- end }}
+            {{- if .Values.env.dbPoolSize }}
+            - name: DB_POOL_SIZE
+              value: {{ .Values.env.dbPoolSize | quote }}
+            {{- end }}
+            {{- if .Values.env.dbMaxOverflow }}
+            - name: DB_MAX_OVERFLOW
+              value: {{ .Values.env.dbMaxOverflow | quote }}
+            {{- end }}
+            {{- if .Values.env.dbPoolRecycleSeconds }}
+            - name: DB_POOL_RECYCLE_SECONDS
+              value: {{ .Values.env.dbPoolRecycleSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.dbPath }}
+            - name: DB_PATH
+              value: {{ .Values.env.dbPath | quote }}
+            {{- end }}
+            {{- if .Values.env.redisClusterMode }}
+            - name: REDIS_CLUSTER_MODE
+              value: {{ .Values.env.redisClusterMode | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceCacheRedisUrl }}
+            - name: INFERENCE_CACHE_REDIS_URL
+              value: {{ .Values.env.inferenceCacheRedisUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceCacheEnabled }}
+            - name: INFERENCE_CACHE_ENABLED
+              value: {{ .Values.env.inferenceCacheEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.ollamaBaseUrl }}
+            - name: OLLAMA_BASE_URL
+              value: {{ .Values.env.ollamaBaseUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.ollamaDefaultModel }}
+            - name: OLLAMA_DEFAULT_MODEL
+              value: {{ .Values.env.ollamaDefaultModel | quote }}
+            {{- end }}
+            {{- if .Values.env.localaiBaseUrl }}
+            - name: LOCALAI_BASE_URL
+              value: {{ .Values.env.localaiBaseUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.textgenWebuiBaseUrl }}
+            - name: TEXTGEN_WEBUI_BASE_URL
+              value: {{ .Values.env.textgenWebuiBaseUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.imageGenerationDefaultModelId }}
+            - name: IMAGE_GENERATION_DEFAULT_MODEL_ID
+              value: {{ .Values.env.imageGenerationDefaultModelId | quote }}
+            {{- end }}
+            {{- if .Values.env.yoloModelPath }}
+            - name: YOLO_MODEL_PATH
+              value: {{ .Values.env.yoloModelPath | quote }}
+            {{- end }}
+            {{- if .Values.env.yoloDevice }}
+            - name: YOLO_DEVICE
+              value: {{ .Values.env.yoloDevice | quote }}
+            {{- end }}
+            {{- if .Values.env.yoloDefaultBackend }}
+            - name: YOLO_DEFAULT_BACKEND
+              value: {{ .Values.env.yoloDefaultBackend | quote }}
+            {{- end }}
+            {{- if .Values.env.fileReadAllowedRoots }}
+            - name: FILE_READ_ALLOWED_ROOTS
+              value: {{ .Values.env.fileReadAllowedRoots | quote }}
+            {{- end }}
+            {{- if .Values.env.productionFileReadRequiredRoots }}
+            - name: PRODUCTION_FILE_READ_REQUIRED_ROOTS
+              value: {{ .Values.env.productionFileReadRequiredRoots | quote }}
+            {{- end }}
+            {{- if .Values.env.productionFileReadAllowedRoots }}
+            - name: PRODUCTION_FILE_READ_ALLOWED_ROOTS
+              value: {{ .Values.env.productionFileReadAllowedRoots | quote }}
+            {{- end }}
+            {{- if .Values.env.localModelDirectory }}
+            - name: LOCAL_MODEL_DIRECTORY
+              value: {{ .Values.env.localModelDirectory | quote }}
+            {{- end }}
+            {{- if .Values.env.autoUnloadLocalModelOnSwitch }}
+            - name: AUTO_UNLOAD_LOCAL_MODEL_ON_SWITCH
+              value: {{ .Values.env.autoUnloadLocalModelOnSwitch | quote }}
+            {{- end }}
+            {{- if .Values.env.eventBusEnabled }}
+            - name: EVENT_BUS_ENABLED
+              value: {{ .Values.env.eventBusEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.eventBusBackend }}
+            - name: EVENT_BUS_BACKEND
+              value: {{ .Values.env.eventBusBackend | quote }}
+            {{- end }}
+            {{- if .Values.env.eventBusRedisUrl }}
+            - name: EVENT_BUS_REDIS_URL
+              value: {{ .Values.env.eventBusRedisUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.eventBusKafkaBootstrapServers }}
+            - name: EVENT_BUS_KAFKA_BOOTSTRAP_SERVERS
+              value: {{ .Values.env.eventBusKafkaBootstrapServers | quote }}
+            {{- end }}
+            {{- if .Values.env.prometheusEnabled }}
+            - name: PROMETHEUS_ENABLED
+              value: {{ .Values.env.prometheusEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.prometheusMetricsPath }}
+            - name: PROMETHEUS_METRICS_PATH
+              value: {{ .Values.env.prometheusMetricsPath | quote }}
+            {{- end }}
+            {{- if .Values.env.csrfCookieSecure }}
+            - name: CSRF_COOKIE_SECURE
+              value: {{ .Values.env.csrfCookieSecure | quote }}
+            {{- end }}
+            {{- if .Values.env.executionKernelDbUrl }}
+            - name: EXECUTION_KERNEL_DB_URL
+              value: {{ .Values.env.executionKernelDbUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.securityGuardrailsStrict }}
+            - name: SECURITY_GUARDRAILS_STRICT
+              value: {{ .Values.env.securityGuardrailsStrict | quote }}
+            {{- end }}
+            {{- if .Values.env.apiRateLimitEnabled }}
+            - name: API_RATE_LIMIT_ENABLED
+              value: {{ .Values.env.apiRateLimitEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.apiRateLimitRequests }}
+            - name: API_RATE_LIMIT_REQUESTS
+              value: {{ .Values.env.apiRateLimitRequests | quote }}
+            {{- end }}
+            {{- if .Values.env.apiRateLimitWindowSeconds }}
+            - name: API_RATE_LIMIT_WINDOW_SECONDS
+              value: {{ .Values.env.apiRateLimitWindowSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.apiRateLimitTrustXForwardedFor }}
+            - name: API_RATE_LIMIT_TRUST_X_FORWARDED_FOR
+              value: {{ .Values.env.apiRateLimitTrustXForwardedFor | quote }}
+            {{- end }}
+            {{- if .Values.env.eventBusStrictStartup }}
+            - name: EVENT_BUS_STRICT_STARTUP
+              value: {{ .Values.env.eventBusStrictStartup | quote }}
+            {{- end }}
+            {{- if .Values.env.requestTraceEnabled }}
+            - name: REQUEST_TRACE_ENABLED
+              value: {{ .Values.env.requestTraceEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.rbacEnabled }}
+            - name: RBAC_ENABLED
+              value: {{ .Values.env.rbacEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.rbacEnforcement }}
+            - name: RBAC_ENFORCEMENT
+              value: {{ .Values.env.rbacEnforcement | quote }}
+            {{- end }}
+            {{- if .Values.env.rbacDefaultRole }}
+            - name: RBAC_DEFAULT_ROLE
+              value: {{ .Values.env.rbacDefaultRole | quote }}
+            {{- end }}
+            {{- if .Values.env.rbacAdminApiKeys }}
+            - name: RBAC_ADMIN_API_KEYS
+              value: {{ .Values.env.rbacAdminApiKeys | quote }}
+            {{- end }}
+            {{- if .Values.env.rbacOperatorApiKeys }}
+            - name: RBAC_OPERATOR_API_KEYS
+              value: {{ .Values.env.rbacOperatorApiKeys | quote }}
+            {{- end }}
+            {{- if .Values.env.rbacViewerApiKeys }}
+            - name: RBAC_VIEWER_API_KEYS
+              value: {{ .Values.env.rbacViewerApiKeys | quote }}
+            {{- end }}
+            {{- if .Values.env.auditLogEnabled }}
+            - name: AUDIT_LOG_ENABLED
+              value: {{ .Values.env.auditLogEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.auditLogPathPrefixes }}
+            - name: AUDIT_LOG_PATH_PREFIXES
+              value: {{ .Values.env.auditLogPathPrefixes | quote }}
+            {{- end }}
+            {{- if .Values.env.auditLogIncludeGet }}
+            - name: AUDIT_LOG_INCLUDE_GET
+              value: {{ .Values.env.auditLogIncludeGet | quote }}
+            {{- end }}
+            {{- if .Values.env.apiKeyScopesJson }}
+            - name: API_KEY_SCOPES_JSON
+              value: {{ .Values.env.apiKeyScopesJson | quote }}
+            {{- end }}
+            {{- if .Values.env.apiKeysJson }}
+            - name: API_KEYS_JSON
+              value: {{ .Values.env.apiKeysJson | quote }}
+            {{- end }}
+            {{- if .Values.env.apiKeyRevokedList }}
+            - name: API_KEY_REVOKED_LIST
+              value: {{ .Values.env.apiKeyRevokedList | quote }}
+            {{- end }}
+            {{- if .Values.env.tenantEnforcementEnabled }}
+            - name: TENANT_ENFORCEMENT_ENABLED
+              value: {{ .Values.env.tenantEnforcementEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.tenantDefaultId }}
+            - name: TENANT_DEFAULT_ID
+              value: {{ .Values.env.tenantDefaultId | quote }}
+            {{- end }}
+            {{- if .Values.env.tenantHeaderName }}
+            - name: TENANT_HEADER_NAME
+              value: {{ .Values.env.tenantHeaderName | quote }}
+            {{- end }}
+            {{- if .Values.env.tenantApiKeyBindingEnabled }}
+            - name: TENANT_API_KEY_BINDING_ENABLED
+              value: {{ .Values.env.tenantApiKeyBindingEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.tenantApiKeyTenantsJson }}
+            - name: TENANT_API_KEY_TENANTS_JSON
+              value: {{ .Values.env.tenantApiKeyTenantsJson | quote }}
+            {{- end }}
+            {{- if .Values.env.csrfEnabled }}
+            - name: CSRF_ENABLED
+              value: {{ .Values.env.csrfEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.csrfHeaderName }}
+            - name: CSRF_HEADER_NAME
+              value: {{ .Values.env.csrfHeaderName | quote }}
+            {{- end }}
+            {{- if .Values.env.csrfCookieName }}
+            - name: CSRF_COOKIE_NAME
+              value: {{ .Values.env.csrfCookieName | quote }}
+            {{- end }}
+            {{- if .Values.env.csrfCookiePath }}
+            - name: CSRF_COOKIE_PATH
+              value: {{ .Values.env.csrfCookiePath | quote }}
+            {{- end }}
+            {{- if .Values.env.csrfCookieSamesite }}
+            - name: CSRF_COOKIE_SAMESITE
+              value: {{ .Values.env.csrfCookieSamesite | quote }}
+            {{- end }}
+            {{- if .Values.env.csrfCookieMaxAgeSeconds }}
+            - name: CSRF_COOKIE_MAX_AGE_SECONDS
+              value: {{ .Values.env.csrfCookieMaxAgeSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.traceLinkEnabled }}
+            - name: TRACE_LINK_ENABLED
+              value: {{ .Values.env.traceLinkEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.apiRequestWhitelistEnabled }}
+            - name: API_REQUEST_WHITELIST_ENABLED
+              value: {{ .Values.env.apiRequestWhitelistEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.dataRedactionEnabled }}
+            - name: DATA_REDACTION_ENABLED
+              value: {{ .Values.env.dataRedactionEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.dataRedactionSensitiveFields }}
+            - name: DATA_REDACTION_SENSITIVE_FIELDS
+              value: {{ .Values.env.dataRedactionSensitiveFields | quote }}
+            {{- end }}
+            {{- if .Values.env.dataRedactionMaskKeepPrefix }}
+            - name: DATA_REDACTION_MASK_KEEP_PREFIX
+              value: {{ .Values.env.dataRedactionMaskKeepPrefix | quote }}
+            {{- end }}
+            {{- if .Values.env.dataRedactionMaskKeepSuffix }}
+            - name: DATA_REDACTION_MASK_KEEP_SUFFIX
+              value: {{ .Values.env.dataRedactionMaskKeepSuffix | quote }}
+            {{- end }}
+            {{- if .Values.env.responseGzipEnabled }}
+            - name: RESPONSE_GZIP_ENABLED
+              value: {{ .Values.env.responseGzipEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.responseGzipMinimumSize }}
+            - name: RESPONSE_GZIP_MINIMUM_SIZE
+              value: {{ .Values.env.responseGzipMinimumSize | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowSchedulerMaxConcurrency }}
+            - name: WORKFLOW_SCHEDULER_MAX_CONCURRENCY
+              value: {{ .Values.env.workflowSchedulerMaxConcurrency | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowDistributedRunningLimitEnabled }}
+            - name: WORKFLOW_DISTRIBUTED_RUNNING_LIMIT_ENABLED
+              value: {{ .Values.env.workflowDistributedRunningLimitEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowDistributedRunningLimitPerWorkflow }}
+            - name: WORKFLOW_DISTRIBUTED_RUNNING_LIMIT_PER_WORKFLOW
+              value: {{ .Values.env.workflowDistributedRunningLimitPerWorkflow | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowDistributedRunningLimitWaitSeconds }}
+            - name: WORKFLOW_DISTRIBUTED_RUNNING_LIMIT_WAIT_SECONDS
+              value: {{ .Values.env.workflowDistributedRunningLimitWaitSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowDistributedRunningLimitFailOpen }}
+            - name: WORKFLOW_DISTRIBUTED_RUNNING_LIMIT_FAIL_OPEN
+              value: {{ .Values.env.workflowDistributedRunningLimitFailOpen | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowDistributedRunningStaleSeconds }}
+            - name: WORKFLOW_DISTRIBUTED_RUNNING_STALE_SECONDS
+              value: {{ .Values.env.workflowDistributedRunningStaleSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowDistributedRunningAutoReconcileStale }}
+            - name: WORKFLOW_DISTRIBUTED_RUNNING_AUTO_RECONCILE_STALE
+              value: {{ .Values.env.workflowDistributedRunningAutoReconcileStale | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowExecutionWaitDefault }}
+            - name: WORKFLOW_EXECUTION_WAIT_DEFAULT
+              value: {{ .Values.env.workflowExecutionWaitDefault | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowAllowDraftExecution }}
+            - name: WORKFLOW_ALLOW_DRAFT_EXECUTION
+              value: {{ .Values.env.workflowAllowDraftExecution | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowAllowDraftExecutionDebugOverride }}
+            - name: WORKFLOW_ALLOW_DRAFT_EXECUTION_DEBUG_OVERRIDE
+              value: {{ .Values.env.workflowAllowDraftExecutionDebugOverride | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowSubworkflowMaxDepth }}
+            - name: WORKFLOW_SUBWORKFLOW_MAX_DEPTH
+              value: {{ .Values.env.workflowSubworkflowMaxDepth | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowAllowLatestSubworkflowInProduction }}
+            - name: WORKFLOW_ALLOW_LATEST_SUBWORKFLOW_IN_PRODUCTION
+              value: {{ .Values.env.workflowAllowLatestSubworkflowInProduction | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowBlockPublishOnSubworkflowBreakingImpact }}
+            - name: WORKFLOW_BLOCK_PUBLISH_ON_SUBWORKFLOW_BREAKING_IMPACT
+              value: {{ .Values.env.workflowBlockPublishOnSubworkflowBreakingImpact | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowContractRequiredInputAddedBreaking }}
+            - name: WORKFLOW_CONTRACT_REQUIRED_INPUT_ADDED_BREAKING
+              value: {{ .Values.env.workflowContractRequiredInputAddedBreaking | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowContractOutputAddedRisky }}
+            - name: WORKFLOW_CONTRACT_OUTPUT_ADDED_RISKY
+              value: {{ .Values.env.workflowContractOutputAddedRisky | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowContractFieldExemptions }}
+            - name: WORKFLOW_CONTRACT_FIELD_EXEMPTIONS
+              value: {{ .Values.env.workflowContractFieldExemptions | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowDbWriteRetryAttempts }}
+            - name: WORKFLOW_DB_WRITE_RETRY_ATTEMPTS
+              value: {{ .Values.env.workflowDbWriteRetryAttempts | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowDbWriteRetryBaseDelayMs }}
+            - name: WORKFLOW_DB_WRITE_RETRY_BASE_DELAY_MS
+              value: {{ .Values.env.workflowDbWriteRetryBaseDelayMs | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowReflectorMaxRetries }}
+            - name: WORKFLOW_REFLECTOR_MAX_RETRIES
+              value: {{ .Values.env.workflowReflectorMaxRetries | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowReflectorRetryIntervalSeconds }}
+            - name: WORKFLOW_REFLECTOR_RETRY_INTERVAL_SECONDS
+              value: {{ .Values.env.workflowReflectorRetryIntervalSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowReflectorFallbackAgentId }}
+            - name: WORKFLOW_REFLECTOR_FALLBACK_AGENT_ID
+              value: {{ .Values.env.workflowReflectorFallbackAgentId | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowWaitTimeoutSeconds }}
+            - name: WORKFLOW_WAIT_TIMEOUT_SECONDS
+              value: {{ .Values.env.workflowWaitTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowWaitTimeoutMaxSeconds }}
+            - name: WORKFLOW_WAIT_TIMEOUT_MAX_SECONDS
+              value: {{ .Values.env.workflowWaitTimeoutMaxSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowGovernanceHealthyThreshold }}
+            - name: WORKFLOW_GOVERNANCE_HEALTHY_THRESHOLD
+              value: {{ .Values.env.workflowGovernanceHealthyThreshold | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowGovernanceWarningThreshold }}
+            - name: WORKFLOW_GOVERNANCE_WARNING_THRESHOLD
+              value: {{ .Values.env.workflowGovernanceWarningThreshold | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowPendingWarnSeconds }}
+            - name: WORKFLOW_PENDING_WARN_SECONDS
+              value: {{ .Values.env.workflowPendingWarnSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowPendingWarnIntervalSeconds }}
+            - name: WORKFLOW_PENDING_WARN_INTERVAL_SECONDS
+              value: {{ .Values.env.workflowPendingWarnIntervalSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowApprovalsLegacyDeprecatedHeader }}
+            - name: WORKFLOW_APPROVALS_LEGACY_DEPRECATED_HEADER
+              value: {{ .Values.env.workflowApprovalsLegacyDeprecatedHeader | quote }}
+            {{- end }}
+            {{- if .Values.env.workflowApprovalsLegacySunset }}
+            - name: WORKFLOW_APPROVALS_LEGACY_SUNSET
+              value: {{ .Values.env.workflowApprovalsLegacySunset | quote }}
+            {{- end }}
+            {{- if .Values.env.asyncChatJobTtlSeconds }}
+            - name: ASYNC_CHAT_JOB_TTL_SECONDS
+              value: {{ .Values.env.asyncChatJobTtlSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.asyncChatJobMaxEntries }}
+            - name: ASYNC_CHAT_JOB_MAX_ENTRIES
+              value: {{ .Values.env.asyncChatJobMaxEntries | quote }}
+            {{- end }}
+            {{- if .Values.env.chatStreamResumeEnabled }}
+            - name: CHAT_STREAM_RESUME_ENABLED
+              value: {{ .Values.env.chatStreamResumeEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.chatStreamResumeTtlSeconds }}
+            - name: CHAT_STREAM_RESUME_TTL_SECONDS
+              value: {{ .Values.env.chatStreamResumeTtlSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.chatStreamResumeMaxSessions }}
+            - name: CHAT_STREAM_RESUME_MAX_SESSIONS
+              value: {{ .Values.env.chatStreamResumeMaxSessions | quote }}
+            {{- end }}
+            {{- if .Values.env.chatStreamResumeWaitTimeoutSeconds }}
+            - name: CHAT_STREAM_RESUME_WAIT_TIMEOUT_SECONDS
+              value: {{ .Values.env.chatStreamResumeWaitTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.chatStreamWallClockMaxSeconds }}
+            - name: CHAT_STREAM_WALL_CLOCK_MAX_SECONDS
+              value: {{ .Values.env.chatStreamWallClockMaxSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.chatStreamResumeCancelUpstreamOnDisconnect }}
+            - name: CHAT_STREAM_RESUME_CANCEL_UPSTREAM_ON_DISCONNECT
+              value: {{ .Values.env.chatStreamResumeCancelUpstreamOnDisconnect | quote }}
+            {{- end }}
+            {{- if .Values.env.chatSessionReuseWindowMinutes }}
+            - name: CHAT_SESSION_REUSE_WINDOW_MINUTES
+              value: {{ .Values.env.chatSessionReuseWindowMinutes | quote }}
+            {{- end }}
+            {{- if .Values.env.chatSessionTitleMaxLen }}
+            - name: CHAT_SESSION_TITLE_MAX_LEN
+              value: {{ .Values.env.chatSessionTitleMaxLen | quote }}
+            {{- end }}
+            {{- if .Values.env.chatIdempotencyHeaders }}
+            - name: CHAT_IDEMPOTENCY_HEADERS
+              value: {{ .Values.env.chatIdempotencyHeaders | quote }}
+            {{- end }}
+            {{- if .Values.env.chatForceNewSessionHeaders }}
+            - name: CHAT_FORCE_NEW_SESSION_HEADERS
+              value: {{ .Values.env.chatForceNewSessionHeaders | quote }}
+            {{- end }}
+            {{- if .Values.env.chatInputStripTransportWrappers }}
+            - name: CHAT_INPUT_STRIP_TRANSPORT_WRAPPERS
+              value: {{ .Values.env.chatInputStripTransportWrappers | quote }}
+            {{- end }}
+            {{- if .Values.env.chatOutputStripReasoning }}
+            - name: CHAT_OUTPUT_STRIP_REASONING
+              value: {{ .Values.env.chatOutputStripReasoning | quote }}
+            {{- end }}
+            {{- if .Values.env.enableLongTermMemory }}
+            - name: ENABLE_LONG_TERM_MEMORY
+              value: {{ .Values.env.enableLongTermMemory | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryInjectMode }}
+            - name: MEMORY_INJECT_MODE
+              value: {{ .Values.env.memoryInjectMode | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryInjectTopK }}
+            - name: MEMORY_INJECT_TOP_K
+              value: {{ .Values.env.memoryInjectTopK | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryVectorEnabled }}
+            - name: MEMORY_VECTOR_ENABLED
+              value: {{ .Values.env.memoryVectorEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryEmbeddingDim }}
+            - name: MEMORY_EMBEDDING_DIM
+              value: {{ .Values.env.memoryEmbeddingDim | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryDefaultConfidence }}
+            - name: MEMORY_DEFAULT_CONFIDENCE
+              value: {{ .Values.env.memoryDefaultConfidence | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryMergeEnabled }}
+            - name: MEMORY_MERGE_ENABLED
+              value: {{ .Values.env.memoryMergeEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryMergeSimilarityThreshold }}
+            - name: MEMORY_MERGE_SIMILARITY_THRESHOLD
+              value: {{ .Values.env.memoryMergeSimilarityThreshold | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryConflictEnabled }}
+            - name: MEMORY_CONFLICT_ENABLED
+              value: {{ .Values.env.memoryConflictEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryConflictSimilarityThreshold }}
+            - name: MEMORY_CONFLICT_SIMILARITY_THRESHOLD
+              value: {{ .Values.env.memoryConflictSimilarityThreshold | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryDecayHalfLifeDays }}
+            - name: MEMORY_DECAY_HALF_LIFE_DAYS
+              value: {{ .Values.env.memoryDecayHalfLifeDays | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryKeySchemaEnforced }}
+            - name: MEMORY_KEY_SCHEMA_ENFORCED
+              value: {{ .Values.env.memoryKeySchemaEnforced | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryKeySchemaAllowUnlisted }}
+            - name: MEMORY_KEY_SCHEMA_ALLOW_UNLISTED
+              value: {{ .Values.env.memoryKeySchemaAllowUnlisted | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryExtractorEnabled }}
+            - name: MEMORY_EXTRACTOR_ENABLED
+              value: {{ .Values.env.memoryExtractorEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryExtractorTemperature }}
+            - name: MEMORY_EXTRACTOR_TEMPERATURE
+              value: {{ .Values.env.memoryExtractorTemperature | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryExtractorTopP }}
+            - name: MEMORY_EXTRACTOR_TOP_P
+              value: {{ .Values.env.memoryExtractorTopP | quote }}
+            {{- end }}
+            {{- if .Values.env.memoryExtractorMaxTokens }}
+            - name: MEMORY_EXTRACTOR_MAX_TOKENS
+              value: {{ .Values.env.memoryExtractorMaxTokens | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceQueueSloEnabled }}
+            - name: INFERENCE_QUEUE_SLO_ENABLED
+              value: {{ .Values.env.inferenceQueueSloEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceQueueSloHighMs }}
+            - name: INFERENCE_QUEUE_SLO_HIGH_MS
+              value: {{ .Values.env.inferenceQueueSloHighMs | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceQueueSloMediumMs }}
+            - name: INFERENCE_QUEUE_SLO_MEDIUM_MS
+              value: {{ .Values.env.inferenceQueueSloMediumMs | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceQueueSloLowMs }}
+            - name: INFERENCE_QUEUE_SLO_LOW_MS
+              value: {{ .Values.env.inferenceQueueSloLowMs | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceQueuePreemptionEnabled }}
+            - name: INFERENCE_QUEUE_PREEMPTION_ENABLED
+              value: {{ .Values.env.inferenceQueuePreemptionEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceQueuePreemptionMaxPerHighRequest }}
+            - name: INFERENCE_QUEUE_PREEMPTION_MAX_PER_HIGH_REQUEST
+              value: {{ .Values.env.inferenceQueuePreemptionMaxPerHighRequest | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceQueuePreemptionMaxPerTask }}
+            - name: INFERENCE_QUEUE_PREEMPTION_MAX_PER_TASK
+              value: {{ .Values.env.inferenceQueuePreemptionMaxPerTask | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceQueuePreemptionCooldownMs }}
+            - name: INFERENCE_QUEUE_PREEMPTION_COOLDOWN_MS
+              value: {{ .Values.env.inferenceQueuePreemptionCooldownMs | quote }}
+            {{- end }}
+            {{- if .Values.env.inferencePriorityPanelHighSloCriticalRate }}
+            - name: INFERENCE_PRIORITY_PANEL_HIGH_SLO_CRITICAL_RATE
+              value: {{ .Values.env.inferencePriorityPanelHighSloCriticalRate | quote }}
+            {{- end }}
+            {{- if .Values.env.inferencePriorityPanelHighSloWarningRate }}
+            - name: INFERENCE_PRIORITY_PANEL_HIGH_SLO_WARNING_RATE
+              value: {{ .Values.env.inferencePriorityPanelHighSloWarningRate | quote }}
+            {{- end }}
+            {{- if .Values.env.inferencePriorityPanelPreemptionCooldownBusyThreshold }}
+            - name: INFERENCE_PRIORITY_PANEL_PREEMPTION_COOLDOWN_BUSY_THRESHOLD
+              value: {{ .Values.env.inferencePriorityPanelPreemptionCooldownBusyThreshold | quote }}
+            {{- end }}
+            {{- if .Values.env.continuousBatchEnabled }}
+            - name: CONTINUOUS_BATCH_ENABLED
+              value: {{ .Values.env.continuousBatchEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.continuousBatchWaitMs }}
+            - name: CONTINUOUS_BATCH_WAIT_MS
+              value: {{ .Values.env.continuousBatchWaitMs | quote }}
+            {{- end }}
+            {{- if .Values.env.continuousBatchMaxSize }}
+            - name: CONTINUOUS_BATCH_MAX_SIZE
+              value: {{ .Values.env.continuousBatchMaxSize | quote }}
+            {{- end }}
+            {{- if .Values.env.runtimeMaxConcurrencyOverrides }}
+            - name: RUNTIME_MAX_CONCURRENCY_OVERRIDES
+              value: {{ .Values.env.runtimeMaxConcurrencyOverrides | quote }}
+            {{- end }}
+            {{- if .Values.env.agentPlanMaxParallelSteps }}
+            - name: AGENT_PLAN_MAX_PARALLEL_STEPS
+              value: {{ .Values.env.agentPlanMaxParallelSteps | quote }}
+            {{- end }}
+            {{- if .Values.env.agentStepDefaultTimeoutSeconds }}
+            - name: AGENT_STEP_DEFAULT_TIMEOUT_SECONDS
+              value: {{ .Values.env.agentStepDefaultTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.agentStepDefaultMaxRetries }}
+            - name: AGENT_STEP_DEFAULT_MAX_RETRIES
+              value: {{ .Values.env.agentStepDefaultMaxRetries | quote }}
+            {{- end }}
+            {{- if .Values.env.agentStepDefaultRetryIntervalSeconds }}
+            - name: AGENT_STEP_DEFAULT_RETRY_INTERVAL_SECONDS
+              value: {{ .Values.env.agentStepDefaultRetryIntervalSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceSmartRoutingEnabled }}
+            - name: INFERENCE_SMART_ROUTING_ENABLED
+              value: {{ .Values.env.inferenceSmartRoutingEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceSmartRoutingPoliciesJson }}
+            - name: INFERENCE_SMART_ROUTING_POLICIES_JSON
+              value: {{ .Values.env.inferenceSmartRoutingPoliciesJson | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceCacheTtlByModelTypeJson }}
+            - name: INFERENCE_CACHE_TTL_BY_MODEL_TYPE_JSON
+              value: {{ .Values.env.inferenceCacheTtlByModelTypeJson | quote }}
+            {{- end }}
+            {{- if .Values.env.kbChunkSizeOverridesJson }}
+            - name: KB_CHUNK_SIZE_OVERRIDES_JSON
+              value: {{ .Values.env.kbChunkSizeOverridesJson | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceCacheTtlSeconds }}
+            - name: INFERENCE_CACHE_TTL_SECONDS
+              value: {{ .Values.env.inferenceCacheTtlSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.embeddingCacheTtlSeconds }}
+            - name: EMBEDDING_CACHE_TTL_SECONDS
+              value: {{ .Values.env.embeddingCacheTtlSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceCachePrefix }}
+            - name: INFERENCE_CACHE_PREFIX
+              value: {{ .Values.env.inferenceCachePrefix | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceCacheMemoryEnabled }}
+            - name: INFERENCE_CACHE_MEMORY_ENABLED
+              value: {{ .Values.env.inferenceCacheMemoryEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceCacheMemoryMaxEntries }}
+            - name: INFERENCE_CACHE_MEMORY_MAX_ENTRIES
+              value: {{ .Values.env.inferenceCacheMemoryMaxEntries | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceCacheClearChallengeTtlSeconds }}
+            - name: INFERENCE_CACHE_CLEAR_CHALLENGE_TTL_SECONDS
+              value: {{ .Values.env.inferenceCacheClearChallengeTtlSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceCacheClearChallengeRateWindowSeconds }}
+            - name: INFERENCE_CACHE_CLEAR_CHALLENGE_RATE_WINDOW_SECONDS
+              value: {{ .Values.env.inferenceCacheClearChallengeRateWindowSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.inferenceCacheClearChallengeRateMaxPerWindow }}
+            - name: INFERENCE_CACHE_CLEAR_CHALLENGE_RATE_MAX_PER_WINDOW
+              value: {{ .Values.env.inferenceCacheClearChallengeRateMaxPerWindow | quote }}
+            {{- end }}
+            {{- if .Values.env.apiRateLimitRedisUrl }}
+            - name: API_RATE_LIMIT_REDIS_URL
+              value: {{ .Values.env.apiRateLimitRedisUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.apiRateLimitRedisFailClosed }}
+            - name: API_RATE_LIMIT_REDIS_FAIL_CLOSED
+              value: {{ .Values.env.apiRateLimitRedisFailClosed | quote }}
+            {{- end }}
+            {{- if .Values.env.healthReadyStrictApiRateLimitRedis }}
+            - name: HEALTH_READY_STRICT_API_RATE_LIMIT_REDIS
+              value: {{ .Values.env.healthReadyStrictApiRateLimitRedis | quote }}
+            {{- end }}
+            {{- if .Values.env.healthReadyStrictEventBus }}
+            - name: HEALTH_READY_STRICT_EVENT_BUS
+              value: {{ .Values.env.healthReadyStrictEventBus | quote }}
+            {{- end }}
+            {{- if .Values.env.healthReadyStrictInferenceRedis }}
+            - name: HEALTH_READY_STRICT_INFERENCE_REDIS
+              value: {{ .Values.env.healthReadyStrictInferenceRedis | quote }}
+            {{- end }}
+            {{- if .Values.env.healthReadyInferenceRedisPingTimeoutSeconds }}
+            - name: HEALTH_READY_INFERENCE_REDIS_PING_TIMEOUT_SECONDS
+              value: {{ .Values.env.healthReadyInferenceRedisPingTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.healthReadyInferenceRedisProbeEnabled }}
+            - name: HEALTH_READY_INFERENCE_REDIS_PROBE_ENABLED
+              value: {{ .Values.env.healthReadyInferenceRedisProbeEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.healthReadyInferenceRedisProbeCacheSeconds }}
+            - name: HEALTH_READY_INFERENCE_REDIS_PROBE_CACHE_SECONDS
+              value: {{ .Values.env.healthReadyInferenceRedisProbeCacheSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.healthReadyApiRateLimitRedisProbeEnabled }}
+            - name: HEALTH_READY_API_RATE_LIMIT_REDIS_PROBE_ENABLED
+              value: {{ .Values.env.healthReadyApiRateLimitRedisProbeEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.healthReadyApiRateLimitRedisProbeCacheSeconds }}
+            - name: HEALTH_READY_API_RATE_LIMIT_REDIS_PROBE_CACHE_SECONDS
+              value: {{ .Values.env.healthReadyApiRateLimitRedisProbeCacheSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.openapiPublicEnabled }}
+            - name: OPENAPI_PUBLIC_ENABLED
+              value: {{ .Values.env.openapiPublicEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.corsAllowedOrigins }}
+            - name: CORS_ALLOWED_ORIGINS
+              value: {{ .Values.env.corsAllowedOrigins | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornTimeoutGracefulShutdownSeconds }}
+            - name: UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN_SECONDS
+              value: {{ .Values.env.uvicornTimeoutGracefulShutdownSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.uvicornTimeoutKeepAliveSeconds }}
+            - name: UVICORN_TIMEOUT_KEEP_ALIVE_SECONDS
+              value: {{ .Values.env.uvicornTimeoutKeepAliveSeconds | quote }}
+            {{- end }}
+            {{- if .Values.env.httpMaxRequestBodyBytes }}
+            - name: HTTP_MAX_REQUEST_BODY_BYTES
+              value: {{ .Values.env.httpMaxRequestBodyBytes | quote }}
+            {{- end }}
+            {{- if .Values.env.securityHeadersEnabled }}
+            - name: SECURITY_HEADERS_ENABLED
+              value: {{ .Values.env.securityHeadersEnabled | quote }}
+            {{- end }}
+            {{- if .Values.env.securityHeadersXContentTypeOptions }}
+            - name: SECURITY_HEADERS_X_CONTENT_TYPE_OPTIONS
+              value: {{ .Values.env.securityHeadersXContentTypeOptions | quote }}
+            {{- end }}
+            {{- if .Values.env.securityHeadersXFrameOptions }}
+            - name: SECURITY_HEADERS_X_FRAME_OPTIONS
+              value: {{ .Values.env.securityHeadersXFrameOptions | quote }}
+            {{- end }}
+            {{- if .Values.env.securityHeadersReferrerPolicy }}
+            - name: SECURITY_HEADERS_REFERRER_POLICY
+              value: {{ .Values.env.securityHeadersReferrerPolicy | quote }}
+            {{- end }}
+            {{- if .Values.env.securityHeadersStrictTransportSecurity }}
+            - name: SECURITY_HEADERS_STRICT_TRANSPORT_SECURITY
+              value: {{ .Values.env.securityHeadersStrictTransportSecurity | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- $preStop := .Values.lifecycle.preStopSleepSeconds | default 0 | int }}
+          {{- if gt $preStop 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - sleep {{ $preStop }}
+          {{- end }}

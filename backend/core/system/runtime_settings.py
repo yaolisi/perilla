@@ -274,6 +274,19 @@ def get_skill_discovery_min_hybrid_score() -> float:
     )
 
 
+def get_workflow_scheduler_max_concurrency() -> int:
+    """Workflow / execution_kernel 调度器并行槽位上限（1–256）。"""
+    fb = int(getattr(settings, "workflow_scheduler_max_concurrency", 10) or 10)
+    v = _get_int("workflowSchedulerMaxConcurrency", fb, 1, 256)
+    try:
+        from core.observability import get_prometheus_business_metrics
+
+        get_prometheus_business_metrics().set_workflow_scheduler_platform_max_concurrency(v)
+    except Exception:
+        pass
+    return v
+
+
 def get_agent_plan_max_parallel_steps() -> int:
     """Plan 同批并行步（parallel_group / parallel_calls）全局并发上限；系统设置可覆盖 .env。"""
     fb = int(getattr(settings, "agent_plan_max_parallel_steps", 4) or 4)

@@ -8,6 +8,8 @@ from starlette.requests import Request
 
 from config.settings import settings
 from log import logger
+from middleware.client_ip import client_host_from_request
+from middleware.ops_paths import is_ops_probe_or_metrics_path
 
 
 class AuditLogMiddleware(BaseHTTPMiddleware):
@@ -16,6 +18,9 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 
     def _should_audit(self, path: str) -> bool:
         if not getattr(settings, "audit_log_enabled", False):
+            return False
+        # 探针 / Prometheus 抓取不应写入审计（宽泛前缀如 /api 时避免海量噪声）
+        if is_ops_probe_or_metrics_path(path):
             return False
         # 避免审计查询自身产生无限写放大
         if path.startswith("/api/v1/audit"):
@@ -30,12 +35,11 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
         return False
 
     def _client_ip(self, request: Request) -> str:
-        xff = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        if xff:
-            return xff[:128]
-        if request.client:
-            return request.client.host
-        return ""
+        raw = client_host_from_request(
+            request,
+            trust_x_forwarded_for=bool(getattr(settings, "api_rate_limit_trust_x_forwarded_for", True)),
+        )
+        return raw[:128] if raw else ""
 
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)

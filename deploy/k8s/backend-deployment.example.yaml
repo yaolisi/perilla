@@ -1,0 +1,199 @@
+# 多副本后端：配合 Service / Ingress 实现负载均衡；Pod 不健康时 readiness 摘流量实现故障转移语义。
+# 合并到实际清单时请替换 image、资源限制、副本数与 Secret 引用。
+# 关联示例：service-backend.example.yaml、ingress-backend.example.yaml、pdb-backend.example.yaml、hpa-backend.example.yaml、secret-env.example.yaml、networkpolicy-backend.example.yaml、networkpolicy-backend-egress.example.yaml
+# Helm：deploy/helm/perilla-backend（探针/宽限/PDB/HPA/Ingress/监控抓取等，见 values）
+# Prometheus：service-servicemonitor.example.yaml；VictoriaMetrics：vm-servicescrape.example.yaml
+#
+# 语义说明：
+# - startupProbe → GET /api/health（冷启动窗口内暂停 liveness，避免模型/插件加载中被误杀）
+# - livenessProbe → GET /api/health（进程存活，不因 DB/事件总线短暂不可用而重启 Pod）
+# - readinessProbe → GET /api/health/ready（DATABASE_URL；可选 HEALTH_READY_STRICT_*）；SIGTERM 后应用会先标记 shutting_down，/ready 返回 application_shutting_down（503）便于摘流量
+# - TRUSTED_HOSTS：Ingress 对外域名须列入；探针/指标路径豁免 Host 校验（Kubelet 常以 Pod IP 为 Host）
+# - FORWARDED_ALLOW_IPS：python main.py / uvicorn 可信代理网段；置于 Ingress 后须含反代来源 CIDR，否则 scheme/client 不信任 X-Forwarded-*
+# - UVICORN_*（LIMIT/SERVER/H11/ACCESS/BACKLOG/WS_* /JITTER/DATE_HEADER /WS_PING_* /WORKER_HEALTHCHECK 等）：python main.py 入口韧性（可选，见 secret-env 注释）
+# - terminationGracePeriodSeconds：SIGTERM 后 kubelet 等待时长；宜 ≥ lifecycle.preStop sleep + UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN_SECONDS + 余量（示例 90 ≥ 15 + 40 + 缓冲）
+#
+# 数据层：设置 DATABASE_URL 为 PostgreSQL（如 postgresql+psycopg2://...），多实例共库。
+# 缓存/事件总线：INFERENCE_CACHE_REDIS_URL、EVENT_BUS_REDIS_URL；Redis Cluster 时加 REDIS_CLUSTER_MODE=true
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: perilla-backend
+  labels:
+    app: perilla-backend
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: perilla-backend
+  template:
+    metadata:
+      labels:
+        app: perilla-backend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - perilla-backend
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: perilla-backend
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: backend
+          image: perilla-backend:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - sleep 15
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: perilla-backend-env
+                optional: true
+          env:
+            # - name: LOG_FORMAT
+            #   value: "json"
+            # - name: LOG_LEVEL
+            #   value: "INFO"
+            - name: DEBUG
+              value: "false"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8000"
+            # 直连 uvicorn（python main.py）时优雅关停上限（秒）；须 < terminationGracePeriodSeconds − preStop sleep − 余量
+            # - name: UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN_SECONDS
+            #   value: "40"
+            # Keep-Alive（秒）；与 Ingress proxy-read/send-timeout、CHAT_STREAM_WALL_CLOCK_MAX_SECONDS 等流式上限协同（见 ingress-backend.example.yaml 头注释）
+            # - name: UVICORN_TIMEOUT_KEEP_ALIVE_SECONDS
+            #   value: "75"
+            # 请求体上限（字节，需 Content-Length）；与 Ingress client_max_body_size 协同；探针/metrics 路径豁免
+            # - name: HTTP_MAX_REQUEST_BODY_BYTES
+            #   value: "52428800"
+            # 事件总线（与 Secret 中 EVENT_BUS_REDIS_URL 联用；strict 就绪须 EVENT_BUS_ENABLED=true）
+            # - name: EVENT_BUS_ENABLED
+            #   value: "true"
+            # - name: HEALTH_READY_STRICT_EVENT_BUS
+            #   value: "true"
+            # 推理缓存 Redis /ready 严格模式（须 INFERENCE_CACHE_REDIS_URL 与非关闭的 inference cache）
+            # - name: HEALTH_READY_STRICT_INFERENCE_REDIS
+            #   value: "true"
+            # 大规模副本：增大缓存秒数或关闭实时 PING（非 strict 时生效为主；详见 Settings）
+            # - name: HEALTH_READY_INFERENCE_REDIS_PROBE_CACHE_SECONDS
+            #   value: "15"
+            # - name: HEALTH_READY_API_RATE_LIMIT_REDIS_PROBE_CACHE_SECONDS
+            #   value: "15"
+            # 直连公网：建议 API_RATE_LIMIT_TRUST_X_FORWARDED_FOR=false（否则可伪造 XFF；审计日志 client_ip 与同开关一致）
+            # - name: API_RATE_LIMIT_TRUST_X_FORWARDED_FOR
+            #   value: "false"
+            # 多副本共池 API 限流（可选；与推理缓存可共用 Redis）
+            # - name: API_RATE_LIMIT_REDIS_URL
+            #   value: "redis://redis.prod.svc.cluster.local:6379/14"
+            # - name: API_RATE_LIMIT_REDIS_FAIL_CLOSED
+            #   value: "false"
+            # 与 API_RATE_LIMIT_REDIS_URL 同开；无 Redis URL 时 strict 无意义且生产护栏会报错
+            # - name: HEALTH_READY_STRICT_API_RATE_LIMIT_REDIS
+            #   value: "true"
+            # 执行内核独立数据库（可选）；细粒度限流与护栏变量见 deploy/k8s/secret-env.example.yaml
+            # - name: EXECUTION_KERNEL_DB_URL
+            #   value: "postgresql+asyncpg://..."
+            # TRUSTED_HOSTS / API_PREFIX / OLLAMA_* / LOCALAI_* / TEXTGEN_WEBUI_* / IMAGE_GENERATION_* / YOLO_* / FILE_READ_* / PRODUCTION_FILE_READ_* / DB_PATH 见 secret-env 数据库段与 Redis 段邻注释
+            # DB_POOL_RECYCLE_SECONDS / INFERENCE_CACHE_ENABLED / LOCAL_MODEL_DIRECTORY / AUTO_UNLOAD_LOCAL_MODEL_ON_SWITCH / CSRF_HEADER_NAME 等与 Helm env.* 映射见 deploy/helm/perilla-backend/templates/NOTES.txt 与 secret-env.example.yaml
+            # 浏览器前端来源（逗号分隔）；生产门禁要求显式配置
+            # - name: CORS_ALLOWED_ORIGINS
+            #   value: "https://app.example.com"
+            # RBAC / 审计（键较长时优先 Secret；AUDIT_LOG_PATH_PREFIXES 勿单独 "/"）
+            # - name: RBAC_ENABLED
+            #   value: "true"
+            # - name: AUDIT_LOG_ENABLED
+            #   value: "true"
+            # API Key scopes / 租户 JSON 见 secret-env.example.yaml（API_KEY_SCOPES_JSON、TENANT_*）
+            # TRACE_LINK_ENABLED / DATA_REDACTION_* 见同文件「Trace 关联」段
+            # RESPONSE_GZIP_* / WORKFLOW_SCHEDULER_MAX_CONCURRENCY 见「响应压缩」「工作流调度器」段
+            # WORKFLOW_DISTRIBUTED_RUNNING_* 见「跨副本运行中软限制」段（依赖 PostgreSQL）
+            # WORKFLOW_ALLOW_DRAFT_EXECUTION / WORKFLOW_EXECUTION_WAIT_DEFAULT 见 secret-env「工作流执行语义」
+            # WORKFLOW_ALLOW_LATEST_SUBWORKFLOW_IN_PRODUCTION 等见「子工作流嵌套与发布门禁」
+            # WORKFLOW_CONTRACT_* 见 secret-env「工作流契约兼容」
+            # WORKFLOW_DB_WRITE_RETRY_* / WORKFLOW_REFLECTOR_* 见「工作流持久化写重试」段
+            # WORKFLOW_WAIT_TIMEOUT_* / WORKFLOW_GOVERNANCE_* / WORKFLOW_PENDING_WARN_* 见「执行等待上限」段
+            # DEFAULT_MODEL 见 secret-env 日志段；WORKFLOW_APPROVALS_LEGACY_* 见「Workflow approvals」；CHAT_SESSION_* / CHAT_IDEMPOTENCY_* / ENABLE_LONG_TERM_MEMORY / MEMORY_* 见「Chat」与「长期记忆」段
+            # CHAT_STREAM_* / ASYNC_CHAT_JOB_* 见 secret-env「Chat：异步任务缓冲与 SSE」
+            # INFERENCE_QUEUE_* / INFERENCE_SMART_ROUTING_* / INFERENCE_CACHE_* / INFERENCE_CACHE_CLEAR_* / KB_CHUNK_* / KB_VECTOR_* / METRICS_LEGACY_* / SKILL_DISCOVERY_* / TORCH_STREAM_* / MODEL_JSON_BACKUP_* / CONTINUOUS_BATCH_* 见 secret-env「推理」相关段落
+            # RUNTIME_MAX_CONCURRENCY_OVERRIDES / AGENT_* 见 secret-env「推理运行时并发覆盖」「Agent：Plan 并行…」
+            # - name: SECURITY_HEADERS_ENABLED
+            #   value: "true"
+            # - name: SECURITY_HEADERS_X_FRAME_OPTIONS
+            #   value: "SAMEORIGIN"
+            # 未使用 secret 时可在清单内直接写（不推荐）
+            # - name: DATABASE_URL
+            #   value: "postgresql+psycopg2://..."
+            # - name: DB_POOL_TIMEOUT_SECONDS
+            #   value: "30"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3

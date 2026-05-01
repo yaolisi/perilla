@@ -31,6 +31,10 @@ COMMON_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
         "en": "payload validation failed",
         "zh": "请求参数校验失败",
     },
+    "request_validation_error": {
+        "en": "Request validation failed",
+        "zh": "请求参数不符合要求",
+    },
 }
 
 WORKFLOW_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {

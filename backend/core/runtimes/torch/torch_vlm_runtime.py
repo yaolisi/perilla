@@ -161,6 +161,20 @@ class TorchVLMRuntime(VLMRuntime):
                     options["max_image_side"] = metadata.get("max_image_side")
                 if "max_image_pixels" in metadata:
                     options["max_image_pixels"] = metadata.get("max_image_pixels")
+            # 显式量化（BitsAndBytes，见 model.json 根级或 metadata；仅 CUDA 生效）
+            _bnb_keys = (
+                "load_in_4bit",
+                "load_in_8bit",
+                "bnb_4bit_compute_dtype",
+                "bnb_4bit_quant_type",
+            )
+            for _k in _bnb_keys:
+                if _k in self._manifest:
+                    options[_k] = self._manifest.get(_k)
+            if isinstance(metadata, dict):
+                for _k in _bnb_keys:
+                    if _k in metadata:
+                        options[_k] = metadata.get(_k)
             options.update(kwargs)
 
             adapter = self._get_adapter()

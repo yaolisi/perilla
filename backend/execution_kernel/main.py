@@ -31,6 +31,12 @@ from execution_kernel.engine.scheduler import Scheduler
 from execution_kernel.engine.context import GraphContext
 from execution_kernel.cache.node_cache import NodeCache
 
+try:
+    from core.system.runtime_settings import get_workflow_scheduler_max_concurrency
+except ImportError:  # 独立运行 demo 时未配置 PYTHONPATH
+    def get_workflow_scheduler_max_concurrency() -> int:
+        return 10
+
 
 # 配置日志
 logging.basicConfig(
@@ -199,7 +205,12 @@ async def run_demo():
             },
         )
         
-        scheduler = Scheduler(db, state_machine, executor)
+        scheduler = Scheduler(
+            db,
+            state_machine,
+            executor,
+            max_concurrency=get_workflow_scheduler_max_concurrency(),
+        )
     
     # 3. 创建示例图
     graph = create_sample_graph()
@@ -321,7 +332,12 @@ async def run_parallel_demo():
             },
         )
         
-        scheduler = Scheduler(db, state_machine, executor)
+        scheduler = Scheduler(
+            db,
+            state_machine,
+            executor,
+            max_concurrency=get_workflow_scheduler_max_concurrency(),
+        )
     
     # 执行
     instance_id = f"parallel_{_utc_now().strftime('%Y%m%d_%H%M%S')}"
@@ -407,7 +423,12 @@ async def run_retry_demo():
             },
         )
         
-        scheduler = Scheduler(db, state_machine, executor)
+        scheduler = Scheduler(
+            db,
+            state_machine,
+            executor,
+            max_concurrency=get_workflow_scheduler_max_concurrency(),
+        )
     
     # 执行
     instance_id = f"retry_{_utc_now().strftime('%Y%m%d_%H%M%S')}"

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "perilla-backend.fullname" . }}
+  labels:
+    {{- include "perilla-backend.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: perilla-backend
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

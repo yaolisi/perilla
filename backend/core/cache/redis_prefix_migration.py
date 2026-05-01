@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Dict, List, Set
 
 from config.settings import settings
+from core.redis_client_factory import create_sync_redis_client
 from log import logger
 
 LEGACY_ROOT = "openvitamin:"
@@ -55,6 +56,10 @@ def migrate_legacy_openvitamin_keys() -> Dict[str, int]:
     """
     if not getattr(settings, "redis_legacy_openvitamin_prefix_migrate_on_startup", True):
         return {"urls": 0, "keys_renamed": 0, "keys_skipped_dest_exists": 0}
+    if getattr(settings, "redis_cluster_mode", False):
+        # RENAME 在 Cluster 中要求同 hash slot，批量迁移易失败；由运维或独立脚本处理。
+        logger.info("[RedisMigrate] skip legacy openvitamin migration when redis_cluster_mode=True")
+        return {"urls": 0, "keys_renamed": 0, "keys_skipped_dest_exists": 0}
 
     urls = _unique_redis_urls()
     total_renamed = 0
@@ -63,9 +68,7 @@ def migrate_legacy_openvitamin_keys() -> Dict[str, int]:
 
     for url in urls:
         try:
-            import redis as redis_sync
-
-            client = redis_sync.Redis.from_url(url, decode_responses=True)
+            client = create_sync_redis_client(url, decode_responses=True)
         except Exception as exc:
             logger.warning("[RedisMigrate] skip url=%s (connect failed): %s", url, exc)
             continue

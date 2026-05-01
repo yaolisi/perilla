@@ -249,5 +249,11 @@ conda init
 conda run -n ai-inference-platform python3 backend/main.py
 ```
 
+## 7. 公网 SaaS 多租户上线门禁
+
+面向公网、多租户商业化发布前，请按仓库内清单评审并签字：
+
+- [docs/ops/SAAS_PUBLIC_LAUNCH_GATE_ZH.md](ops/SAAS_PUBLIC_LAUNCH_GATE_ZH.md)（P0/P1 与配置项、代码入口索引）
+
 ---
 *文档最后更新日期：2026年2月*

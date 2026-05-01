@@ -14,6 +14,7 @@ from starlette.responses import Response
 from config.settings import settings
 from core.security.redaction import redact_payload
 from log import logger
+from middleware.ops_paths import is_prometheus_metrics_path
 
 JSON_MEDIA_TYPE = "application/json"
 
@@ -45,6 +46,10 @@ def _parse_json_body(raw_body: bytes) -> Any | None:
 class SensitiveDataRedactionMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
         if not bool(getattr(settings, "data_redaction_enabled", True)):
+            return await call_next(request)
+
+        # Prometheus 抓取路径高频且正文非业务 JSON，跳过脱敏链以降低开销
+        if is_prometheus_metrics_path(request.url.path):
             return await call_next(request)
 
         sensitive_tokens = _load_sensitive_tokens()

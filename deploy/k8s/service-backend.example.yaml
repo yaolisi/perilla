@@ -1,0 +1,16 @@
+# Service：ClusterIP 供集群内 Ingress / 其他 Namespace 访问；对外 LB 多在 Ingress Controller 或 cloud LB。
+# 无状态 API：无需 sessionAffinity；若将来引入粘性会话可设 clientIP。
+apiVersion: v1
+kind: Service
+metadata:
+  name: perilla-backend
+  labels:
+    app: perilla-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: perilla-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

@@ -20,11 +20,28 @@ services:
       TENANT_API_KEY_BINDING_ENABLED: "${TENANT_API_KEY_BINDING_ENABLED:-false}"
       LOCAL_MODEL_DIRECTORY: "/app/backend/data/models/"
       FILE_READ_ALLOWED_ROOTS: "/app/backend/data,/tmp"
+      # --- 与生产/K8s 对齐（默认注释；真机/预发请按 deploy/k8s/secret-env.example.yaml 显式配置）---
+      # DEBUG=false 时生产门禁要求 PostgreSQL、LOG_FORMAT=json、CORS 非空等（见 config.validate_production_security_guardrails）
+      # DATABASE_URL: "postgresql+psycopg2://USER:PASSWORD@host:5432/perilla"
+      # LOG_FORMAT: "json"
+      # 直连公网或反代未配置 real-ip 时建议 "false"（与 API 限流、审计 client_ip 一致）
+      # API_RATE_LIMIT_TRUST_X_FORWARDED_FOR: "false"
+      # DEBUG=false 时生产门禁必填：与 Ingress 对外域名一致（逗号分隔）
+      # TRUSTED_HOSTS: "api.example.com"
+      # TRUSTED_HOST_EXEMPT_OPS_PATHS: "false"
+      # FORWARDED_ALLOW_IPS: "127.0.0.1"
+      # UVICORN_LIMIT_CONCURRENCY: "2048"
+      # UVICORN_SERVER_HEADER: "false"
+      # UVICORN_ACCESS_LOG: "false"
+      # UVICORN_BACKLOG: "4096"
+      # UVICORN_WS_MAX_SIZE: "4194304"
+      # UVICORN_WS_PING_INTERVAL_SECONDS: "25"
     volumes:
       - backend_data:/app/backend/data
       - backend_logs:/app/backend/logs
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    # 容器存活：进程可响应即可。编排层若依赖 DB/事件总线摘流量，请对 /api/health/ready 单独做 readinessProbe。
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
       interval: 15s

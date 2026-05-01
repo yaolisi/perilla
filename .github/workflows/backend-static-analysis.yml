@@ -1,4 +1,4 @@
-# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`**（ruff E9 + 目标 mypy）→ `scripts/test-no-fallback.sh`（同一 pip）。对应 `make pr-check` 中前段：仅 **lint-backend + test-no-fallback**；完整 **`make pr-check`** / **`make pr-check-fast`** 另含 Vitest、默认同源的 **`roadmap-acceptance-unit`**（可用 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`** 跳过）、以及 **`build-frontend`**（仅 `pr-check`；见 `frontend-build`）。
+# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`** → `scripts/test-no-fallback.sh` → **`scripts/helm-chart-check.sh`** → **`scripts/merge-gate-contract-tests.sh`**（与 **`make helm-deploy-contract-check`** 后半段同一清单）。本地 **`make pr-check`** / **`pr-check-fast`** 其后还有 Vitest、**`roadmap-acceptance-unit`**（可 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`**）、**`build-frontend`**（仅 `pr-check`；见 `frontend-build`）。
 name: backend-static-analysis
 
 on:
@@ -11,6 +11,7 @@ on:
       - "scripts/check-nvmrc-align.sh"
       - "scripts/lint-backend.sh"
       - "scripts/quick-check.sh"
+      - "scripts/doctor.sh"
       - "scripts/npm-scripts.sh"
       # Local `make pr-check*` / CI script parity (scripts/pr-check*.sh → make).
       - "Makefile"
@@ -21,6 +22,14 @@ on:
       - "pytest.ini"
       - "backend/pytest.ini"
       - ".github/workflows/backend-static-analysis.yml"
+      - "deploy/helm/**"
+      - "deploy/k8s/**"
+      - "deploy/monitoring/**"
+      - "docker-compose.yml"
+      - "docker/**"
+      - "scripts/healthcheck.sh"
+      - "scripts/helm-chart-check.sh"
+      - "scripts/merge-gate-contract-tests.sh"
   push:
     branches:
       - main
@@ -33,6 +42,7 @@ on:
       - "scripts/check-nvmrc-align.sh"
       - "scripts/lint-backend.sh"
       - "scripts/quick-check.sh"
+      - "scripts/doctor.sh"
       - "scripts/npm-scripts.sh"
       # Local `make pr-check*` / CI script parity (scripts/pr-check*.sh → make).
       - "Makefile"
@@ -43,6 +53,14 @@ on:
       - "pytest.ini"
       - "backend/pytest.ini"
       - ".github/workflows/backend-static-analysis.yml"
+      - "deploy/helm/**"
+      - "deploy/k8s/**"
+      - "deploy/monitoring/**"
+      - "docker-compose.yml"
+      - "docker/**"
+      - "scripts/healthcheck.sh"
+      - "scripts/helm-chart-check.sh"
+      - "scripts/merge-gate-contract-tests.sh"
 
 concurrency:
   group: backend-static-analysis-${{ github.workflow }}-${{ github.ref }}
@@ -79,3 +97,16 @@ jobs:
       - name: Run test-no-fallback suite
         working-directory: ${{ github.workspace }}
         run: bash scripts/test-no-fallback.sh -q
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Helm chart (lint + template)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/helm-chart-check.sh
+
+      # Helm env 映射 + Makefile pr-check 依赖 + package.json scripts（列表：scripts/merge-gate-contract-tests.sh）
+      - name: Helm & merge gate contract tests
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/merge-gate-contract-tests.sh -q

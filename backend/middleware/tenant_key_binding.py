@@ -11,6 +11,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from config.settings import settings
+from middleware.tenant_paths import is_tenant_enforcement_protected_path
 
 
 def _parse_key_tenants(raw: str) -> Dict[str, List[str]]:
@@ -33,17 +34,10 @@ class TenantApiKeyBindingMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._api_key_header = getattr(settings, "api_rate_limit_api_key_header", "X-Api-Key")
 
-    def _is_protected_path(self, path: str) -> bool:
-        return (
-            path.startswith("/api/v1/workflows")
-            or path.startswith("/api/v1/audit")
-            or path.startswith("/api/system")
-        )
-
     async def dispatch(self, request: Request, call_next):
         if not getattr(settings, "tenant_api_key_binding_enabled", False):
             return await call_next(request)
-        if not self._is_protected_path(request.url.path):
+        if not is_tenant_enforcement_protected_path(request.url.path):
             return await call_next(request)
 
         tenant_id = str(getattr(request.state, "tenant_id", "") or "").strip()

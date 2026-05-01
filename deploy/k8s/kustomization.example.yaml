@@ -1,0 +1,10 @@
+# 示例：kubectl apply -k ./deploy/k8s/overlays/production
+# 复制本目录为 overlays/production 并设置 bases / patches / images / secretGenerator。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: perilla
+resources:
+  - backend-deployment.example.yaml
+  - service-backend.example.yaml
+  - pdb-backend.example.yaml
+  - ingress-backend.example.yaml

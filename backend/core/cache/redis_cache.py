@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 from config.settings import settings
+from core.redis_client_factory import create_async_redis_client
 from log import logger
 
 
@@ -31,12 +33,7 @@ class RedisCacheClient:
                 return None
             self._client_init_attempted = True
             try:
-                from redis.asyncio import Redis
-            except Exception as exc:
-                logger.warning("[RedisCache] redis package unavailable, cache disabled: %s", exc)
-                return None
-            try:
-                self._client = Redis.from_url(self._redis_url, decode_responses=True)
+                self._client = create_async_redis_client(self._redis_url, decode_responses=True)
                 return self._client
             except Exception as exc:
                 logger.warning("[RedisCache] redis init failed, cache disabled: %s", exc)
@@ -128,6 +125,45 @@ class RedisCacheClient:
             logger.debug("[RedisCache] delete failed key=%s err=%s", key, exc)
             return False
 
+    async def ping_for_health(self) -> Tuple[bool, Optional[str]]:
+        """
+        就绪探针用短超时 PING；失败返回 (False, error)。
+        未启用缓存或未配置 URL 时返回 (True, None)（由调用方决定是否探测）。
+        """
+        if not self._enabled or not self._redis_url:
+            return True, None
+        client = self._get_client()
+        if client is None:
+            return False, "redis_client_unavailable"
+        timeout = float(getattr(settings, "health_ready_inference_redis_ping_timeout_seconds", 2.0) or 2.0)
+        try:
+            await asyncio.wait_for(client.ping(), timeout=max(0.05, timeout))
+            return True, None
+        except Exception as exc:
+            return False, str(exc)
+
+    async def aclose(self) -> None:
+        """关停时关闭底层 redis.asyncio 客户端（由 `aclose_redis_cache_client` 调用）。"""
+        client_to_close = None
+        with self._lock:
+            client_to_close = self._client
+            self._client = None
+        if client_to_close is None:
+            return
+        try:
+            fn = getattr(client_to_close, "aclose", None)
+            if callable(fn):
+                await fn()
+                logger.info("[RedisCache] Redis client closed for shutdown")
+                return
+            fn = getattr(client_to_close, "close", None)
+            if callable(fn):
+                out = fn()
+                if asyncio.iscoroutine(out):
+                    await out
+        except Exception as exc:
+            logger.debug("[RedisCache] Redis shutdown close failed: %s", exc)
+
 
 _redis_cache_client: Optional[RedisCacheClient] = None
 _redis_cache_lock = threading.Lock()
@@ -139,3 +175,14 @@ def get_redis_cache_client() -> RedisCacheClient:
         if _redis_cache_client is None:
             _redis_cache_client = RedisCacheClient()
         return _redis_cache_client
+
+
+async def aclose_redis_cache_client() -> None:
+    """进程关停时关闭单例推理缓存 Redis 客户端。"""
+    global _redis_cache_client
+    with _redis_cache_lock:
+        inst = _redis_cache_client
+        _redis_cache_client = None
+    if inst is None:
+        return
+    await inst.aclose()

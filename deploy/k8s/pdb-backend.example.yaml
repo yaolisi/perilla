@@ -1,0 +1,11 @@
+# PodDisruptionBudget：滚动升级 / 节点驱逐时至少保留若干副本可服务，利于故障转移语义。
+# Helm：deploy/helm/perilla-backend（--set podDisruptionBudget.enabled=true）。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: perilla-backend
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: perilla-backend

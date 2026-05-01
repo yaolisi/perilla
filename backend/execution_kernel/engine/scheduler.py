@@ -80,6 +80,7 @@ class Scheduler:
         executor: Executor,
         scheduler_policy: Optional[SchedulerPolicy] = None,
         optimization_snapshot: Optional[OptimizationSnapshot] = None,
+        max_concurrency: Optional[int] = None,
     ):
         self.db = db
         self.state_machine = state_machine
@@ -92,8 +93,9 @@ class Scheduler:
             
         # 运行中的任务跟踪
         self._running_tasks: Dict[str, asyncio.Task] = {}
-        # 并发控制
-        self._max_concurrency = 10
+        # 并发控制（DAG 并行节点同时执行上限）
+        init_cap = 10 if max_concurrency is None else int(max_concurrency)
+        self._max_concurrency = max(1, min(256, init_cap))
         self._semaphore = asyncio.Semaphore(self._max_concurrency)
             
         # Phase B: 实例图定义缓存（支持动态更新）
@@ -106,6 +108,12 @@ class Scheduler:
         self._dispatching_tasks: Set[str] = set()
             
         # V2.6: Event Store 不缓存，每次使用当前 session 创建（避免跨 session 复用导致已关闭 session 写入）
+
+    def set_max_concurrency(self, n: int) -> None:
+        """调整并行节点执行上限（用于 Agent 图覆盖或运行时策略）。"""
+        capped = max(1, min(256, int(n)))
+        self._max_concurrency = capped
+        self._semaphore = asyncio.Semaphore(capped)
     
     async def _emit_event(
         self,

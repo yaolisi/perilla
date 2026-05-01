@@ -73,13 +73,28 @@ DEFAULT_DATABASE_URL = get_default_database_url()
 def _sqlalchemy_pool_kwargs(database_url: str) -> Dict[str, Any]:
     """
     SQLite（含 aiosqlite 内存 / 文件）使用 StaticPool/NullPool 等，不能传 pool_size、max_overflow。
+    非 SQLite 时优先使用 config.settings（与网关 ORM 一致，支持 DB_POOL_* 等环境变量注入 Settings）。
     """
     base: Dict[str, Any] = {"pool_pre_ping": True}
     if database_url.startswith("sqlite"):
         return base
-    base["pool_recycle"] = max(60, int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")))
-    base["max_overflow"] = max(0, int(os.getenv("DB_MAX_OVERFLOW", "20")))
-    base["pool_size"] = max(1, int(os.getenv("DB_POOL_SIZE", "10")))
+    try:
+        from config.settings import settings
+
+        base["pool_recycle"] = max(60, int(getattr(settings, "db_pool_recycle_seconds", 1800)))
+        base["max_overflow"] = max(0, int(getattr(settings, "db_max_overflow", 20)))
+        base["pool_size"] = max(1, int(getattr(settings, "db_pool_size", 10)))
+        base["pool_timeout"] = float(
+            max(1.0, min(600.0, float(getattr(settings, "db_pool_timeout_seconds", 30.0))))
+        )
+    except Exception:
+        base["pool_recycle"] = max(60, int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")))
+        base["max_overflow"] = max(0, int(os.getenv("DB_MAX_OVERFLOW", "20")))
+        base["pool_size"] = max(1, int(os.getenv("DB_POOL_SIZE", "10")))
+        try:
+            base["pool_timeout"] = float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30"))
+        except ValueError:
+            base["pool_timeout"] = 30.0
     return base
 
 
@@ -87,7 +102,19 @@ class Database:
     """数据库管理器"""
     
     def __init__(self, database_url: Optional[str] = None) -> None:
-        db_url = database_url or os.getenv("EXECUTION_KERNEL_DB_URL") or DEFAULT_DATABASE_URL
+        configured = ""
+        try:
+            from config.settings import settings as _settings
+
+            configured = str(getattr(_settings, "execution_kernel_db_url", "") or "").strip()
+        except Exception:
+            pass
+        db_url = (
+            database_url
+            or configured
+            or (os.getenv("EXECUTION_KERNEL_DB_URL") or "").strip()
+            or DEFAULT_DATABASE_URL
+        )
         self.database_url: str = db_url
         self._async_engine: Optional[AsyncEngine] = None
         self._sync_engine: Optional[Engine] = None
@@ -101,6 +128,12 @@ class Database:
             connect_args = {}
             if self.database_url.startswith("sqlite"):
                 connect_args = {"timeout": 30}
+            else:
+                from core.data.pg_connect_args import merge_postgresql_connect_args
+
+                connect_args.update(
+                    merge_postgresql_connect_args(self.database_url, sync_psycopg=False)
+                )
             self._async_engine = create_async_engine(
                 self.database_url,
                 echo=False,
@@ -120,6 +153,10 @@ class Database:
             connect_args = {}
             if sync_url.startswith("sqlite"):
                 connect_args = {"timeout": 30}
+            else:
+                from core.data.pg_connect_args import merge_postgresql_connect_args
+
+                connect_args.update(merge_postgresql_connect_args(sync_url, sync_psycopg=True))
             self._sync_engine = create_engine(
                 sync_url,
                 echo=False,
@@ -248,6 +285,20 @@ def get_database() -> Database:
     if _db is None:
         _db = Database()
     return _db
+
+
+async def close_global_database() -> None:
+    """关闭全局 Database 持有的异步/同步引擎（进程关停时由 main 生命周期调用）。"""
+    global _db
+    if _db is None:
+        return
+    db_inst = _db
+    _db = None
+    try:
+        await db_inst.close()
+        logger.info("[ExecutionKernel] Global database engines disposed")
+    except Exception as e:
+        logger.warning("[ExecutionKernel] Global database close failed: %s", e)
 
 
 def init_database(database_url: Optional[str] = None) -> Database:

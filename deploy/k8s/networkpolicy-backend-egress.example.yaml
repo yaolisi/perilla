@@ -1,0 +1,38 @@
+# 可选：限制 Pod 出站（配合集群默认拒绝策略时使用）。
+# 典型放行：集群 DNS、数据库、Redis、Kafka；请按实际 Service CIDR / 命名空间调整。
+# 未启用默认拒绝 egress 时可忽略；合并前请与平台网络策略对齐。
+# 关联示例：networkpolicy-backend.example.yaml、backend-deployment.example.yaml、secret-env.example.yaml
+# Helm：deploy/helm/perilla-backend（--set networkPolicy.egress.enabled=true）。
+#
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: perilla-backend-egress
+  labels:
+    app: perilla-backend
+spec:
+  podSelector:
+    matchLabels:
+      app: perilla-backend
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 9092

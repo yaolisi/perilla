@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 from log import logger
-from core.conversation.history_store import HistoryStore, Role
+from core.conversation.history_store import DEFAULT_TENANT_ID, HistoryStore, Role
 from core.memory.memory_injector import MemoryInjector
 
 
@@ -56,10 +56,14 @@ class ConversationManager:
         self.max_messages = max_messages
         self.system_prompt = system_prompt
 
-    def create_conversation(self, user_id: str, model_id: str, title_hint: str = "New Chat") -> Conversation:
+    def create_conversation(
+        self, user_id: str, model_id: str, title_hint: str = "New Chat", tenant_id: str = DEFAULT_TENANT_ID
+    ) -> Conversation:
         """创建新会话"""
         title = (title_hint or "New Chat").strip()[:50]
-        sid = self.history_store.create_session(user_id=user_id, title=title, last_model=model_id)
+        sid = self.history_store.create_session(
+            user_id=user_id, title=title, last_model=model_id, tenant_id=tenant_id
+        )
         
         # 构造并返回 Conversation 对象
         now = datetime.now(timezone.utc)
@@ -79,21 +83,23 @@ class ConversationManager:
         content: Union[str, List],
         meta: Optional[dict] = None,
         request_id: Optional[str] = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> Message:
         """追加用户消息（支持多模态内容）"""
         # 如果是字符串，则去除空白字符
         if isinstance(content, str):
             content = content.strip()
         # 如果是列表（多模态），保持原样
-            
+
         mid = self.history_store.append_message(
             session_id=session_id,
             role="user",
             content=content,
             meta=meta,
             request_id=request_id,
+            tenant_id=tenant_id,
         )
-        self.history_store.touch_session(user_id=user_id, session_id=session_id)
+        self.history_store.touch_session(user_id=user_id, session_id=session_id, tenant_id=tenant_id)
         
         return Message(
             id=mid,
@@ -104,13 +110,14 @@ class ConversationManager:
         )
 
     def append_assistant_message(
-        self, 
-        user_id: str, 
-        session_id: str, 
-        content: str, 
+        self,
+        user_id: str,
+        session_id: str,
+        content: str,
         model_id: str,
         meta: Optional[dict] = None,
         request_id: Optional[str] = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> Message:
         """追加助手消息"""
         mid = self.history_store.append_message(
@@ -120,8 +127,11 @@ class ConversationManager:
             model=model_id,
             meta=meta,
             request_id=request_id,
+            tenant_id=tenant_id,
         )
-        self.history_store.touch_session(user_id=user_id, session_id=session_id, last_model=model_id)
+        self.history_store.touch_session(
+            user_id=user_id, session_id=session_id, last_model=model_id, tenant_id=tenant_id
+        )
         
         return Message(
             id=mid,
@@ -132,9 +142,13 @@ class ConversationManager:
             meta=meta
         )
 
-    def get_messages(self, user_id: str, session_id: str, limit: int = 100) -> List[Message]:
+    def get_messages(
+        self, user_id: str, session_id: str, limit: int = 100, tenant_id: str = DEFAULT_TENANT_ID
+    ) -> List[Message]:
         """获取会话历史消息"""
-        raw_msgs = self.history_store.list_messages(user_id=user_id, session_id=session_id, limit=limit)
+        raw_msgs = self.history_store.list_messages(
+            user_id=user_id, session_id=session_id, limit=limit, tenant_id=tenant_id
+        )
         messages = []
         for m in raw_msgs:
             # 转换 created_at 字符串为 datetime
@@ -176,7 +190,8 @@ class ConversationManager:
         user_id: str,
         session_id: str,
         max_messages: Optional[int] = None,
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> List[Dict[str, str]]:
         """
         构造 LLM 上下文（核心逻辑）
@@ -184,9 +199,11 @@ class ConversationManager:
         """
         limit = max_messages or self.max_messages
         active_system_prompt = system_prompt if system_prompt is not None else self.system_prompt
-        
+
         # 1. 获取最近的历史消息
-        raw_history = self.get_messages(user_id=user_id, session_id=session_id, limit=limit)
+        raw_history = self.get_messages(
+            user_id=user_id, session_id=session_id, limit=limit, tenant_id=tenant_id
+        )
         
         # 2. 过滤无效消息
         filtered_history = self._filter_messages(raw_history)

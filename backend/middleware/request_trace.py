@@ -12,6 +12,7 @@ from starlette.requests import Request
 
 from config.settings import settings
 from log import logger
+from middleware.ops_paths import is_ops_probe_or_metrics_path
 
 # W3C traceparent: 00-{trace_id}-{parent_id}-{flags}，trace_id 为 32 位 hex
 _TRACEPARENT_RE = re.compile(
@@ -82,8 +83,12 @@ class RequestTraceMiddleware(BaseHTTPMiddleware):
         response.headers[self._header_name] = request_id
         response.headers["X-Trace-Id"] = trace_id
         response.headers["X-Response-Time-Ms"] = str(elapsed_ms)
-        logger.info(
-            f"[Request] {request.method} {request.url.path} "
+        path = request.url.path
+        # 探针与 Prometheus 抓取频率高，默认降为 DEBUG，避免生产日志被刷屏
+        quiet_path = is_ops_probe_or_metrics_path(path)
+        log_fn = logger.debug if quiet_path else logger.info
+        log_fn(
+            f"[Request] {request.method} {path} "
             f"status={response.status_code} request_id={request_id} trace_id={trace_id} latency_ms={elapsed_ms}",
             extra={
                 "component": "RequestTrace",

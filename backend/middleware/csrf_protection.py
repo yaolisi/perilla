@@ -11,6 +11,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from config.settings import settings
+from middleware.ops_paths import get_prometheus_metrics_path, is_api_health_path
 
 
 class CSRFMiddleware(BaseHTTPMiddleware):
@@ -43,7 +44,9 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         )
 
     def _is_exempt_path(self, path: str) -> bool:
-        return path.startswith("/api/health") or path in {"/", "/docs", "/redoc", "/openapi.json"}
+        if is_api_health_path(path) or path == get_prometheus_metrics_path():
+            return True
+        return path in {"/", "/docs", "/redoc", "/openapi.json"}
 
     async def dispatch(self, request: Request, call_next):
         if not bool(getattr(settings, "csrf_enabled", True)):

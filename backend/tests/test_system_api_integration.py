@@ -72,6 +72,7 @@ def test_config_schema_endpoint_exposes_workflow_contract_policy_examples():
     assert "workflowContractRequiredInputAddedBreaking" in example
     assert "workflowContractOutputAddedRisky" in example
     assert "workflowContractFieldExemptions" in example
+    assert "workflowSchedulerMaxConcurrency" in hints
     assert "workflowGovernanceHealthyThreshold" in hints
     assert "workflowGovernanceWarningThreshold" in hints
     query_examples = body.get("query_examples", {})

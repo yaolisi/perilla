@@ -1,0 +1,451 @@
+# 默认值与 deploy/k8s/backend-deployment.example.yaml 一致；生产请覆盖 image、资源与 Secret。
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 3
+
+# IRSA / Workload Identity：create=true 且 annotations 填 eks.amazonaws.com/role-arn 等
+serviceAccount:
+  create: false
+  name: ""
+  annotations: {}
+
+# Pod 级 securityContext（与镜像 UID/GID 对齐；volume 挂载可选 fsGroup）
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+image:
+  repository: perilla-backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+containerPort: 8000
+
+# 对应 Secret：kubectl create secret generic perilla-backend-env --from-env-file=...
+secretEnvFrom:
+  enabled: true
+  name: perilla-backend-env
+  optional: true
+
+# 可选：发布前执行 Alembic（与 Deployment 同镜像、同 DATABASE_URL）。默认关闭；可用 helm upgrade --set migrateJob.enabled=true 或 CI 单独 kubectl apply job。
+migrateJob:
+  enabled: false
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 2
+  command:
+    - alembic
+    - -c
+    - alembic.ini
+    - upgrade
+    - head
+
+env:
+  debug: "false"
+  host: "0.0.0.0"
+  port: "8000"
+  # 非空时注入 LOG_FORMAT（text | json；默认 json 以满足生产门禁 debug=false 时需结构化日志）
+  logFormat: "json"
+  # 非空时注入 LOG_LEVEL（如 INFO、WARNING；为空则由 debug 推断）
+  logLevel: ""
+  # 非空时注入 DEFAULT_MODEL（网关缺省模型 ID；与各 runtime 注册名对齐）
+  defaultModel: ""
+  # 非空时注入 API_PREFIX（全局路由前缀；须与 Ingress path、前端请求前缀一致）
+  apiPrefix: ""
+  # 非空时注入 TRUSTED_HOSTS（逗号分隔 Host，须含 Ingress 对外域名，支持 *.domain；生产 debug=false 门禁常要求）
+  trustedHosts: ""
+  # 非空时注入 TRUSTED_HOST_EXEMPT_OPS_PATHS（"true"/"false"；false=探针/指标路径也强制 Host 白名单）
+  trustedHostExemptOpsPaths: ""
+  # 非空时注入 FORWARDED_ALLOW_IPS（uvicorn 可信代理 IP/CIDR，逗号分隔；置于 Ingress 后常需配置）
+  forwardedAllowIps: ""
+  # 非空时注入 UVICORN_LIMIT_CONCURRENCY / UVICORN_LIMIT_MAX_REQUESTS（python main.py 直连时韧性上限）
+  uvicornLimitConcurrency: ""
+  uvicornLimitMaxRequests: ""
+  # 非空时注入 UVICORN_SERVER_HEADER（"true"/"false"；false 降低 Server 指纹）
+  uvicornServerHeader: ""
+  # 非空时注入 UVICORN_H11_MAX_INCOMPLETE_EVENT_SIZE（缓解慢连接）
+  uvicornH11MaxIncompleteEventSize: ""
+  # 非空时注入 UVICORN_ACCESS_LOG（"true"/"false"）；仅 python main.py 入口生效
+  uvicornAccessLog: ""
+  # 非空时注入 UVICORN_BACKLOG（监听 backlog）
+  uvicornBacklog: ""
+  # 非空时注入 UVICORN_WS_MAX_SIZE（WebSocket 单帧上限字节）
+  uvicornWsMaxSize: ""
+  # 非空时注入 UVICORN_LIMIT_MAX_REQUESTS_JITTER（配合 limit_max_requests）
+  uvicornLimitMaxRequestsJitter: ""
+  # 非空时注入 UVICORN_DATE_HEADER（"true"/"false"）
+  uvicornDateHeader: ""
+  # 非空时注入 UVICORN_WS_PING_INTERVAL_SECONDS / UVICORN_WS_PING_TIMEOUT_SECONDS（与 Ingress idle 对齐）
+  uvicornWsPingIntervalSeconds: ""
+  uvicornWsPingTimeoutSeconds: ""
+  # 非空时注入 UVICORN_TIMEOUT_WORKER_HEALTHCHECK_SECONDS（多 worker）
+  uvicornTimeoutWorkerHealthcheckSeconds: ""
+  # --- 数据层（连接串建议优先 Secret envFrom；helm 显式 env 在后声明，可覆盖 Secret 同名字段）---
+  # 非空时注入 DATABASE_URL（PostgreSQL SQLAlchemy URL；生产门禁必填）
+  databaseUrl: ""
+  # 非空时注入 DB_CONNECT_TIMEOUT_SECONDS / DB_POOL_TIMEOUT_SECONDS / DB_STATEMENT_TIMEOUT_MS
+  dbConnectTimeoutSeconds: ""
+  dbPoolTimeoutSeconds: ""
+  dbStatementTimeoutMs: ""
+  # 非空时注入 DB_POOL_SIZE / DB_MAX_OVERFLOW（连接池规模）
+  dbPoolSize: ""
+  dbMaxOverflow: ""
+  # 非空时注入 DB_POOL_RECYCLE_SECONDS（连接池回收周期；与托管库空闲断开或 LB 超时对齐）
+  dbPoolRecycleSeconds: ""
+  # 非空时注入 DB_PATH（未配置 DATABASE_URL 时的 SQLite 路径；生产主推 PostgreSQL，此项多用于特殊/离线）
+  dbPath: ""
+  # 非空时注入 REDIS_CLUSTER_MODE（"true"/"false"；Redis Cluster 部署时必开）
+  redisClusterMode: ""
+  # 非空时注入 INFERENCE_CACHE_REDIS_URL / EVENT_BUS_*（与 Secret 二选一或覆盖）
+  inferenceCacheRedisUrl: ""
+  # 非空时注入 INFERENCE_CACHE_ENABLED（"true"/"false"；关闭后跳过 Redis/L1 推理缓存）
+  inferenceCacheEnabled: ""
+  # --- 本地/集群推理运行时 HTTP 入口（K8s Service DNS；空则沿用 Settings 默认 localhost）---
+  ollamaBaseUrl: ""
+  ollamaDefaultModel: ""
+  localaiBaseUrl: ""
+  textgenWebuiBaseUrl: ""
+  # --- 文生图默认模型；YOLO 权重路径与设备（感知/VLM 协同；PVC 挂载路径）---
+  imageGenerationDefaultModelId: ""
+  yoloModelPath: ""
+  yoloDevice: ""
+  yoloDefaultBackend: ""
+  # --- file.read 根目录（逗号分隔）；生产护栏以 PRODUCTION_* 为准 ---
+  fileReadAllowedRoots: ""
+  productionFileReadRequiredRoots: ""
+  productionFileReadAllowedRoots: ""
+  # 非空时注入 LOCAL_MODEL_DIRECTORY / AUTO_UNLOAD_LOCAL_MODEL_ON_SWITCH（PVC 挂载的本地权重目录；切换模型时是否卸载）
+  localModelDirectory: ""
+  autoUnloadLocalModelOnSwitch: ""
+  eventBusEnabled: ""
+  eventBusBackend: ""
+  eventBusRedisUrl: ""
+  eventBusKafkaBootstrapServers: ""
+  # 非空时注入 PROMETHEUS_ENABLED（"true"/"false"）；PROMETHEUS_METRICS_PATH 建议与 metrics.path 一致
+  prometheusEnabled: ""
+  prometheusMetricsPath: ""
+  # HTTPS 终端建议 "true"，使浏览器仅 Secure 发送 CSRF Cookie
+  csrfCookieSecure: ""
+  # 非空时注入 EXECUTION_KERNEL_DB_URL（asyncpg URL；为空则执行内核复用 DATABASE_URL 相关逻辑）
+  executionKernelDbUrl: ""
+  # 非空时注入 SECURITY_GUARDRAILS_STRICT（"true"/"false"；预发可 false 只告警，生产建议 true）
+  securityGuardrailsStrict: ""
+  # 非空时注入 API_RATE_LIMIT_ENABLED / API_RATE_LIMIT_REQUESTS / API_RATE_LIMIT_WINDOW_SECONDS
+  apiRateLimitEnabled: ""
+  apiRateLimitRequests: ""
+  apiRateLimitWindowSeconds: ""
+  # 非空时注入 API_RATE_LIMIT_TRUST_X_FORWARDED_FOR（直连公网建议 "false"；限流与审计 client_ip 均受该开关影响）
+  apiRateLimitTrustXForwardedFor: ""
+  # 非空时注入 EVENT_BUS_STRICT_STARTUP（"true"/"false"；总线连不上时是否拒绝启动）
+  # 生产启用事件总线时建议 true：后端门禁要求 EVENT_BUS_STRICT_STARTUP=true（见 validate_production_security_guardrails）
+  eventBusStrictStartup: "true"
+  # 非空时注入 REQUEST_TRACE_ENABLED（"true"/"false"；极高 QPS 时可关以减少日志）
+  requestTraceEnabled: ""
+  # --- RBAC 与审计（API Key 列表建议走 Secret；helm 显式 env 可覆盖 envFrom）---
+  rbacEnabled: ""
+  rbacEnforcement: ""
+  # 生产门禁：debug=false 且 RBAC 启用时不宜为 operator（匿名继承）；覆盖为 admin 仅在内网明确需要时
+  rbacDefaultRole: "viewer"
+  rbacAdminApiKeys: ""
+  rbacOperatorApiKeys: ""
+  rbacViewerApiKeys: ""
+  auditLogEnabled: ""
+  # 逗号分隔路径前缀；勿设为单独 "/"（生产护栏会拦截）
+  auditLogPathPrefixes: ""
+  auditLogIncludeGet: ""
+  # --- API Key 作用域 / 注册表与租户（JSON 较长时优先 Secret）---
+  apiKeyScopesJson: ""
+  apiKeysJson: ""
+  apiKeyRevokedList: ""
+  tenantEnforcementEnabled: ""
+  tenantDefaultId: ""
+  tenantHeaderName: ""
+  tenantApiKeyBindingEnabled: ""
+  tenantApiKeyTenantsJson: ""
+  # 非空时注入 CSRF_ENABLED（纯 JSON API / 内网可无 Cookie 场景可 false；浏览器站点建议 true）
+  csrfEnabled: ""
+  # 非空时注入 CSRF_HEADER_NAME / CSRF_COOKIE_* / CSRF_COOKIE_MAX_AGE_SECONDS（与 csrfCookieSecure 协同）
+  csrfHeaderName: ""
+  csrfCookieName: ""
+  csrfCookiePath: ""
+  csrfCookieSamesite: ""
+  csrfCookieMaxAgeSeconds: ""
+  # --- traceparent 链路关联与请求体白名单 / 日志脱敏（敏感字段逗号分隔）---
+  traceLinkEnabled: ""
+  apiRequestWhitelistEnabled: ""
+  dataRedactionEnabled: "true"
+  dataRedactionSensitiveFields: ""
+  dataRedactionMaskKeepPrefix: ""
+  dataRedactionMaskKeepSuffix: ""
+  # --- 响应 GZip（text/event-stream 不压缩）与工作流全局调度并发 ---
+  responseGzipEnabled: ""
+  responseGzipMinimumSize: ""
+  workflowSchedulerMaxConcurrency: ""
+  # --- 工作流跨副本运行上限兜底（基于 DB 中 running 态势软限制；依赖 PostgreSQL 与会话时钟）---
+  workflowDistributedRunningLimitEnabled: ""
+  workflowDistributedRunningLimitPerWorkflow: ""
+  workflowDistributedRunningLimitWaitSeconds: ""
+  workflowDistributedRunningLimitFailOpen: ""
+  workflowDistributedRunningStaleSeconds: ""
+  workflowDistributedRunningAutoReconcileStale: ""
+  # --- 工作流发布与执行策略（生产建议：禁止 draft、异步默认）---
+  workflowExecutionWaitDefault: ""
+  workflowAllowDraftExecution: ""
+  workflowAllowDraftExecutionDebugOverride: ""
+  # --- 子工作流引用与发布门禁（生产默认：禁止 latest、阻断子流程 breaking 影响）---
+  workflowSubworkflowMaxDepth: ""
+  workflowAllowLatestSubworkflowInProduction: ""
+  workflowBlockPublishOnSubworkflowBreakingImpact: ""
+  # --- 工作流契约兼容策略（发布前契约对比 / 豁免列表逗号分隔）---
+  workflowContractRequiredInputAddedBreaking: ""
+  workflowContractOutputAddedRisky: ""
+  workflowContractFieldExemptions: ""
+  # --- 工作流 DB 写入重试（锁冲突/瞬时失败）与反思节点重试 / 兜底 Agent ---
+  workflowDbWriteRetryAttempts: ""
+  workflowDbWriteRetryBaseDelayMs: ""
+  workflowReflectorMaxRetries: ""
+  workflowReflectorRetryIntervalSeconds: ""
+  workflowReflectorFallbackAgentId: ""
+  # --- 工作流执行等待超时、治理健康/告警阈值、pending 日志节拍 ---
+  workflowWaitTimeoutSeconds: ""
+  workflowWaitTimeoutMaxSeconds: ""
+  workflowGovernanceHealthyThreshold: ""
+  workflowGovernanceWarningThreshold: ""
+  workflowPendingWarnSeconds: ""
+  workflowPendingWarnIntervalSeconds: ""
+  # --- Workflow approvals 弃用响应头（Deprecation / Sunset；RFC 8594）---
+  workflowApprovalsLegacyDeprecatedHeader: ""
+  workflowApprovalsLegacySunset: ""
+  # --- 异步 Chat 任务缓冲与 SSE 断点续传 / 墙钟上限（长连接与内存协同）---
+  asyncChatJobTtlSeconds: ""
+  asyncChatJobMaxEntries: ""
+  chatStreamResumeEnabled: ""
+  chatStreamResumeTtlSeconds: ""
+  chatStreamResumeMaxSessions: ""
+  chatStreamResumeWaitTimeoutSeconds: ""
+  chatStreamWallClockMaxSeconds: ""
+  # 生产建议 true：客户端断开时取消上游流式推理（省 GPU / 防僵尸会话）
+  chatStreamResumeCancelUpstreamOnDisconnect: "true"
+  # --- Chat：会话复用、幂等/强制新会话 Header、输入输出清洗 ---
+  chatSessionReuseWindowMinutes: ""
+  chatSessionTitleMaxLen: ""
+  chatIdempotencyHeaders: ""
+  chatForceNewSessionHeaders: ""
+  chatInputStripTransportWrappers: ""
+  chatOutputStripReasoning: ""
+  # --- 长期记忆（向量维度须与嵌入模型一致；启用后评估存储与算力）---
+  enableLongTermMemory: ""
+  memoryInjectMode: ""
+  memoryInjectTopK: ""
+  memoryVectorEnabled: ""
+  memoryEmbeddingDim: ""
+  memoryDefaultConfidence: ""
+  memoryMergeEnabled: ""
+  memoryMergeSimilarityThreshold: ""
+  memoryConflictEnabled: ""
+  memoryConflictSimilarityThreshold: ""
+  memoryDecayHalfLifeDays: ""
+  memoryKeySchemaEnforced: ""
+  memoryKeySchemaAllowUnlisted: ""
+  memoryExtractorEnabled: ""
+  memoryExtractorTemperature: ""
+  memoryExtractorTopP: ""
+  memoryExtractorMaxTokens: ""
+  # --- 推理队列 SLO / 抢占与前端看板阈值；连续批（非流式 chat）---
+  inferenceQueueSloEnabled: ""
+  inferenceQueueSloHighMs: ""
+  inferenceQueueSloMediumMs: ""
+  inferenceQueueSloLowMs: ""
+  inferenceQueuePreemptionEnabled: ""
+  inferenceQueuePreemptionMaxPerHighRequest: ""
+  inferenceQueuePreemptionMaxPerTask: ""
+  inferenceQueuePreemptionCooldownMs: ""
+  inferencePriorityPanelHighSloCriticalRate: ""
+  inferencePriorityPanelHighSloWarningRate: ""
+  inferencePriorityPanelPreemptionCooldownBusyThreshold: ""
+  continuousBatchEnabled: ""
+  continuousBatchWaitMs: ""
+  continuousBatchMaxSize: ""
+  # --- 按 runtime 类型覆盖最大并发（JSON，如 {"llama.cpp":1,"ollama":4}）；Agent 规划并行与步骤默认超时/重试 ---
+  runtimeMaxConcurrencyOverrides: ""
+  agentPlanMaxParallelSteps: ""
+  agentStepDefaultTimeoutSeconds: ""
+  agentStepDefaultMaxRetries: ""
+  agentStepDefaultRetryIntervalSeconds: ""
+  # --- 推理智能路由（负载/蓝绿；策略为 JSON，键为模型或路由键）---
+  inferenceSmartRoutingEnabled: ""
+  inferenceSmartRoutingPoliciesJson: ""
+  # --- 推理缓存按模型类型 TTL、知识库按文档类型分块（均为 JSON，长内容建议 Secret）---
+  inferenceCacheTtlByModelTypeJson: ""
+  kbChunkSizeOverridesJson: ""
+  # --- 推理默认 TTL、Embedding 缓存 TTL、Redis 键前缀、L1 内存缓存规模 ---
+  inferenceCacheTtlSeconds: ""
+  embeddingCacheTtlSeconds: ""
+  inferenceCachePrefix: ""
+  inferenceCacheMemoryEnabled: ""
+  inferenceCacheMemoryMaxEntries: ""
+  # --- 推理全量清缓存：挑战码 TTL 与申请频率上限（防滥用；依赖 Redis 时速率跨副本一致）---
+  inferenceCacheClearChallengeTtlSeconds: ""
+  inferenceCacheClearChallengeRateWindowSeconds: ""
+  inferenceCacheClearChallengeRateMaxPerWindow: ""
+  # 非空时注入 API_RATE_LIMIT_REDIS_URL（多副本共池限流；可与推理缓存复用同一 Redis）
+  apiRateLimitRedisUrl: ""
+  # 非空时注入 API_RATE_LIMIT_REDIS_FAIL_CLOSED（"true"/"false"；Redis 故障时是否 503 而非放行）
+  # 非空时注入 API_RATE_LIMIT_REDIS_FAIL_CLOSED；已配置 apiRateLimitRedisUrl 时生产建议 true（后端 apply 亦会在 debug=false 时默认收紧）
+  apiRateLimitRedisFailClosed: ""
+  # 非空时注入 HEALTH_READY_STRICT_API_RATE_LIMIT_REDIS（须同时配置 apiRateLimitRedisUrl；未注入时 debug=false 下 apply 会在已配 URL 时默认收紧）
+  healthReadyStrictApiRateLimitRedis: ""
+  # 非空时注入 HEALTH_READY_STRICT_EVENT_BUS（"true"/"false"；须 EVENT_BUS_ENABLED=true 且配置事件总线 Redis/Kafka，否则生产护栏报错）
+  healthReadyStrictEventBus: ""
+  # 非空时注入 HEALTH_READY_STRICT_INFERENCE_REDIS；开启推理缓存时生产建议 true（/ready 在 Redis 不可达时 503 摘流）
+  healthReadyStrictInferenceRedis: "true"
+  # 以下为 /ready 探针调优（大规模副本可增大 cache、必要时关闭实时 PING 减负；strict 模式仍会探测）
+  # 非空时注入 HEALTH_READY_INFERENCE_REDIS_PING_TIMEOUT_SECONDS（秒）
+  healthReadyInferenceRedisPingTimeoutSeconds: ""
+  # 非空时注入 HEALTH_READY_INFERENCE_REDIS_PROBE_ENABLED（"true"/"false"）
+  healthReadyInferenceRedisProbeEnabled: ""
+  # 非空时注入 HEALTH_READY_INFERENCE_REDIS_PROBE_CACHE_SECONDS（秒；0=每次探针都 PING）
+  healthReadyInferenceRedisProbeCacheSeconds: ""
+  # 非空时注入 HEALTH_READY_API_RATE_LIMIT_REDIS_PROBE_ENABLED（"true"/"false"）
+  healthReadyApiRateLimitRedisProbeEnabled: ""
+  # 非空时注入 HEALTH_READY_API_RATE_LIMIT_REDIS_PROBE_CACHE_SECONDS（秒）
+  healthReadyApiRateLimitRedisProbeCacheSeconds: ""
+  # 非空时注入 OPENAPI_PUBLIC_ENABLED；生产默认不写（后端默认 false，不挂载 /docs /openapi.json）
+  openapiPublicEnabled: ""
+  # 非空时注入 CORS_ALLOWED_ORIGINS（逗号分隔，如 https://app.example.com）；生产门禁要求显式配置，勿用 * 若需凭证 Cookie
+  corsAllowedOrigins: ""
+  # 非空时注入 UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN_SECONDS；须满足 terminationGracePeriodSeconds ≥ lifecycle.preStopSleepSeconds + 本值 + 小余量（默认清单示例 90≥15+40+10）
+  uvicornTimeoutGracefulShutdownSeconds: ""
+  # 非空时注入 UVICORN_TIMEOUT_KEEP_ALIVE_SECONDS（Keep-Alive；与 Ingress proxy-read/send-timeout、CHAT_STREAM_WALL_CLOCK_MAX_SECONDS 等见 deploy/k8s/ingress-backend.example.yaml）
+  uvicornTimeoutKeepAliveSeconds: ""
+  # 注入 HTTP_MAX_REQUEST_BODY_BYTES（与 Ingress client_max_body_size 协同）；后端默认 52MiB 上限
+  httpMaxRequestBodyBytes: "52428800"
+  # 非空时注入 SECURITY_HEADERS_ENABLED（iframe 嵌入时需评估 X-Frame-Options）；生产默认 true
+  securityHeadersEnabled: "true"
+  # 非空时注入对应头；空字符串可在 Secret 中用来关闭某一顶（与后端 Settings 字段一致）
+  securityHeadersXContentTypeOptions: ""
+  securityHeadersXFrameOptions: ""
+  securityHeadersReferrerPolicy: ""
+  # 非空时注入 SECURITY_HEADERS_STRICT_TRANSPORT_SECURITY（HTTPS 全站；例 max-age=31536000; includeSubDomains）
+  securityHeadersStrictTransportSecurity: ""
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "4"
+    memory: 8Gi
+
+securityContext:
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
+
+probes:
+  startup:
+    path: /api/health
+    failureThreshold: 30
+    periodSeconds: 5
+    timeoutSeconds: 5
+  liveness:
+    path: /api/health
+    initialDelaySeconds: 20
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readiness:
+    path: /api/health/ready
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+terminationGracePeriodSeconds: 90
+
+# 摘流量缓冲（秒）；0 表示不注入 lifecycle.preStop（Ingress/LB 收敛时间）
+lifecycle:
+  preStopSleepSeconds: 15
+
+podAntiAffinity:
+  enabled: true
+
+topologySpreadConstraints:
+  enabled: true
+
+# 与 backend PROMETHEUS_METRICS_PATH 一致时可覆盖 path（默认 /metrics）
+metrics:
+  path: /metrics
+  interval: 15s
+  scrapeTimeout: 10s
+
+# Prometheus Operator（与 vmServiceScrape 勿同时对同一 Service 双挂载）
+serviceMonitor:
+  enabled: false
+  additionalLabels: {}
+
+# VictoriaMetrics Operator（apiVersion 不存在时请改用 kube-prometheus ServiceMonitor）
+vmServiceScrape:
+  enabled: false
+  additionalLabels: {}
+
+ingress:
+  enabled: false
+  className: nginx
+  # 长连接/SSE：read/send timeout 建议 ≥ CHAT_STREAM_WALL_CLOCK_MAX_SECONDS（启用时）或运维约定的最长流时长；并与 env.uvicornTimeoutKeepAliveSeconds（UVICORN_TIMEOUT_KEEP_ALIVE_SECONDS）一并审视。
+  # 例如：
+  # annotations:
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  #   nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  annotations: {}
+  host: perilla-api.example.com
+  path: /
+  pathType: Prefix
+  tls:
+    enabled: true
+    secretName: perilla-api-tls
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# 启用后由 HPA 接管副本数（需 metrics-server）；Deployment.replicas 仅作初次应用的初始值。
+horizontalPodAutoscaler:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+deploymentAnnotations: {}
+podAnnotations: {}
+priorityClassName: ""
+
+# 与 deploy/k8s/networkpolicy-backend*.example.yaml 对齐；启用前确认集群已启用 NetworkPolicy
+networkPolicy:
+  ingress:
+    enabled: false
+    monitoringNamespace: monitoring
+    port: 8000
+  egress:
+    enabled: false
+    kubeSystemNamespace: kube-system
+    privateCidr: 10.0.0.0/8
+    ports:
+      postgres: 5432
+      redis: 6379
+      kafka: 9092

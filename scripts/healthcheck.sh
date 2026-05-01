@@ -24,8 +24,19 @@ curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/health" >/dev/null
 echo "  OK"
 
 echo "[3/5] Backend /api/health/ready"
-curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/health/ready" >/dev/null
-echo "  OK"
+ready_url="http://127.0.0.1:${BACKEND_PORT}/api/health/ready"
+if [[ "${HEALTHCHECK_ALLOW_READY_503:-0}" == "1" ]]; then
+  # 开启 HEALTH_READY_STRICT_EVENT_BUS 且事件总线降级时 ready 为 503；仅验收「接口可达」时可设本变量为 1
+  code="$(curl -s -o /dev/null -w "%{http_code}" "${ready_url}")"
+  if [[ "${code}" != "200" && "${code}" != "503" ]]; then
+    echo >&2 "  FAIL (HTTP ${code})"
+    exit 1
+  fi
+  echo "  OK (HTTP ${code})"
+else
+  curl -fsS "${ready_url}" >/dev/null
+  echo "  OK"
+fi
 
 echo "[4/5] Frontend root page"
 curl -fsS "http://127.0.0.1:${FRONTEND_PORT}/" >/dev/null

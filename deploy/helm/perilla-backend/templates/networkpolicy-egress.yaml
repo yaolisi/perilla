@@ -1,0 +1,34 @@
+{{- if .Values.networkPolicy.egress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "perilla-backend.fullname" . }}-netpol-egress
+  labels:
+    {{- include "perilla-backend.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: perilla-backend
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              "kubernetes.io/metadata.name": {{ .Values.networkPolicy.egress.kubeSystemNamespace | quote }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.egress.privateCidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.egress.ports.postgres }}
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.egress.ports.redis }}
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.egress.ports.kafka }}
+{{- end }}

@@ -16,6 +16,7 @@ except ImportError:
     Image = None
 
 from .model_adapter import ModelAdapter
+from .bnb_quant import try_bitsandbytes_config
 from .stream_hf import iterate_hf_generate_stream
 from core.system.runtime_settings import get_torch_stream_thread_join_timeout_sec
 
@@ -171,6 +172,17 @@ class InternVLAdapter(ModelAdapter):
         if self._device == "cpu" and requested_dtype == torch.float16:
             self._torch_dtype = torch.float32
 
+        bnb_cfg, use_device_map = try_bitsandbytes_config(options, resolved_device=self._device)
+
+        def _model_load_kw() -> Dict[str, Any]:
+            kw: Dict[str, Any] = {"trust_remote_code": True, "low_cpu_mem_usage": False}
+            if bnb_cfg is not None:
+                kw["quantization_config"] = bnb_cfg
+                kw["device_map"] = "auto"
+            else:
+                kw["torch_dtype"] = self._torch_dtype
+            return kw
+
         # 注意：部分 InternVL3 模型的 AutoProcessor 可能退化为 tokenizer 本身，
         # 因此这里同时显式加载 tokenizer + image_processor，推理优先走 model.chat()
         self._processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
@@ -228,27 +240,16 @@ class InternVLAdapter(ModelAdapter):
 
                 model_cls.__init__ = _patched_init
                 model_cls.get_init_context = classmethod(_compat_init_context)
-                self._model = model_cls.from_pretrained(
-                    model_name,
-                    torch_dtype=self._torch_dtype,
-                    trust_remote_code=True,
-                    low_cpu_mem_usage=False,
-                )
+                mk = _model_load_kw()
+                self._model = model_cls.from_pretrained(model_name, **mk)
             except Exception:
-                self._model = AutoModel.from_pretrained(
-                    model_name,
-                    torch_dtype=self._torch_dtype,
-                    trust_remote_code=True,
-                    low_cpu_mem_usage=False,
-                )
+                mk = _model_load_kw()
+                self._model = AutoModel.from_pretrained(model_name, **mk)
         else:
-            self._model = AutoModel.from_pretrained(
-                model_name,
-                torch_dtype=self._torch_dtype,
-                trust_remote_code=True,
-                low_cpu_mem_usage=False,
-            )
-        self._model = self._model.to(self._device)
+            mk = _model_load_kw()
+            self._model = AutoModel.from_pretrained(model_name, **mk)
+        if not use_device_map:
+            self._model = self._model.to(self._device)
         self._model.eval()
 
     def generate(

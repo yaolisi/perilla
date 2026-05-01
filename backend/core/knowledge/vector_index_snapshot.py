@@ -4,6 +4,7 @@ import json
 from typing import Dict, List, Optional
 
 from config.settings import settings
+from core.redis_client_factory import create_sync_redis_client
 from log import logger
 
 
@@ -32,9 +33,7 @@ class RedisVectorIndexSnapshot:
             return None
         self._init_tried = True
         try:
-            import redis
-
-            self._client = redis.Redis.from_url(self._redis_url, decode_responses=True)
+            self._client = create_sync_redis_client(self._redis_url, decode_responses=True)
             return self._client
         except Exception as exc:
             logger.warning("[KBVectorSnapshot] redis unavailable, disabled: %s", exc)

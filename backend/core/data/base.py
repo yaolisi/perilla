@@ -70,7 +70,7 @@ def _ensure_common_indexes(engine: Engine) -> None:
 def create_engine_instance() -> Engine:
     """创建数据库引擎（优化并发配置）"""
     db_url = get_database_url()
-    connect_args = {}
+    connect_args: dict = {}
     if _is_sqlite_url(db_url):
         db_path = get_db_path()
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,16 +78,25 @@ def create_engine_instance() -> Engine:
             "check_same_thread": False,  # 允许多线程访问
             "timeout": 30.0,  # 锁等待超时（秒）
         }
+    else:
+        from core.data.pg_connect_args import merge_postgresql_connect_args
 
-    engine = create_engine(
-        db_url,
-        connect_args=connect_args,
-        echo=False,
-        pool_pre_ping=True,  # 连接前健康检查
-        pool_recycle=max(60, int(getattr(settings, "db_pool_recycle_seconds", 1800))),
-        max_overflow=max(0, int(getattr(settings, "db_max_overflow", 20))),
-        pool_size=max(1, int(getattr(settings, "db_pool_size", 10))),
+        connect_args.update(merge_postgresql_connect_args(db_url, sync_psycopg=True))
+
+    pool_timeout = float(
+        max(1.0, min(600.0, float(getattr(settings, "db_pool_timeout_seconds", 30.0))))
     )
+    engine_kw: dict[str, Any] = {
+        "connect_args": connect_args,
+        "echo": False,
+        "pool_pre_ping": True,  # 连接前健康检查
+        "pool_recycle": max(60, int(getattr(settings, "db_pool_recycle_seconds", 1800))),
+        "max_overflow": max(0, int(getattr(settings, "db_max_overflow", 20))),
+        "pool_size": max(1, int(getattr(settings, "db_pool_size", 10))),
+    }
+    if not _is_sqlite_url(db_url):
+        engine_kw["pool_timeout"] = pool_timeout
+    engine = create_engine(db_url, **engine_kw)
 
     if _is_sqlite_url(db_url):
         # 启用 WAL 模式以提升并发性能
@@ -115,6 +124,24 @@ def get_engine() -> Engine:
     if _engine is None:
         _engine = create_engine_instance()
     return _engine
+
+
+def dispose_engine() -> None:
+    """关闭连接池（进程退出 / 优雅关停时调用）；下次 get_engine() 会重建引擎。"""
+    global _engine
+    if _engine is None:
+        return
+    eng = _engine
+    _engine = None
+    try:
+        SessionLocal._maker = None  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        eng.dispose()
+        logger.info("[Data] SQLAlchemy engine disposed (connection pool closed)")
+    except Exception as e:
+        logger.warning("[Data] SQLAlchemy engine dispose failed: %s", e)
 
 
 def sessionmaker_for_engine(engine: Engine) -> sessionmaker:

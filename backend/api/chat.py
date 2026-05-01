@@ -225,6 +225,18 @@ def _get_user_id(request: Request) -> str:
     return cast(str, get_user_id(request))
 
 
+def _tenant_id(request: Request) -> str:
+    """与 TenantContextMiddleware 对齐；异步任务 detached Request 无 state 时回落读 Header。"""
+    tid = getattr(request.state, "tenant_id", None)
+    if isinstance(tid, str) and tid.strip():
+        return tid.strip()
+    hdr = getattr(settings, "tenant_header_name", "X-Tenant-Id")
+    from_hdr = (request.headers.get(hdr) or "").strip()
+    if from_hdr:
+        return from_hdr
+    return str(getattr(settings, "tenant_default_id", "default") or "default").strip() or "default"
+
+
 def _normalized_persistence_mode() -> str:
     mode = (getattr(settings, "chat_persistence_mode", "full") or "full").strip().lower()
     if mode not in {"off", "minimal", "full"}:
@@ -288,6 +300,7 @@ def _get_or_create_session_id(
     title_hint: str,
     model_id: str,
     allow_create: bool,
+    tenant_id: str,
     force_new: bool = False,
 ) -> Optional[str]:
     if force_new:
@@ -296,16 +309,20 @@ def _get_or_create_session_id(
         title = _clean_session_title(title_hint)
         return cast(
             str,
-            _history_store.create_session(user_id=user_id, title=title, last_model=model_id),
+            _history_store.create_session(
+                user_id=user_id, title=title, last_model=model_id, tenant_id=tenant_id
+            ),
         )
 
     sid = (request.headers.get("X-Session-Id") or "").strip()
-    if sid and _history_store.session_exists(user_id=user_id, session_id=sid):
+    if sid and _history_store.session_exists(user_id=user_id, session_id=sid, tenant_id=tenant_id):
         return sid
     # 无显式会话时可按时间窗复用最近会话，避免外部客户端每轮新建会话
     reuse_minutes = int(getattr(settings, "chat_session_reuse_window_minutes", 15) or 0)
     if reuse_minutes > 0:
-        recent_sid = _history_store.get_recent_active_session_id(user_id=user_id, within_minutes=reuse_minutes)
+        recent_sid = _history_store.get_recent_active_session_id(
+            user_id=user_id, within_minutes=reuse_minutes, tenant_id=tenant_id
+        )
         if isinstance(recent_sid, str) and recent_sid:
             return recent_sid
     if not allow_create:
@@ -314,13 +331,15 @@ def _get_or_create_session_id(
     title = _clean_session_title(title_hint)
     return cast(
         str,
-        _history_store.create_session(user_id=user_id, title=title, last_model=model_id),
+        _history_store.create_session(user_id=user_id, title=title, last_model=model_id, tenant_id=tenant_id),
     )
 
 
-async def _maybe_unload_previous_model(*, user_id: str, session_id: str, current_model_id: str) -> None:
+async def _maybe_unload_previous_model(
+    *, user_id: str, session_id: str, current_model_id: str, tenant_id: str
+) -> None:
     try:
-        session = _history_store.get_session(user_id=user_id, session_id=session_id)
+        session = _history_store.get_session(user_id=user_id, session_id=session_id, tenant_id=tenant_id)
         last_model = (session or {}).get("last_model")
         if not last_model or last_model == current_model_id:
             return
@@ -343,16 +362,21 @@ def _collect_messages_for_model_selection(req: ChatCompletionRequest, request: R
         return messages_dict
 
     try:
+        tenant_id = _tenant_id(request)
         sid: Optional[str] = (request.headers.get("X-Session-Id") or "").strip()
-        if not sid or not _history_store.session_exists(user_id=user_id, session_id=sid):
+        if not sid or not _history_store.session_exists(user_id=user_id, session_id=sid, tenant_id=tenant_id):
             reuse_minutes = int(getattr(settings, "chat_session_reuse_window_minutes", 15) or 0)
             if reuse_minutes > 0:
-                sid = _history_store.get_recent_active_session_id(user_id=user_id, within_minutes=reuse_minutes)
+                sid = _history_store.get_recent_active_session_id(
+                    user_id=user_id, within_minutes=reuse_minutes, tenant_id=tenant_id
+                )
 
         if not sid:
             return messages_dict
 
-        session_messages = _history_store.list_messages(user_id=user_id, session_id=sid, limit=10)
+        session_messages = _history_store.list_messages(
+            user_id=user_id, session_id=sid, limit=10, tenant_id=tenant_id
+        )
         all_messages = session_messages + (messages_dict or [])
         seen_ids = set()
         unique_messages = []
@@ -616,12 +640,14 @@ def _prepare_chat_request_state(
 
     last_user_msg = next((msg for msg in reversed(req.messages) if msg.role == "user"), None)
     should_create_session = persistence_mode != "off" and bool(user_text)
+    tenant_id = _tenant_id(request)
     session_id = _get_or_create_session_id(
         request=request,
         user_id=user_id,
         title_hint=user_text,
         model_id=actual_model_id,
         allow_create=should_create_session,
+        tenant_id=tenant_id,
         force_new=force_new_session,
     )
     return (
@@ -717,6 +743,7 @@ def _handle_streaming_chat(
     request_id: Optional[str],
     conv_manager: ConversationManager,
     persist_success_turn: Callable[[str, bool], Optional[Any]],
+    tenant_id: str,
 ) -> StreamingResponse:
     use_gzip = bool(getattr(req, "stream_gzip", False))
     stream_format = _resolve_stream_format(req)
@@ -747,6 +774,7 @@ def _handle_streaming_chat(
         request_id=request_id,
         conv_manager=conv_manager,
         persist_success_turn=persist_success_turn,
+        tenant_id=tenant_id,
         stream_format=stream_format,
         use_gzip=use_gzip,
     )
@@ -867,6 +895,7 @@ def _stream_handle_client_disconnect(
     persistence_mode: str,
     request_id: Optional[str],
     conv_manager: ConversationManager,
+    tenant_id: str,
 ) -> None:
     model_id = cast(str, req.model)
     duration_ms = round((time.perf_counter() - stream_start) * 1000, 2)
@@ -903,6 +932,7 @@ def _stream_handle_client_disconnect(
                 model_id=model_id,
                 meta=rmeta,
                 request_id=f"{request_id}:assistant:incomplete" if request_id else None,
+                tenant_id=tenant_id,
             )
     except Exception as save_error:
         logger.warning(f"Failed to save incomplete message: {save_error}")
@@ -922,6 +952,7 @@ def _stream_handle_wall_clock_limit(
     request_id: Optional[str],
     conv_manager: ConversationManager,
     wall_seconds: float,
+    tenant_id: str,
 ) -> None:
     model_id = cast(str, req.model)
     duration_ms = round((time.perf_counter() - stream_start) * 1000, 2)
@@ -959,6 +990,7 @@ def _stream_handle_wall_clock_limit(
                 model_id=model_id,
                 meta=rmeta,
                 request_id=f"{request_id}:assistant:incomplete" if request_id else None,
+                tenant_id=tenant_id,
             )
     except Exception as save_error:
         logger.warning(f"Failed to save incomplete message (wall clock): {save_error}")
@@ -978,6 +1010,7 @@ def _stream_on_exception(
     persistence_mode: str,
     request_id: Optional[str],
     conv_manager: ConversationManager,
+    tenant_id: str,
     err: Exception,
     stream_format: str = "openai",
 ) -> list[str]:
@@ -1000,6 +1033,7 @@ def _stream_on_exception(
             persistence_mode=persistence_mode,
             request_id=request_id,
             conv_manager=conv_manager,
+            tenant_id=tenant_id,
         )
         return []
 
@@ -1047,6 +1081,7 @@ async def _stream_event_generator(
     request_id: Optional[str],
     conv_manager: ConversationManager,
     persist_success_turn: Callable[[str, bool], Optional[Any]],
+    tenant_id: str,
     stream_format: str = "openai",
     use_gzip: bool = False,
 ) -> AsyncIterator[str]:
@@ -1181,6 +1216,7 @@ async def _stream_event_generator(
                 request_id=request_id,
                 conv_manager=conv_manager,
                 wall_seconds=wall_limit_sec,
+                tenant_id=tenant_id,
             )
             err_body = "\nError: stream wall clock limit exceeded"
             err_sse = _stream_build_chunk(
@@ -1226,6 +1262,7 @@ async def _stream_event_generator(
                 persistence_mode=persistence_mode,
                 request_id=request_id,
                 conv_manager=conv_manager,
+                tenant_id=tenant_id,
             )
         elif client_disconnect_hard_stop:
             get_prometheus_business_metrics().observe_chat_stream_client_disconnect_stop()
@@ -1241,6 +1278,7 @@ async def _stream_event_generator(
                 persistence_mode=persistence_mode,
                 request_id=request_id,
                 conv_manager=conv_manager,
+                tenant_id=tenant_id,
             )
         else:
             await _stream_on_success(
@@ -1336,6 +1374,7 @@ async def _stream_event_generator(
             persistence_mode=persistence_mode,
             request_id=request_id,
             conv_manager=conv_manager,
+            tenant_id=tenant_id,
             err=e,
             stream_format=stream_format,
         ):
@@ -1460,8 +1499,11 @@ async def _prepare_chat_runtime_context(
     last_user_msg: Optional[LLMMessage],
     request_id: Optional[str],
     message_id: str,
+    tenant_id: str,
 ) -> tuple[Optional[str], int, Optional[dict[str, Any]]]:
-    await _prepare_chat_model_runtime(user_id=user_id, session_id=session_id, actual_model_id=actual_model_id)
+    await _prepare_chat_model_runtime(
+        user_id=user_id, session_id=session_id, actual_model_id=actual_model_id, tenant_id=tenant_id
+    )
     _persist_full_user_turn(
         user_id=user_id,
         session_id=session_id,
@@ -1469,8 +1511,15 @@ async def _prepare_chat_runtime_context(
         user_text=user_text,
         last_user_msg=last_user_msg,
         request_id=request_id,
+        tenant_id=tenant_id,
     )
-    safe_messages_dict = _build_safe_messages_dict(req=req, user_id=user_id, session_id=session_id, persistence_mode=persistence_mode)
+    safe_messages_dict = _build_safe_messages_dict(
+        req=req,
+        user_id=user_id,
+        session_id=session_id,
+        persistence_mode=persistence_mode,
+        tenant_id=tenant_id,
+    )
     req.messages = [LLMMessage(**m) for m in safe_messages_dict]
 
     return await _apply_rag_plugin_if_needed(
@@ -1481,12 +1530,15 @@ async def _prepare_chat_runtime_context(
     )
 
 
-async def _prepare_chat_model_runtime(*, user_id: str, session_id: Optional[str], actual_model_id: str) -> None:
+async def _prepare_chat_model_runtime(
+    *, user_id: str, session_id: Optional[str], actual_model_id: str, tenant_id: str
+) -> None:
     if session_id and get_auto_unload_local_model_on_switch():
         await _maybe_unload_previous_model(
             user_id=user_id,
             session_id=session_id,
             current_model_id=actual_model_id,
+            tenant_id=tenant_id,
         )
     try:
         from core.runtimes.factory import get_runtime_factory
@@ -1507,6 +1559,7 @@ def _persist_full_user_turn(
     user_text: str,
     last_user_msg: Optional[LLMMessage],
     request_id: Optional[str],
+    tenant_id: str,
 ) -> None:
     if not (persistence_mode == "full" and user_text and session_id):
         return
@@ -1517,6 +1570,7 @@ def _persist_full_user_turn(
         content=_sanitize_user_content(last_user_msg.content if last_user_msg else user_text),
         meta={"attachments": user_attachments} if user_attachments else None,
         request_id=f"{request_id}:user" if request_id else None,
+        tenant_id=tenant_id,
     )
 
 
@@ -1526,6 +1580,7 @@ def _build_safe_messages_dict(
     user_id: str,
     session_id: Optional[str],
     persistence_mode: str,
+    tenant_id: str,
 ) -> list[dict[str, Any]]:
     if persistence_mode == "full" and session_id:
         safe_messages_dict = conv_manager.build_llm_context(
@@ -1533,6 +1588,7 @@ def _build_safe_messages_dict(
             session_id=session_id,
             max_messages=req.max_history_messages,
             system_prompt=req.system_prompt,
+            tenant_id=tenant_id,
         )
     else:
         safe_messages_dict = [m.model_dump() for m in req.messages]
@@ -1559,6 +1615,7 @@ def _maybe_append_minimal_user_turn(
     request_id: Optional[str],
     user_text: str,
     last_user_msg: Optional[LLMMessage],
+    tenant_id: str,
 ) -> None:
     if not should_append:
         return
@@ -1568,6 +1625,7 @@ def _maybe_append_minimal_user_turn(
         content=_sanitize_user_content(last_user_msg.content if last_user_msg else user_text),
         meta=_build_user_message_meta(last_user_msg),
         request_id=f"{request_id}:user" if request_id else None,
+        tenant_id=tenant_id,
     )
 
 
@@ -1585,6 +1643,7 @@ def _build_persist_success_turn(
     trace_id: Optional[str],
     retrieved_count: int,
     rag_extra: Optional[dict[str, Any]] = None,
+    tenant_id: str,
 ) -> Callable[[str, bool], Optional[Any]]:
     model_id = cast(str, req.model)
 
@@ -1598,6 +1657,7 @@ def _build_persist_success_turn(
             request_id=request_id,
             user_text=user_text,
             last_user_msg=last_user_msg,
+            tenant_id=tenant_id,
         )
         rag_meta: dict[str, Any] = {
             "used": bool(trace_id),
@@ -1627,6 +1687,7 @@ def _build_persist_success_turn(
             model_id=model_id,
             meta=msg_meta,
             request_id=f"{request_id}:assistant" if request_id else None,
+            tenant_id=tenant_id,
         )
 
     return _persist_success_turn
@@ -1653,7 +1714,8 @@ async def chat_completions(
     """
     # 先获取用户ID（模型选择需要用到）
     user_id = _get_user_id(request)
-    
+    tenant_id = _tenant_id(request)
+
     actual_model_id = _resolve_model_for_request(req, request, user_id)
 
     logger.info(f"Received chat request: model={req.model} (actual={actual_model_id}), stream={req.stream}, max_tokens={req.max_tokens}")
@@ -1691,6 +1753,7 @@ async def chat_completions(
         last_user_msg=last_user_msg,
         request_id=request_id,
         message_id=message_id,
+        tenant_id=tenant_id,
     )
         
     # 5. 获取模型 Agent
@@ -1711,6 +1774,7 @@ async def chat_completions(
         trace_id=trace_id,
         retrieved_count=retrieved_count,
         rag_extra=rag_extra,
+        tenant_id=tenant_id,
     )
 
     if req.stream:
@@ -1730,6 +1794,7 @@ async def chat_completions(
             request_id=request_id,
             conv_manager=conv_manager,
             persist_success_turn=_persist_success_turn,
+            tenant_id=tenant_id,
         )
     return await _handle_nonstream_chat(
         req=req,

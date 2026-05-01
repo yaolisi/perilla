@@ -105,6 +105,7 @@ const {
   agentStepDefaultTimeoutSeconds,
   agentStepDefaultMaxRetries,
   agentStepDefaultRetryIntervalSeconds,
+  workflowSchedulerMaxConcurrency,
   workflowGovernanceHealthyThreshold,
   workflowGovernanceWarningThreshold,
   inferencePriorityPanelHighSloCriticalRate,
@@ -879,6 +880,36 @@ watch(
                         })
                       }}
                     </span>
+                  </div>
+                </div>
+              </div>
+              <div class="rounded-2xl border border-border/60 bg-background/40 p-5 space-y-5">
+                <div class="flex items-center gap-2">
+                  <Cpu class="w-4 h-4 text-sky-500" />
+                  <h3 class="text-sm font-semibold text-foreground">
+                    {{ t('settings.runtime.workflow_scheduler_title') }}
+                  </h3>
+                </div>
+                <p class="text-xs text-muted-foreground leading-relaxed">
+                  {{ t('settings.runtime.workflow_scheduler_desc') }}
+                </p>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <div class="space-y-2">
+                    <label for="workflow-scheduler-concurrency" class="text-sm font-medium text-foreground">
+                      {{ t('settings.runtime.workflow_scheduler_concurrency_label') }}
+                    </label>
+                    <Input
+                      id="workflow-scheduler-concurrency"
+                      v-model.number="workflowSchedulerMaxConcurrency"
+                      type="number"
+                      min="1"
+                      max="256"
+                      class="w-full h-12 bg-background border-border text-foreground rounded-xl px-4"
+                      @update:modelValue="isEditing = true"
+                    />
+                    <p class="text-xs text-muted-foreground">
+                      {{ t('settings.runtime.workflow_scheduler_concurrency_hint') }}
+                    </p>
                   </div>
                 </div>
               </div>

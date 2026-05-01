@@ -17,6 +17,7 @@ except ImportError:
 
 from .model_adapter import ModelAdapter
 from .internvl_adapter import _load_image, _extract_images_from_messages
+from .bnb_quant import try_bitsandbytes_config
 from .stream_hf import iterate_hf_generate_stream
 from core.system.runtime_settings import get_torch_stream_thread_join_timeout_sec
 
@@ -98,7 +99,17 @@ class QwenVLAdapter(ModelAdapter):
         
         torch_dtype_str = (options.get("torch_dtype") or options.get("dtype") or "float16").lower()
         self._torch_dtype = getattr(torch, torch_dtype_str, torch.float16)
-        self._device = options.get("device", "auto")
+        raw_dev = options.get("device", "auto")
+        if raw_dev == "auto":
+            if torch.cuda.is_available():
+                resolved_dev = "cuda"
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                resolved_dev = "mps"
+            else:
+                resolved_dev = "cpu"
+        else:
+            resolved_dev = str(raw_dev)
+        self._device = resolved_dev
         self._model_name = model_name
         try:
             self._max_image_side = int(options.get("max_image_side", self._max_image_side) or self._max_image_side)
@@ -108,6 +119,8 @@ class QwenVLAdapter(ModelAdapter):
             self._max_image_pixels = int(options.get("max_image_pixels", self._max_image_pixels) or self._max_image_pixels)
         except Exception:
             self._max_image_pixels = 1_572_864
+
+        bnb_cfg, use_dm = try_bitsandbytes_config(options, resolved_device=resolved_dev)
 
         self._processor = ProcessorClass.from_pretrained(model_name, trust_remote_code=True)
         
@@ -119,12 +132,15 @@ class QwenVLAdapter(ModelAdapter):
             except ImportError:
                 pass
         
+        fp: Dict[str, Any] = {"trust_remote_code": True}
+        if bnb_cfg is not None:
+            fp["quantization_config"] = bnb_cfg
+            fp["device_map"] = "auto"
+        else:
+            fp["torch_dtype"] = self._torch_dtype
+
         try:
-            self._model = ModelClass.from_pretrained(
-                model_name,
-                torch_dtype=self._torch_dtype,
-                trust_remote_code=True,
-            )
+            self._model = ModelClass.from_pretrained(model_name, **fp)
         except (ValueError, KeyError) as e:
             err_msg = str(e).lower()
             if use_qwen35 and ("qwen3_5" in err_msg or "does not recognize" in err_msg):
@@ -143,16 +159,8 @@ class QwenVLAdapter(ModelAdapter):
                     f"Qwen3-VL requires Qwen3VLForConditionalGeneration. "
                     f"Check transformers version or model files."
                 )
-        if self._device != "auto":
+        if not use_dm:
             self._model = self._model.to(self._device)
-        else:
-            # auto: CUDA > MPS > CPU
-            if torch.cuda.is_available():
-                self._model = self._model.to("cuda")
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                self._model = self._model.to("mps")
-            else:
-                self._model = self._model.to("cpu")
         self._model.eval()
 
     def _normalize_image(self, image: "Image.Image", *, max_side: Optional[int] = None, max_pixels: Optional[int] = None) -> "Image.Image":

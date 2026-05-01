@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -54,6 +55,21 @@ def bootstrap_env_files(backend_dir: Path) -> None:
                 os.environ.setdefault(key, value)
 
 
+def _cors_origin_looks_insecure_http(origin: str) -> bool:
+    """生产场景下浏览器源应为 https；允许 http://localhost / 127.0.0.1 供本地前端。"""
+    o = (origin or "").strip()
+    if not o or o == "*":
+        return False
+    low = o.lower()
+    if low.startswith("https://"):
+        return False
+    if not low.startswith("http://"):
+        return False
+    if "localhost" in low or "127.0.0.1" in low:
+        return False
+    return True
+
+
 def _normalize_roots(raw_roots: str) -> list[Path]:
     out: list[Path] = []
     for root in (raw_roots or "").split(","):
@@ -61,6 +77,140 @@ def _normalize_roots(raw_roots: str) -> list[Path]:
         if not trimmed:
             continue
         out.append(Path(trimmed).expanduser().resolve())
+    return out
+
+
+def _database_url_is_sqlite_or_memory(url: str) -> bool:
+    raw = (url or "").strip()
+    if not raw or "://" not in raw:
+        return False
+    scheme = raw.split("://", 1)[0].lower()
+    if scheme.startswith("sqlite"):
+        return True
+    return ":memory:" in raw.lower()
+
+
+def _database_url_appears_postgres_family(url: str) -> bool:
+    """生产库须为 PostgreSQL 族 DSN（postgresql* / postgres:// 等）。"""
+    if _database_url_is_sqlite_or_memory(url):
+        return False
+    raw = (url or "").strip()
+    if not raw or "://" not in raw:
+        return False
+    scheme = raw.split("://", 1)[0].lower()
+    return scheme.startswith("postgres")
+
+
+_TRIVIAL_DATABASE_PASSWORDS = frozenset(
+    {
+        "postgres",
+        "password",
+        "secret",
+        "changeme",
+        "admin",
+        "root",
+        "pass",
+        "123456",
+        "12345678",
+        "postgresql",
+        "mysql",
+        "sample",
+        "demo",
+    }
+)
+
+
+def _database_url_has_placeholder_password(url: str) -> bool:
+    """检测 PostgreSQL 族 URL 用户口令是否为常见默认/占位（urllib 解析 userinfo）。"""
+    raw = (url or "").strip()
+    if not raw or "://" not in raw:
+        return False
+    try:
+        from urllib.parse import urlparse, unquote
+
+        parsed = urlparse(raw)
+        pw = unquote(parsed.password or "")
+        if not pw:
+            return False
+        return pw.lower() in _TRIVIAL_DATABASE_PASSWORDS
+    except Exception:
+        return False
+
+
+_MIN_RBAC_API_KEY_SEGMENT_LEN = 12
+# 逗号分段键值完全匹配（大小写不敏感）；避免教程/示例占位串进入生产
+_WEAK_RBAC_API_KEY_TOKENS = frozenset(
+    {
+        "changeme",
+        "change-me",
+        "password",
+        "secret",
+        "admin",
+        "root",
+        "test",
+        "testing",
+        "example",
+        "demo",
+        "dummy",
+        "sample",
+        "placeholder",
+        "apikey",
+        "api-key",
+        "api_key",
+        "admin-key",
+        "adminkey",
+        "administrator",
+        "dev-key",
+        "devkey",
+        "test-key",
+        "testkey",
+        "sample-key",
+        "redacted",
+        "redacted-admin-key",
+        "token",
+        "your-token-here",
+        "insert-api-key",
+    }
+)
+
+
+def _rbac_api_keys_config_nonempty(s: object) -> bool:
+    """rbac_*_api_keys 为逗号分隔列表，任一片段非空即视为已配置。"""
+    for attr in ("rbac_admin_api_keys", "rbac_operator_api_keys", "rbac_viewer_api_keys"):
+        raw = str(getattr(s, attr, "") or "")
+        for part in raw.split(","):
+            if part.strip():
+                return True
+    return False
+
+
+def _rbac_api_key_strength_issues(s: object) -> list[str]:
+    """生产环境下 RBAC 密钥片段长度与占位符检测。"""
+    if not _rbac_api_keys_config_nonempty(s):
+        return []
+    out: list[str] = []
+    fields = (
+        ("RBAC_ADMIN_API_KEYS", "rbac_admin_api_keys"),
+        ("RBAC_OPERATOR_API_KEYS", "rbac_operator_api_keys"),
+        ("RBAC_VIEWER_API_KEYS", "rbac_viewer_api_keys"),
+    )
+    for label, attr in fields:
+        raw = str(getattr(s, attr, "") or "")
+        for part in raw.split(","):
+            seg = part.strip()
+            if not seg:
+                continue
+            low = seg.lower()
+            if len(seg) < _MIN_RBAC_API_KEY_SEGMENT_LEN:
+                out.append(
+                    f"{label}: each key segment must be at least "
+                    f"{_MIN_RBAC_API_KEY_SEGMENT_LEN} characters in production"
+                )
+            elif low in _WEAK_RBAC_API_KEY_TOKENS:
+                out.append(
+                    f"{label}: denylisted placeholder token not allowed in production "
+                    f"(replace with a strong secret)"
+                )
     return out
 
 
@@ -81,10 +231,41 @@ def apply_production_security_defaults(s: "Settings") -> list[str]:
     _set_true("rbac_enforcement")
     _set_true("tenant_enforcement_enabled")
     _set_true("tenant_api_key_binding_enabled")
+    # X-Content-Type-Options / X-Frame-Options / Referrer-Policy（HSTS 仍由配置显式开启）
+    _set_true("security_headers_enabled")
+    # 断连时停止上游生成，避免僵尸推理占用 GPU/配额（可按环境关闭）
+    _set_true("chat_stream_resume_cancel_upstream_on_disconnect")
     required_roots = (getattr(s, "production_file_read_required_roots", "") or "").strip()
     if required_roots and (getattr(s, "file_read_allowed_roots", "") or "").strip() != required_roots:
         setattr(s, "file_read_allowed_roots", required_roots)
         changes.append("file_read_allowed_roots")
+    # 0 = 不设上限（与 Ingress client_max_body_size 脱节）；生产收敛为 52MiB，可按需提高 HTTP_MAX_REQUEST_BODY_BYTES
+    _mb = int(getattr(s, "http_max_request_body_bytes", 0) or 0)
+    if _mb == 0:
+        setattr(s, "http_max_request_body_bytes", 52428800)
+        changes.append("http_max_request_body_bytes")
+    if bool(getattr(s, "inference_cache_enabled", False)) and not bool(
+        getattr(s, "health_ready_strict_inference_redis", False)
+    ):
+        setattr(s, "health_ready_strict_inference_redis", True)
+        changes.append("health_ready_strict_inference_redis")
+    _arl_u = (getattr(s, "api_rate_limit_redis_url", "") or "").strip()
+    if (
+        bool(getattr(s, "api_rate_limit_enabled", False))
+        and int(getattr(s, "api_rate_limit_requests", 0) or 0) > 0
+        and bool(_arl_u)
+        and not bool(getattr(s, "health_ready_strict_api_rate_limit_redis", False))
+    ):
+        setattr(s, "health_ready_strict_api_rate_limit_redis", True)
+        changes.append("health_ready_strict_api_rate_limit_redis")
+    if (
+        bool(getattr(s, "api_rate_limit_enabled", False))
+        and int(getattr(s, "api_rate_limit_requests", 0) or 0) > 0
+        and bool(_arl_u)
+        and not bool(getattr(s, "api_rate_limit_redis_fail_closed", False))
+    ):
+        setattr(s, "api_rate_limit_redis_fail_closed", True)
+        changes.append("api_rate_limit_redis_fail_closed")
     return changes
 
 
@@ -120,8 +301,168 @@ def validate_production_security_guardrails(s: "Settings") -> list[str]:
                 )
     if (getattr(s, "cors_allowed_origins", "") or "").strip() == "":
         issues.append("cors_allowed_origins must be explicitly configured in production")
+    elif not getattr(s, "debug", True):
+        _cors_raw = (getattr(s, "cors_allowed_origins", "") or "")
+        _cors_handled = False
+        for _co in _cors_raw.split(","):
+            if _co.strip() == "*":
+                issues.append(
+                    "cors_allowed_origins must not include '*' in production; "
+                    "use explicit https:// origins for browser clients"
+                )
+                _cors_handled = True
+                break
+        if not _cors_handled:
+            for _co in _cors_raw.split(","):
+                seg = _co.strip()
+                if _cors_origin_looks_insecure_http(seg):
+                    issues.append(
+                        f"cors_allowed_origins must use https:// for non-local browser origins in production (got {seg!r}); "
+                        "http://localhost and http://127.0.0.1 are allowed for local frontends"
+                    )
+                    break
+    if not getattr(s, "debug", True):
+        th = (getattr(s, "trusted_hosts", "") or "").strip()
+        if not th:
+            issues.append(
+                "trusted_hosts must be set in production (comma-separated allowed Host headers); set TRUSTED_HOSTS"
+            )
+    raw_db_url = (getattr(s, "database_url", "") or "").strip()
+    if not raw_db_url:
+        issues.append(
+            "database_url must be set (PostgreSQL) for production; SQLite fallback is single-process only"
+        )
+    elif _database_url_is_sqlite_or_memory(raw_db_url):
+        issues.append(
+            "database_url must not use SQLite or in-memory DSN in production (not safe for multi-replica)"
+        )
+    elif raw_db_url and not _database_url_appears_postgres_family(raw_db_url):
+        issues.append(
+            "database_url must use PostgreSQL in production (postgresql+psycopg2 / postgresql+asyncpg / postgres://)"
+        )
+    if raw_db_url and _database_url_appears_postgres_family(raw_db_url):
+        if _database_url_has_placeholder_password(raw_db_url):
+            issues.append(
+                "database_url uses a trivial/default PostgreSQL password; rotate credentials in production "
+                "(avoid well-known literals in the DSN userinfo)"
+            )
+    ek_url = (
+        str(getattr(s, "execution_kernel_db_url", "") or "").strip()
+        or (os.environ.get("EXECUTION_KERNEL_DB_URL") or "").strip()
+    )
+    if ek_url:
+        if _database_url_is_sqlite_or_memory(ek_url):
+            issues.append(
+                "EXECUTION_KERNEL_DB_URL must not use SQLite or in-memory DSN in production when set"
+            )
+        elif not _database_url_appears_postgres_family(ek_url):
+            issues.append(
+                "EXECUTION_KERNEL_DB_URL must use PostgreSQL when set in production"
+            )
+        elif _database_url_has_placeholder_password(ek_url):
+            issues.append(
+                "EXECUTION_KERNEL_DB_URL uses a trivial/default PostgreSQL password in production when set"
+            )
     if getattr(s, "tool_net_http_enabled", False) and (getattr(s, "tool_net_http_allowed_hosts", "") or "").strip() == "":
         issues.append("tool_net_http_allowed_hosts must be set when tool_net_http_enabled=True in production")
+    if not getattr(s, "debug", True):
+        lf = str(getattr(s, "log_format", "") or "text").strip().lower()
+        if lf != "json":
+            issues.append(
+                "log_format must be 'json' in production for structured logging (set LOG_FORMAT=json)"
+            )
+    if bool(getattr(s, "event_bus_enabled", False)):
+        backend = str(getattr(s, "event_bus_backend", "redis") or "redis").strip().lower()
+        if backend == "kafka":
+            bootstrap = str(getattr(s, "event_bus_kafka_bootstrap_servers", "") or "").strip()
+            if not bootstrap:
+                issues.append(
+                    "event_bus_kafka_bootstrap_servers must be set when event_bus_enabled=True and event_bus_backend=kafka"
+                )
+        elif backend == "redis":
+            redis_url = str(getattr(s, "event_bus_redis_url", "") or "").strip()
+            if not redis_url:
+                issues.append(
+                    "event_bus_redis_url must be set when event_bus_enabled=True and event_bus_backend=redis"
+                )
+    if not getattr(s, "debug", True) and bool(getattr(s, "event_bus_enabled", False)):
+        if not bool(getattr(s, "event_bus_strict_startup", False)):
+            issues.append(
+                "event_bus_strict_startup must be True in production when event_bus_enabled=True "
+                "(set EVENT_BUS_STRICT_STARTUP=true so misconfigured Redis/Kafka fails startup)"
+            )
+    if bool(getattr(s, "health_ready_strict_event_bus", False)) and not bool(
+        getattr(s, "event_bus_enabled", False)
+    ):
+        issues.append(
+            "health_ready_strict_event_bus has no effect when event_bus_enabled=False; unset strict flag or enable event bus"
+        )
+    if bool(getattr(s, "health_ready_strict_inference_redis", False)) and not bool(
+        getattr(s, "inference_cache_enabled", False)
+    ):
+        issues.append(
+            "health_ready_strict_inference_redis has no effect when inference_cache_enabled=False; unset strict flag or disable unused strict mode"
+        )
+    if bool(getattr(s, "health_ready_strict_api_rate_limit_redis", False)):
+        arl_url = str(getattr(s, "api_rate_limit_redis_url", "") or "").strip()
+        if not arl_url:
+            issues.append(
+                "health_ready_strict_api_rate_limit_redis has no effect without api_rate_limit_redis_url; "
+                "set API_RATE_LIMIT_REDIS_URL or unset strict flag"
+            )
+    if getattr(s, "audit_log_enabled", False):
+        raw_audit = (getattr(s, "audit_log_path_prefixes", "") or "").strip()
+        for part in raw_audit.split(","):
+            if part.strip() == "/":
+                issues.append(
+                    "audit_log_path_prefixes must not include '/' alone (would audit every HTTP path)"
+                )
+                break
+    if (
+        not getattr(s, "debug", True)
+        and bool(getattr(s, "rbac_enabled", False))
+        and not _rbac_api_keys_config_nonempty(s)
+    ):
+        issues.append(
+            "rbac_enabled=True in production requires at least one key in "
+            "RBAC_ADMIN_API_KEYS, RBAC_OPERATOR_API_KEYS, or RBAC_VIEWER_API_KEYS (comma-separated); "
+            "see rbac_default_role for unauthenticated behavior"
+        )
+    if not getattr(s, "debug", True) and bool(getattr(s, "rbac_enabled", False)):
+        role = str(getattr(s, "rbac_default_role", "operator") or "").strip().lower()
+        if role == "operator":
+            issues.append(
+                "rbac_default_role must not be 'operator' in production when rbac_enabled=True "
+                "(unauthenticated requests inherit this role); set RBAC_DEFAULT_ROLE=viewer "
+                "unless you intentionally grant anonymous operator access"
+            )
+        if _rbac_api_keys_config_nonempty(s):
+            issues.extend(_rbac_api_key_strength_issues(s))
+    if not getattr(s, "debug", True) and bool(getattr(s, "openapi_public_enabled", False)):
+        issues.append(
+            "openapi_public_enabled=True exposes /docs, /redoc and /openapi.json in production; "
+            "set OPENAPI_PUBLIC_ENABLED=false or restrict at ingress"
+        )
+    if not getattr(s, "debug", True) and not bool(getattr(s, "data_redaction_enabled", True)):
+        issues.append(
+            "data_redaction_enabled=False disables structured log/data redaction in production; "
+            "set DATA_REDACTION_ENABLED=true"
+        )
+    if not getattr(s, "debug", True) and bool(getattr(s, "workflow_allow_draft_execution", False)):
+        issues.append(
+            "workflow_allow_draft_execution=True allows unpublished draft workflow execution in production; "
+            "set WORKFLOW_ALLOW_DRAFT_EXECUTION=false"
+        )
+    if not getattr(s, "debug", True) and bool(getattr(s, "workflow_allow_latest_subworkflow_in_production", False)):
+        issues.append(
+            "workflow_allow_latest_subworkflow_in_production=True resolves subworkflows to floating 'latest' in production; "
+            "set WORKFLOW_ALLOW_LATEST_SUBWORKFLOW_IN_PRODUCTION=false"
+        )
+    if not getattr(s, "debug", True) and bool(getattr(s, "tool_system_env_allow_all", False)):
+        issues.append(
+            "tool_system_env_allow_all=True exposes all process environment variables via the system.env tool in production; "
+            "set TOOL_SYSTEM_ENV_ALLOW_ALL=false"
+        )
     return issues
 
 
@@ -135,7 +476,54 @@ class Settings(BaseSettings):
     # 服务器
     host: str = "0.0.0.0"
     port: int = 8000
-    
+    # 仅 `python main.py` 直连 uvicorn 时生效；None 表示使用 uvicorn 默认。生产可与 K8s terminationGracePeriodSeconds 对齐。
+    uvicorn_timeout_graceful_shutdown_seconds: Optional[int] = Field(default=None, ge=1, le=600)
+    # 仅 python main.py 直连 uvicorn；None=默认 5s。流式/SSE 长连接可适度调大，并与反代 keepalive 协同
+    uvicorn_timeout_keep_alive_seconds: Optional[int] = Field(default=None, ge=1, le=300)
+    # 仅 python main.py 直连 uvicorn：是否信任代理头（X-Forwarded-Proto / X-Forwarded-For）；置于 Ingress 后通常为 True；直连公网且无反代可 False
+    uvicorn_proxy_headers: bool = True
+    # 可信上游 IP/CIDR（逗号分隔），传给 uvicorn forwarded_allow_ips。为空时不覆盖，沿用环境变量 FORWARDED_ALLOW_IPS（uvicorn 未设置 env 时默认为 127.0.0.1）。置于 K8s Ingress 后常需列入 Ingress Controller Pod 网段或 “*”（仅在可信链前置）
+    uvicorn_forwarded_allow_ips: str = ""
+    # 仅 python main.py：限制活跃连接数（uvicorn limit_concurrency）；None=不限制。高并发可与反代 worker 协同设上限防拖垮
+    uvicorn_limit_concurrency: Optional[int] = Field(default=None, ge=1, le=1_000_000)
+    # 仅 python main.py：进程处理若干请求后退出 worker（uvicorn limit_max_requests，缓解内存碎片）；None=不启用
+    uvicorn_limit_max_requests: Optional[int] = Field(default=None, ge=1, le=1_000_000_000)
+    # 仅 python main.py：是否响应 Server 头（关闭可降低指纹；反代可能已覆盖）
+    uvicorn_server_header: bool = True
+    # 仅 python main.py：h11 不完整事件上限字节（缓解慢连接；None=uvicorn/h11 默认）
+    uvicorn_h11_max_incomplete_event_size: Optional[int] = Field(default=None, ge=256, le=16_777_216)
+    # 仅 python main.py：是否输出 uvicorn access log（极高 QPS 或已由反代采集时可 false）
+    uvicorn_access_log: bool = True
+    # 仅 python main.py：监听 backlog（内核未完成三次握手队列）；None=uvicorn 默认（常为 2048）
+    uvicorn_backlog: Optional[int] = Field(default=None, ge=64, le=65535)
+    # 仅 python main.py：单帧 WebSocket 消息上限字节（None=uvicorn 默认 16MiB）；生产可酌情调低缓解恶意大包内存压力
+    uvicorn_ws_max_size: Optional[int] = Field(default=None, ge=1024, le=1_073_741_824)
+    # 仅 python main.py：与 limit_max_requests 配套的随机抖动上限，减轻多 worker 同时退出（None=uvicorn 默认）
+    uvicorn_limit_max_requests_jitter: Optional[int] = Field(default=None, ge=0, le=1_000_000)
+    # 仅 python main.py：是否发送 HTTP Date 响应头（False 略减指纹）
+    uvicorn_date_header: bool = True
+    # 仅 python main.py：WebSocket ping 间隔秒（None=uvicorn 默认 20）；宜小于 Ingress idle_timeout，减少长连接被静默断开
+    uvicorn_ws_ping_interval_seconds: Optional[float] = Field(default=None, ge=0.0, le=86400.0)
+    # 仅 python main.py：WebSocket ping 超时秒（None=uvicorn 默认 20）
+    uvicorn_ws_ping_timeout_seconds: Optional[float] = Field(default=None, ge=0.0, le=86400.0)
+    # 仅 python main.py：worker 健康检查超时秒（None=uvicorn 默认 5）；仅多 worker 场景常用
+    uvicorn_timeout_worker_healthcheck_seconds: Optional[int] = Field(default=None, ge=1, le=600)
+    # HTTP 请求体上限（字节），仅当请求携带 Content-Length 时校验；0=不限制（请与 Ingress / 反代上限协同）
+    http_max_request_body_bytes: int = Field(default=0, ge=0, le=5368709120)
+    # 生产（debug=false）是否挂载 /docs、/redoc、/openapi.json；开发不受此项限制（debug=true 始终挂载）
+    openapi_public_enabled: bool = False
+    # 为响应追加安全头（默认关闭；空字符串表示不发送对应头，便于 iframe / 自定义策略）
+    security_headers_enabled: bool = False
+    security_headers_x_content_type_options: str = "nosniff"
+    security_headers_x_frame_options: str = "DENY"
+    security_headers_referrer_policy: str = "strict-origin-when-cross-origin"
+    # 非空时设置 Strict-Transport-Security（仅应在全站 HTTPS 终端启用；空表示不发送）
+    security_headers_strict_transport_security: str = ""
+    # 逗号分隔的 Host 头白名单（如 api.example.com,*.example.com）；非空则挂载 TrustedHostMiddleware。生产门禁 debug=false 时必填。
+    trusted_hosts: str = ""
+    # 为 True 时：健康/指标路径跳过 Host 校验（Kubelet 探针常为 Pod IP）；设 False 则所有路径均校验（探针须配置 httpHeaders.Host 或列入 TRUSTED_HOSTS）
+    trusted_host_exempt_ops_paths: bool = True
+
     # 模型配置
     default_model: str = "llama-3-70b-instruct"
     
@@ -150,10 +538,18 @@ class Settings(BaseSettings):
     db_path: str = ""  # 为空则使用默认 backend/data/platform.db
     # 生产环境可通过 DATABASE_URL 切换 PostgreSQL（示例：postgresql+psycopg2://user:pass@host:5432/dbname）
     database_url: str = ""
+    # 可选：execution_kernel 专用 DB（通常为 postgresql+asyncpg）；为空则复用 DATABASE_URL / 默认 platform.db（EXECUTION_KERNEL_DB_URL）
+    execution_kernel_db_url: str = ""
     # 连接池参数（适配 10+ 并发）
     db_pool_size: int = 10
     db_max_overflow: int = 20
     db_pool_recycle_seconds: int = 1800
+    # 从池中获取连接的最大等待（秒）；PostgreSQL 等池化后端生效，SQLite 文件库通常不显式传入
+    db_pool_timeout_seconds: float = Field(default=30.0, ge=1.0, le=600.0)
+    # PostgreSQL：TCP 连接超时（秒）；仅非 SQLite 时注入 psycopg2/asyncpg
+    db_connect_timeout_seconds: int = Field(default=10, ge=1, le=120)
+    # PostgreSQL：语句超时（毫秒），0 表示不通过连接参数覆盖（使用服务端默认）
+    db_statement_timeout_ms: int = Field(default=60000, ge=0, le=86400000)
 
     # 文件读取工具：允许的绝对路径根目录（逗号分隔）。在此列表下的绝对路径可被 file.read 读取。
     # 例如："/" 表示允许本机任意目录；"/Users/tony,/data" 表示仅允许这两棵目录。
@@ -225,6 +621,8 @@ class Settings(BaseSettings):
     inference_cache_prefix: str = "perilla:inference"
     # 启动时将 Redis 中旧前缀 openvitamin:* SCAN+RENAME 到当前 inference/event/kbvec 配置前缀（幂等）
     redis_legacy_openvitamin_prefix_migrate_on_startup: bool = True
+    # True：推理缓存、事件总线、KB 向量快照等使用 Redis Cluster 客户端（URL 指向任一可访问节点即可）
+    redis_cluster_mode: bool = False
     # L1: 内存缓存（优先读）+ Redis（次级回源）
     inference_cache_memory_enabled: bool = True
     inference_cache_memory_max_entries: int = 2048
@@ -259,7 +657,7 @@ class Settings(BaseSettings):
     embedding_cache_ttl_seconds: int = 86400
     # 事件总线（跨模块异步通信）
     event_bus_enabled: bool = False
-    event_bus_backend: str = "redis"  # redis | inprocess
+    event_bus_backend: str = "redis"  # redis | kafka | inprocess
     event_bus_redis_url: str = "redis://127.0.0.1:6379/1"
     event_bus_channel_prefix: str = "perilla:event"
     event_bus_handler_retry_attempts: int = 1
@@ -267,6 +665,25 @@ class Settings(BaseSettings):
     event_bus_dlq_max_items: int = 200
     event_bus_replay_max_batch: int = 100
     event_bus_replay_min_interval_ms: int = 1000
+    # Kafka 事件总线（需 pip install aiokafka；event_bus_backend=kafka 且配置 bootstrap）
+    event_bus_kafka_bootstrap_servers: str = ""
+    event_bus_kafka_topic_prefix: str = "perilla.events"
+    event_bus_kafka_consumer_group: str = "perilla-event-bus"
+    # 启动时对 Kafka bootstrap 做 TCP 连通探测（仅 backend=kafka 且已配置 bootstrap）；秒
+    event_bus_kafka_ping_timeout_seconds: float = Field(default=3.0, gt=0, le=120)
+    # 为 True 时：配置的跨进程后端（redis/kafka）若未挂载到 composite bus（初始化失败等），启动直接失败
+    event_bus_strict_startup: bool = False
+    # 启动时对 EVENT_BUS_REDIS_URL 做 PING（仅 backend=redis）；超时秒数
+    event_bus_redis_ping_timeout_seconds: float = Field(default=2.0, gt=0, le=120)
+    # 为 True 时：/api/health/ready 在事件总线降级时返回 HTTP 503（便于编排 readiness 摘流量）
+    health_ready_strict_event_bus: bool = False
+    # 为 True 且 inference_cache_enabled：推理缓存 Redis PING 失败时 /ready 返回 503（生产共池 Redis 时常开）
+    health_ready_strict_inference_redis: bool = False
+    health_ready_inference_redis_ping_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    # False：非 strict 时不做推理缓存 PING（降负载）；strict 仍会 PING
+    health_ready_inference_redis_probe_enabled: bool = True
+    # 非 strict 时复用最近一次 PING 结果（秒），减轻大规模副本下对 Redis 的 QPS；0 表示每次请求都 PING
+    health_ready_inference_redis_probe_cache_seconds: float = Field(default=5.0, ge=0, le=120)
     # MCP Streamable HTTP：GET SSE 上服务端推送是否发到事件总线（mcp.streamable.server_rpc，仅摘要payload）
     mcp_http_emit_server_push_events: bool = True
     # 知识库向量索引 Redis 快照（用于重启后快速恢复向量表）
@@ -321,6 +738,8 @@ class Settings(BaseSettings):
     # 启动时将超过该阈值的 running 会话标记为 error（秒）
     agent_stale_running_session_seconds: int = 1800
 
+    # execution_kernel 调度器：单实例内 DAG 可并行节点同时执行上限（与 Agent 并行上限取 min）
+    workflow_scheduler_max_concurrency: int = Field(default=10, ge=1, le=256)
     # Workflow wait=true 同步等待超时（秒）
     workflow_wait_timeout_seconds: int = 120
     # Workflow wait=true 允许的最大超时上限（秒）
@@ -454,8 +873,21 @@ class Settings(BaseSettings):
     api_rate_limit_window_seconds: int = 60
     # 单用户并发请求上限（防止个别用户占满资源）
     api_rate_limit_user_max_concurrent_requests: int = 5
-    # 限流身份优先级：API Key Header > X-Forwarded-For > Client IP
+    # 限流身份优先级：API Key Header >（若启用）X-Forwarded-For 首跳 > Client IP
+    # 直连公网或未信任反代时设为 false，避免客户端伪造 X-Forwarded-For 绕过限流；审计日志 client_ip 与同开关一致
+    api_rate_limit_trust_x_forwarded_for: bool = True
     api_rate_limit_api_key_header: str = "X-Api-Key"
+    # 非空时使用 Redis 共池限流（多副本）；为空则仅进程内计数
+    api_rate_limit_redis_url: str = ""
+    # Redis 键前缀（ standalone / cluster 均适用）
+    api_rate_limit_redis_key_prefix: str = "perilla:ratelimit"
+    # 为 True 且配置了 Redis URL：Redis 故障时不放行请求，返回 503（默认 False：fail-open）
+    api_rate_limit_redis_fail_closed: bool = False
+    api_rate_limit_redis_ping_timeout_seconds: float = Field(default=2.0, gt=0, le=120)
+    # /ready 中对 API 限流 Redis 做 PING（与 fail_closed 正交；可与 inference Redis 分开实例）
+    health_ready_strict_api_rate_limit_redis: bool = False
+    health_ready_api_rate_limit_redis_probe_enabled: bool = True
+    health_ready_api_rate_limit_redis_probe_cache_seconds: float = Field(default=5.0, ge=0, le=300)
 
     # ---------- RBAC（平台角色，与 Workflow ACL 正交）----------
     rbac_enabled: bool = False
@@ -526,7 +958,27 @@ class Settings(BaseSettings):
     )
     data_redaction_mask_keep_prefix: int = 4
     data_redaction_mask_keep_suffix: int = 4
-    
+
+    @field_validator("log_format")
+    @classmethod
+    def _validate_log_format(cls, v: object) -> str:
+        s = str(v or "text").strip().lower()
+        if s not in ("text", "json"):
+            raise ValueError("log_format must be 'text' or 'json'")
+        return s
+
+    @field_validator("prometheus_metrics_path")
+    @classmethod
+    def _validate_prometheus_metrics_path(cls, v: object) -> str:
+        s = str(v or "/metrics").strip() or "/metrics"
+        if not s.startswith("/"):
+            raise ValueError("prometheus_metrics_path must start with /")
+        if ".." in s:
+            raise ValueError("prometheus_metrics_path must not contain '..'")
+        if any(c in s for c in "\n\r\0"):
+            raise ValueError("prometheus_metrics_path contains invalid characters")
+        return s
+
     model_config = SettingsConfigDict(env_file=".env")
 
     def model_post_init(self, __context: object) -> None:

@@ -1,0 +1,30 @@
+# 可选：默认拒绝入站时，放行同命名空间流量与监控命名空间抓取（Prometheus / VictoriaMetrics）。
+# 合并前请按集群调整 namespace 标签、端口与 Pod 标签；未启用 NetworkPolicy 的集群可忽略。
+# 关联示例：backend-deployment.example.yaml、networkpolicy-backend-egress.example.yaml、service-servicemonitor.example.yaml、vm-servicescrape.example.yaml
+# Helm：deploy/helm/perilla-backend（--set networkPolicy.ingress.enabled=true）。
+#
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: perilla-backend-ingress
+  labels:
+    app: perilla-backend
+spec:
+  podSelector:
+    matchLabels:
+      app: perilla-backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000

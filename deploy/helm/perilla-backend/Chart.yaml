@@ -1,0 +1,6 @@
+apiVersion: v2
+name: perilla-backend
+description: Perilla API backend（示例 Helm Chart，与 deploy/k8s/*.example.yaml 对齐）
+type: application
+version: 0.40.10
+appVersion: "1.0.0"

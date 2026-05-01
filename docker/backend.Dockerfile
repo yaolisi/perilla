@@ -18,8 +18,14 @@ RUN pip install --upgrade pip \
 
 COPY backend/ /app/backend/
 
-RUN mkdir -p /app/backend/data /app/backend/logs
+RUN mkdir -p /app/backend/data /app/backend/logs \
+    && groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid appuser --home /app/backend --shell /usr/sbin/nologin appuser \
+    && chown -R appuser:appuser /app/backend
+
+USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 使用 python main.py，使 Settings 中的 uvicorn_*（代理头、并发上限、关停超时等）传入 uvicorn.run，与 Helm 注入的 UVICORN_* / FORWARDED_ALLOW_IPS 一致
+CMD ["python", "main.py"]

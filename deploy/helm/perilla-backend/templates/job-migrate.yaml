@@ -1,0 +1,36 @@
+{{- if .Values.migrateJob.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "perilla-backend.fullname" . }}-migrate
+  labels:
+    {{- include "perilla-backend.labels" . | nindent 4 }}
+spec:
+  ttlSecondsAfterFinished: {{ .Values.migrateJob.ttlSecondsAfterFinished }}
+  backoffLimit: {{ .Values.migrateJob.backoffLimit }}
+  template:
+    spec:
+      restartPolicy: OnFailure
+      {{- if or .Values.serviceAccount.create .Values.serviceAccount.name }}
+      serviceAccountName: {{ include "perilla-backend.serviceAccountName" . }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: alembic
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: /app/backend
+          command:
+            {{- toYaml .Values.migrateJob.command | nindent 12 }}
+          {{- if .Values.secretEnvFrom.enabled }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secretEnvFrom.name }}
+                optional: {{ .Values.secretEnvFrom.optional }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+{{- end }}

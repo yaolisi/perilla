@@ -20,13 +20,16 @@ try:
 except ImportError:
     pass
 
+import time
 import uvicorn
 from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.gzip import GZipMiddleware
+from middleware.trusted_host import SelectiveTrustedHostMiddleware, trusted_host_exempt_path_predicate
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import asyncio
+import os
 
 from log import logger, setup_logger
 from config.settings import settings
@@ -81,13 +84,25 @@ def _configure_prometheus_metrics(app: FastAPI) -> None:
         logger.info("[Metrics] Prometheus disabled by settings")
         return
     try:
+        from middleware.ops_paths import get_prometheus_metrics_path
         from prometheus_fastapi_instrumentator import Instrumentator
 
-        endpoint = str(getattr(settings, "prometheus_metrics_path", "/metrics") or "/metrics")
+        endpoint = get_prometheus_metrics_path()
+        # 与 ops_paths 一致：探针 + 指标端点不进入默认 http 请求指标，避免 scrape/探针刷高基线
+        excluded = list(
+            dict.fromkeys(
+                (
+                    "/api/health",
+                    "/api/health/live",
+                    "/api/health/ready",
+                    endpoint,
+                )
+            )
+        )
         Instrumentator(
             should_group_status_codes=True,
             should_ignore_untemplated=True,
-            excluded_handlers=["/api/health", "/api/health/live", "/api/health/ready"],
+            excluded_handlers=excluded,
         ).instrument(app).expose(app, endpoint=endpoint, include_in_schema=False)
         logger.info("[Metrics] Prometheus endpoint enabled at %s", endpoint)
     except Exception as e:
@@ -120,14 +135,106 @@ def _apply_security_baseline() -> None:
             )
     if getattr(settings, "debug", True):
         return
+    _log_production_operational_warnings()
+
+
+def _log_production_operational_warnings() -> None:
+    """生产环境（debug=False）下的运维建议；不阻断启动。由 _apply_security_baseline 在 return 前调用。"""
     if (getattr(settings, "cors_allowed_origins", "") or "").strip() == "":
         logger.warning("[SecurityBaseline] cors_allowed_origins is empty in production; avoid wildcard CORS.")
+    _cors_parts = [x.strip() for x in (getattr(settings, "cors_allowed_origins", "") or "").split(",") if x.strip()]
+    if any(p == "*" for p in _cors_parts):
+        logger.warning(
+            "[SecurityBaseline] CORS includes origin '*': allow_credentials is off in the gateway; "
+            "for browser + cookies use explicit https://... origins, not a wildcard."
+        )
     if getattr(settings, "file_read_allowed_roots", "").strip() == "/":
         logger.warning("[SecurityBaseline] file_read_allowed_roots='/' in production; narrow this allowlist.")
     if getattr(settings, "tool_net_http_enabled", False):
         logger.warning("[SecurityBaseline] tool_net_http_enabled=True in production; verify outbound policy.")
     if getattr(settings, "tool_net_web_enabled", False):
         logger.warning("[SecurityBaseline] tool_net_web_enabled=True in production; verify privacy policy.")
+    if (
+        getattr(settings, "api_rate_limit_enabled", True)
+        and int(getattr(settings, "api_rate_limit_requests", 0) or 0) > 0
+        and not (getattr(settings, "api_rate_limit_redis_url", "") or "").strip()
+    ):
+        logger.warning(
+            "[SecurityBaseline] api_rate_limit_redis_url is empty while API rate limiting is enabled: "
+            "limits apply per process only; set API_RATE_LIMIT_REDIS_URL for consistent enforcement across replicas."
+        )
+    _csrf_secure_effective = bool(
+        getattr(settings, "csrf_cookie_secure", False)
+        or not bool(getattr(settings, "debug", True))
+    )
+    if getattr(settings, "csrf_enabled", True) and not _csrf_secure_effective:
+        logger.warning(
+            "[SecurityBaseline] CSRF cookies would be sent without Secure flag (csrf_cookie_secure=False "
+            "and debug=True); set CSRF_COOKIE_SECURE=true for HTTPS or use DEBUG=false so cookies are Secure."
+        )
+    if not getattr(settings, "csrf_enabled", True):
+        logger.warning(
+            "[SecurityBaseline] csrf_enabled=False in production; unsafe HTTP methods are not CSRF double-submit "
+            "protected (only suitable for machine-only APIs without browser cookie sessions)."
+        )
+    if getattr(settings, "openapi_public_enabled", False):
+        logger.warning(
+            "[SecurityBaseline] OPENAPI_PUBLIC_ENABLED=true: /docs, /redoc and /openapi.json are exposed; "
+            "restrict at ingress or set to false."
+        )
+    if not getattr(settings, "security_headers_enabled", False):
+        logger.warning(
+            "[SecurityBaseline] security_headers_enabled=False in production; "
+            "enable SECURITY_HEADERS_ENABLED and set HSTS/referrer/frame headers for browser-facing deployments."
+        )
+    if (getattr(settings, "trusted_hosts", "") or "").strip() and not getattr(
+        settings, "trusted_host_exempt_ops_paths", True
+    ):
+        logger.warning(
+            "[SecurityBaseline] trusted_host_exempt_ops_paths=false with TRUSTED_HOSTS set: "
+            "Kubernetes probes must send a matching Host header (httpGet.httpHeaders) or include probe IPs/DNS in TRUSTED_HOSTS."
+        )
+    _fwd_cfg = (getattr(settings, "uvicorn_forwarded_allow_ips", "") or "").strip()
+    _fwd_env = (os.environ.get("FORWARDED_ALLOW_IPS") or "").strip()
+    _fwd_eff = _fwd_cfg or _fwd_env
+    if _fwd_eff == "*" and bool(getattr(settings, "uvicorn_proxy_headers", True)):
+        logger.warning(
+            "[SecurityBaseline] forwarded allow IPs are '*' (FORWARDED_ALLOW_IPS or UVICORN_FORWARDED_ALLOW_IPS); "
+            "only safe behind a trusted reverse proxy or private network."
+        )
+    if not getattr(settings, "data_redaction_enabled", True):
+        logger.warning(
+            "[SecurityBaseline] data_redaction_enabled=False in production; structured logs may retain sensitive fields "
+            "(set DATA_REDACTION_ENABLED=true unless you fully trust log sinks and retention)."
+        )
+    if getattr(settings, "tool_system_env_enabled", False):
+        logger.warning(
+            "[SecurityBaseline] tool_system_env_enabled=True: scope TOOL_SYSTEM_ENV_ALLOWED_NAMES tightly; "
+            "never set TOOL_SYSTEM_ENV_ALLOW_ALL=true in production (guardrails block allow-all)."
+        )
+    if not getattr(settings, "audit_log_enabled", False):
+        logger.warning(
+            "[SecurityBaseline] audit_log_enabled=False in production; control-plane mutations may lack audit trail "
+            "(enable AUDIT_LOG_ENABLED and tune AUDIT_LOG_PATH_PREFIXES for compliance)."
+        )
+    if getattr(settings, "enable_long_term_memory", False):
+        logger.warning(
+            "[SecurityBaseline] enable_long_term_memory=True in production; confirm retention policies, "
+            "tenant isolation, and regulatory requirements for stored memories."
+        )
+    if bool(getattr(settings, "workflow_distributed_running_limit_enabled", True)) and bool(
+        getattr(settings, "workflow_distributed_running_limit_fail_open", True)
+    ):
+        logger.warning(
+            "[SecurityBaseline] workflow_distributed_running_limit_fail_open=True: Redis coordination loss may let "
+            "running workflow instances exceed per-workflow caps (set WORKFLOW_DISTRIBUTED_RUNNING_LIMIT_FAIL_OPEN=false "
+            "to reject publishes/runs when the limit cannot be enforced)."
+        )
+    if not getattr(settings, "api_request_whitelist_enabled", True):
+        logger.warning(
+            "[SecurityBaseline] api_request_whitelist_enabled=False in production; broader request payloads may enter logs/traces; "
+            "keep DATA_REDACTION_ENABLED=true and narrow sensitive paths."
+        )
 
 
 def _migrate_legacy_redis_prefixes_sync() -> None:
@@ -140,6 +247,116 @@ def _migrate_legacy_redis_prefixes_sync() -> None:
         logger.warning("[Startup] Redis legacy prefix migration failed: %s", e)
 
 
+def _verify_event_bus_startup_alignment() -> None:
+    """事件总线：配置意图 vs 实际挂载后端不一致时告警；可选 strict 模式下拒绝启动。"""
+    if not bool(getattr(settings, "event_bus_enabled", False)):
+        return
+    strict = bool(getattr(settings, "event_bus_strict_startup", False))
+    try:
+        from core.events.bus import CompositeEventBus, get_event_bus
+
+        bus = get_event_bus()
+        if not isinstance(bus, CompositeEventBus):
+            return
+        kinds = bus.list_backend_kinds()
+        intended = str(getattr(settings, "event_bus_backend", "redis") or "redis").strip().lower()
+        if intended == "kafka" and "kafka" not in kinds:
+            msg = (
+                "EVENT_BUS_BACKEND=kafka but Kafka did not attach to the composite bus "
+                "(check aiokafka, EVENT_BUS_KAFKA_BOOTSTRAP_SERVERS, broker reachability). "
+                "Only in-process event delivery would be active."
+            )
+            logger.warning("[Startup] %s", msg)
+            if strict:
+                raise RuntimeError(f"event_bus_strict_startup: {msg}")
+        elif intended == "redis" and "redis" not in kinds:
+            msg = (
+                "EVENT_BUS_BACKEND=redis but Redis bus is missing from the composite stack (unexpected)."
+            )
+            logger.warning("[Startup] %s", msg)
+            if strict:
+                raise RuntimeError(f"event_bus_strict_startup: {msg}")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        logger.debug("[Startup] event bus alignment check skipped: %s", exc)
+
+
+async def _probe_event_bus_kafka_if_configured() -> tuple[Optional[bool], Optional[str]]:
+    """
+    启动时对 Kafka bootstrap 做一次 TCP 连通探测（不依赖 aiokafka）。
+    返回语义同 _probe_event_bus_redis_if_configured。
+    """
+    if not bool(getattr(settings, "event_bus_enabled", False)):
+        return None, None
+    if str(getattr(settings, "event_bus_backend", "") or "").strip().lower() != "kafka":
+        return None, None
+    bootstrap = str(getattr(settings, "event_bus_kafka_bootstrap_servers", "") or "").strip()
+    if not bootstrap:
+        return None, None
+    timeout = float(getattr(settings, "event_bus_kafka_ping_timeout_seconds", 3.0) or 3.0)
+    try:
+        from core.events.kafka_ping import probe_kafka_bootstrap_tcp
+
+        await probe_kafka_bootstrap_tcp(bootstrap, timeout_seconds=timeout)
+        logger.info("[Startup] event_bus Kafka bootstrap TCP ok")
+        return True, None
+    except Exception as exc:
+        err = str(exc)[:512]
+        logger.warning("[Startup] event_bus Kafka bootstrap TCP failed: %s", exc)
+        if bool(getattr(settings, "event_bus_strict_startup", False)):
+            raise RuntimeError(f"event_bus_strict_startup: Kafka bootstrap TCP failed: {err}") from exc
+        return False, err
+
+
+async def _probe_event_bus_redis_if_configured() -> tuple[Optional[bool], Optional[str]]:
+    """
+    启动时对 Redis 事件总线做一次 PING（短超时）。
+    返回 (None, None) 表示未启用或未配置 redis 后端；否则 (True/False, 错误摘要)。
+    strict 模式下失败则抛出 RuntimeError。
+    """
+    if not bool(getattr(settings, "event_bus_enabled", False)):
+        return None, None
+    if str(getattr(settings, "event_bus_backend", "") or "").strip().lower() != "redis":
+        return None, None
+    url = str(getattr(settings, "event_bus_redis_url", "") or "").strip()
+    if not url:
+        return None, None
+    timeout = float(getattr(settings, "event_bus_redis_ping_timeout_seconds", 2.0) or 2.0)
+    try:
+        from core.events.redis_ping import probe_event_bus_redis
+
+        await probe_event_bus_redis(url, timeout_seconds=timeout)
+        logger.info("[Startup] event_bus Redis PING ok")
+        return True, None
+    except Exception as exc:
+        err = str(exc)[:512]
+        logger.warning("[Startup] event_bus Redis PING failed: %s", exc)
+        if bool(getattr(settings, "event_bus_strict_startup", False)):
+            raise RuntimeError(f"event_bus_strict_startup: Redis PING failed: {err}") from exc
+        return False, err
+
+
+async def _probe_api_rate_limit_redis_if_configured() -> tuple[Optional[bool], Optional[str]]:
+    """
+    启动时对 API 限流 Redis URL 做一次 PING（与中间件共 URL，独立短连接）。
+    """
+    url = str(getattr(settings, "api_rate_limit_redis_url", "") or "").strip()
+    if not url:
+        return None, None
+    timeout = float(getattr(settings, "api_rate_limit_redis_ping_timeout_seconds", 2.0) or 2.0)
+    try:
+        from core.events.redis_ping import probe_redis_url
+
+        await probe_redis_url(url, timeout_seconds=timeout)
+        logger.info("[Startup] api_rate_limit Redis PING ok")
+        return True, None
+    except Exception as exc:
+        err = str(exc)[:512]
+        logger.warning("[Startup] api_rate_limit Redis PING failed: %s", exc)
+        return False, err
+
+
 def _log_startup_banner() -> None:
     logger.info(f"Starting {settings.app_name} v{settings.version}...")
     logger.info("Log files will be kept for 30 days in logs/ directory")
@@ -147,6 +364,27 @@ def _log_startup_banner() -> None:
     logger.info(f"tool_net_web_enabled={web_enabled} (web.search: True=real, False=disabled)")
     if not web_enabled:
         logger.warning("Web search is DISABLED. Set TOOL_NET_WEB_ENABLED=true (or remove from .env) and restart for real search.")
+    try:
+        from core.system.runtime_settings import get_workflow_scheduler_max_concurrency
+
+        _wf_cap = get_workflow_scheduler_max_concurrency()
+        logger.info("[Startup] workflow_scheduler_platform_max_concurrency=%s (DAG parallel cap)", _wf_cap)
+    except Exception as exc:
+        logger.debug("[Startup] workflow scheduler cap unavailable: %s", exc)
+    try:
+        eb_on = bool(getattr(settings, "event_bus_enabled", False))
+        eb_be = str(getattr(settings, "event_bus_backend", "redis")).strip().lower()
+        logger.info("[Startup] event_bus_enabled=%s event_bus_backend=%s", eb_on, eb_be if eb_on else "(ignored)")
+        if eb_on and eb_be == "kafka":
+            _kb = str(getattr(settings, "event_bus_kafka_bootstrap_servers", "") or "").strip()
+            _hint = _kb if len(_kb) <= 48 else _kb[:45] + "..."
+            logger.info("[Startup] event_bus_kafka_bootstrap_servers=%s", _hint or "(empty)")
+        if eb_on and bool(getattr(settings, "event_bus_strict_startup", False)):
+            logger.info(
+                "[Startup] event_bus_strict_startup=True (misconfigured transport will terminate startup)",
+            )
+    except Exception as exc:
+        logger.debug("[Startup] event bus banner skipped: %s", exc)
 
 
 def _initialize_database_tables() -> None:
@@ -299,18 +537,57 @@ async def _shutdown_cleanup_async() -> int:
     unloaded_count = 0
     try:
         from core.events import get_event_bus
+
+        await get_event_bus().stop()
+    except Exception as e:
+        logger.error("[Shutdown] Event bus stop failed (continuing model/runtime cleanup): %s", e)
+    try:
         from core.models.registry import get_model_registry
         from core.runtimes.factory import get_runtime_factory
 
-        await get_event_bus().stop()
         registry = get_model_registry()
         factory = get_runtime_factory()
         unloaded_count = await _shutdown_unload_registered_models(registry, factory)
         await _shutdown_cleanup_cached_runtimes(factory)
     except Exception as e:
-        logger.error(f"[Shutdown] Cleanup failed: {e}")
+        logger.error(f"[Shutdown] Model/runtime cleanup failed: {e}")
+    try:
+        from execution_kernel.persistence.db import close_global_database
+
+        await close_global_database()
+    except Exception as e:
+        logger.debug("[Shutdown] Execution kernel DB close skipped: %s", e)
+    try:
+        from core.cache.redis_cache import aclose_redis_cache_client
+
+        await aclose_redis_cache_client()
+    except Exception as e:
+        logger.debug("[Shutdown] Inference Redis cache close skipped: %s", e)
+    try:
+        from middleware.rate_limit import aclose_rate_limit_redis_client
+
+        await aclose_rate_limit_redis_client()
+    except Exception as e:
+        logger.debug("[Shutdown] Rate-limit Redis client close skipped: %s", e)
+    try:
+        from core.data.base import dispose_engine
+
+        dispose_engine()
+    except Exception as e:
+        logger.debug("[Shutdown] Database engine dispose skipped: %s", e)
     logger.info(f"[Shutdown] Cleanup complete. Unloaded {unloaded_count} models.")
     return unloaded_count
+
+
+def _set_application_shutting_down(app: Any, shutting_down: bool) -> None:
+    """就绪探针与 Prometheus：优雅关停期间摘流量（仅当 shutting_down 为字面量 True 时生效）。"""
+    setattr(app.state, "shutting_down", shutting_down)
+    try:
+        from core.observability.prometheus_metrics import get_prometheus_business_metrics
+
+        get_prometheus_business_metrics().set_health_ready_shutting_down(shutting_down)
+    except Exception:
+        pass
 
 
 async def _shutdown_unload_registered_models(registry: Any, factory: Any) -> int:
@@ -469,6 +746,14 @@ async def _startup_scan_models() -> None:
 async def lifespan(app: FastAPI):
     _apply_security_baseline()
     _log_startup_banner()
+    setattr(app.state, "event_bus_redis_ping_ok", None)
+    setattr(app.state, "event_bus_redis_ping_error", None)
+    setattr(app.state, "event_bus_kafka_tcp_ok", None)
+    setattr(app.state, "event_bus_kafka_tcp_error", None)
+    setattr(app.state, "api_rate_limit_redis_ping_ok", None)
+    setattr(app.state, "api_rate_limit_redis_ping_error", None)
+    setattr(app.state, "health_ready_last_eb_degraded_key", None)
+    _set_application_shutting_down(app, False)
     try:
         await asyncio.to_thread(_migrate_legacy_redis_prefixes_sync)
     except Exception as e:
@@ -483,14 +768,42 @@ async def lifespan(app: FastAPI):
         from core.events import get_event_bus
 
         await get_event_bus().start()
+        _verify_event_bus_startup_alignment()
+        ping_ok, ping_err = await _probe_event_bus_redis_if_configured()
+        setattr(app.state, "event_bus_redis_ping_ok", ping_ok)
+        setattr(app.state, "event_bus_redis_ping_error", ping_err)
+        k_ok, k_err = await _probe_event_bus_kafka_if_configured()
+        setattr(app.state, "event_bus_kafka_tcp_ok", k_ok)
+        setattr(app.state, "event_bus_kafka_tcp_error", k_err)
+        await _sync_health_ready_event_bus_degraded_gauge(app)
+    except RuntimeError as exc:
+        if "event_bus_strict_startup" in str(exc):
+            logger.error("[Startup] Refusing to start: %s", exc)
+            raise
+        logger.warning("[Startup] Event bus startup RuntimeError (non-fatal): %s", exc)
     except Exception as e:
         logger.warning(f"[Startup] Event bus start failed: {e}")
+    arl_ok, arl_err = await _probe_api_rate_limit_redis_if_configured()
+    setattr(app.state, "api_rate_limit_redis_ping_ok", arl_ok)
+    setattr(app.state, "api_rate_limit_redis_ping_error", arl_err)
+    _sync_health_ready_api_rate_limit_redis_degraded_gauge(app)
     await _load_plugins_and_skills()
     await _startup_scan_models()
     try:
         yield
     finally:
+        _set_application_shutting_down(app, True)
         await _shutdown_cleanup_async()
+
+
+def _fastapi_openapi_kwargs() -> Dict[str, Any]:
+    """生产环境默认关闭公开 OpenAPI，减少攻击面；debug=true 时始终暴露以便本地与契约测试。"""
+    if bool(getattr(settings, "debug", True)):
+        return {}
+    if bool(getattr(settings, "openapi_public_enabled", False)):
+        return {}
+    return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
 
 # 创建应用
 app = FastAPI(
@@ -499,6 +812,7 @@ app = FastAPI(
     description="本地 AI 推理网关",
     lifespan=lifespan,
     dependencies=[Depends(enforce_request_body_whitelist)],
+    **_fastapi_openapi_kwargs(),
 )
 _configure_platform_logging()
 register_error_handlers(app)
@@ -515,6 +829,8 @@ from middleware.tenant_context import TenantContextMiddleware
 from middleware.tenant_key_binding import TenantApiKeyBindingMiddleware
 from middleware.api_key_scope import ApiKeyScopeMiddleware
 from middleware.csrf_protection import CSRFMiddleware
+from middleware.request_size_limit import HttpRequestSizeLimitMiddleware
+from middleware.security_headers import SecurityHeadersMiddleware
 from middleware.sensitive_data_redaction import SensitiveDataRedactionMiddleware
 
 _api_key_hdr = getattr(settings, "api_rate_limit_api_key_header", "X-Api-Key")
@@ -526,12 +842,16 @@ if getattr(settings, "request_trace_enabled", True):
     )
 
 if getattr(settings, "api_rate_limit_enabled", True) and int(getattr(settings, "api_rate_limit_requests", 0)) > 0:
+    _rl_redis = (getattr(settings, "api_rate_limit_redis_url", "") or "").strip()
     app.add_middleware(
         InMemoryRateLimitMiddleware,
         requests_per_window=int(getattr(settings, "api_rate_limit_requests", 120)),
         window_seconds=int(getattr(settings, "api_rate_limit_window_seconds", 60)),
         api_key_header=_api_key_hdr,
         max_concurrent_per_user=int(getattr(settings, "api_rate_limit_user_max_concurrent_requests", 5)),
+        redis_url=_rl_redis or None,
+        redis_key_prefix=str(getattr(settings, "api_rate_limit_redis_key_prefix", "perilla:ratelimit") or "perilla:ratelimit"),
+        trust_x_forwarded_for=bool(getattr(settings, "api_rate_limit_trust_x_forwarded_for", True)),
     )
 
 app.add_middleware(TenantContextMiddleware)
@@ -555,10 +875,16 @@ if getattr(settings, "audit_log_enabled", False):
 _cors_origins = [x.strip() for x in (getattr(settings, "cors_allowed_origins", "") or "").split(",") if x.strip()]
 _cors_allow_credentials = bool(_cors_origins) and "*" not in _cors_origins
 if getattr(settings, "response_gzip_enabled", True):
+    from middleware.gzip_selective import SelectiveGZipMiddleware
+
     app.add_middleware(
-        GZipMiddleware,
+        SelectiveGZipMiddleware,
         minimum_size=int(getattr(settings, "response_gzip_minimum_size", 256) or 256),
     )
+if int(getattr(settings, "http_max_request_body_bytes", 0) or 0) > 0:
+    app.add_middleware(HttpRequestSizeLimitMiddleware)
+if getattr(settings, "security_headers_enabled", False):
+    app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins or ["http://localhost", "http://127.0.0.1"],
@@ -574,6 +900,15 @@ app.add_middleware(
         "Content-Encoding",
     ],
 )
+
+_trusted_hosts = [x.strip() for x in (getattr(settings, "trusted_hosts", "") or "").split(",") if x.strip()]
+if _trusted_hosts:
+    app.add_middleware(
+        SelectiveTrustedHostMiddleware,
+        allowed_hosts=_trusted_hosts,
+        www_redirect=False,
+        exempt_host_check=trusted_host_exempt_path_predicate,
+    )
 
 # 包含路由
 app.include_router(chat_router)
@@ -609,7 +944,7 @@ async def root():
     }
 
 
-@app.get("/api/health")
+@app.get("/api/health", tags=["Health"], summary="基础健康状态（存活向）")
 async def health_check(request: Request):
     """健康检查端点"""
     return {
@@ -620,15 +955,376 @@ async def health_check(request: Request):
     }
 
 
-@app.get("/api/health/live")
+@app.get("/api/health/live", tags=["Health"], summary="存活探针（Kubernetes liveness）")
 async def health_live():
     """存活探针：进程是否在线。"""
     return {"status": "alive", "service": settings.app_name, "version": settings.version}
 
 
-@app.get("/api/health/ready")
-async def health_ready():
-    """就绪探针：关键依赖（数据库）是否可用。"""
+def _event_bus_degraded_reasons(
+    *,
+    event_bus_enabled: bool,
+    intended_backend: str,
+    redis_ping_ok: Optional[bool],
+    kafka_tcp_ok: Optional[bool],
+    bus_backends: Optional[Any],
+) -> List[str]:
+    """
+    事件总线启用时，根据启动探测与运行时挂载推导降级原因码。
+    仍为 HTTP 200 / status=ready（数据库可用）；编排层可据 degraded_reasons 决定是否摘流量。
+    """
+    if not event_bus_enabled:
+        return []
+    be = (intended_backend or "redis").strip().lower()
+    reasons: List[str] = []
+    bb = bus_backends if isinstance(bus_backends, list) else None
+    if be == "redis":
+        if redis_ping_ok is False:
+            reasons.append("event_bus_redis_ping_failed")
+        if bb and "redis" not in bb:
+            reasons.append("event_bus_redis_not_attached")
+    elif be == "kafka":
+        if kafka_tcp_ok is False:
+            reasons.append("event_bus_kafka_tcp_failed")
+        if bb and "kafka" not in bb:
+            reasons.append("event_bus_kafka_not_attached")
+    return reasons
+
+
+async def _resolve_event_bus_ready_snapshot(app: Any) -> tuple[Optional[List[str]], List[str]]:
+    """
+    基于当前 app.state 中的探测结果与运行时 bus 列表，计算 event_bus_backends 与降级原因。
+    与 /api/health/ready 使用同一套逻辑，避免分叉。
+    """
+    eb_on = bool(getattr(settings, "event_bus_enabled", False))
+    intended_be = str(getattr(settings, "event_bus_backend", "redis") or "redis").strip().lower()
+    rp_ok = getattr(app.state, "event_bus_redis_ping_ok", None)
+    kk_ok = getattr(app.state, "event_bus_kafka_tcp_ok", None)
+    bb_list: Optional[List[str]] = None
+    try:
+        from core.events.bus import get_event_bus_runtime_status
+
+        eb = await get_event_bus_runtime_status()
+        bb = eb.get("bus_backends")
+        if isinstance(bb, list) and bb:
+            bb_list = bb
+    except Exception:
+        pass
+    reasons = _event_bus_degraded_reasons(
+        event_bus_enabled=eb_on,
+        intended_backend=intended_be,
+        redis_ping_ok=rp_ok,
+        kafka_tcp_ok=kk_ok,
+        bus_backends=bb_list,
+    )
+    return bb_list, reasons
+
+
+def _apply_health_ready_event_bus_degraded_metric(reasons: List[str]) -> None:
+    try:
+        from core.observability.prometheus_metrics import get_prometheus_business_metrics
+
+        get_prometheus_business_metrics().set_health_ready_event_bus_degraded(bool(reasons))
+    except Exception:
+        pass
+
+
+def _apply_health_ready_inference_cache_redis_degraded_metric(reasons: List[str]) -> None:
+    try:
+        from core.observability.prometheus_metrics import get_prometheus_business_metrics
+
+        get_prometheus_business_metrics().set_health_ready_inference_cache_redis_degraded(bool(reasons))
+    except Exception:
+        pass
+
+
+def _apply_health_ready_api_rate_limit_redis_degraded_metric(reasons: List[str]) -> None:
+    try:
+        from core.observability.prometheus_metrics import get_prometheus_business_metrics
+
+        get_prometheus_business_metrics().set_health_ready_api_rate_limit_redis_degraded(bool(reasons))
+    except Exception:
+        pass
+
+
+def _sync_health_ready_api_rate_limit_redis_degraded_gauge(app: Any) -> None:
+    """启动探测后刷新 Gauge：仅依据启动 PING，供 /metrics 先有意义。"""
+    reasons: List[str] = []
+    ok = getattr(app.state, "api_rate_limit_redis_ping_ok", None)
+    if ok is False:
+        reasons.append("api_rate_limit_redis_ping_failed")
+    _apply_health_ready_api_rate_limit_redis_degraded_metric(reasons)
+
+
+async def _sync_health_ready_event_bus_degraded_gauge(app: Any) -> None:
+    """更新 Prometheus：事件总线是否处于降级（与就绪探针判定一致）。启动探测后调用，使 /metrics 无需先打 ready。"""
+    try:
+        _, reasons = await _resolve_event_bus_ready_snapshot(app)
+        _apply_health_ready_event_bus_degraded_metric(reasons)
+    except Exception:
+        pass
+
+
+def _inference_cache_probe_fill_from_cache(
+    payload: dict, app: Any, *, now: float, cache_sec: float, strict_ic: bool
+) -> Optional[List[str]]:
+    """若命中本地短时缓存则写入 payload 并返回 ic_reasons；未命中返回 None。"""
+    if strict_ic or cache_sec <= 0.0:
+        return None
+    last_ts = getattr(app.state, "health_ready_ic_redis_probe_monotonic_ts", None)
+    if last_ts is None or (now - float(last_ts)) >= cache_sec:
+        return None
+    ic_reasons: List[str] = []
+    last_ok = getattr(app.state, "health_ready_ic_redis_probe_last_ok", None)
+    last_err = getattr(app.state, "health_ready_ic_redis_probe_last_err", None)
+    if last_ok is not None:
+        payload["inference_cache_redis_ping_ok"] = bool(last_ok)
+    if last_err:
+        payload["inference_cache_redis_ping_error"] = str(last_err)
+    if last_ok is False:
+        ic_reasons.append("inference_cache_redis_ping_failed")
+    return ic_reasons
+
+
+async def _collect_inference_cache_ready_reasons(payload: dict, app: Any) -> List[str]:
+    """
+    推理缓存 Redis PING；写入 payload 并返回降级原因码。
+    strict 模式每次实时 PING；非 strict 可用 health_ready_inference_redis_probe_cache_seconds 复用结果以减轻 Redis 压力。
+    """
+    ic_reasons: List[str] = []
+    if not bool(getattr(settings, "inference_cache_enabled", False)):
+        return ic_reasons
+    ic_url = (str(getattr(settings, "inference_cache_redis_url", "") or "").strip())
+    if not ic_url:
+        return ic_reasons
+
+    strict_ic = bool(getattr(settings, "health_ready_strict_inference_redis", False))
+    probe_enabled = bool(getattr(settings, "health_ready_inference_redis_probe_enabled", True))
+    if not probe_enabled and not strict_ic:
+        return ic_reasons
+
+    cache_sec = float(getattr(settings, "health_ready_inference_redis_probe_cache_seconds", 5.0) or 0.0)
+    now = time.monotonic()
+    cached = _inference_cache_probe_fill_from_cache(payload, app, now=now, cache_sec=cache_sec, strict_ic=strict_ic)
+    if cached is not None:
+        return cached
+
+    try:
+        from core.cache import get_redis_cache_client
+
+        ic_ok, ic_err = await get_redis_cache_client().ping_for_health()
+        setattr(app.state, "health_ready_ic_redis_probe_monotonic_ts", now)
+        setattr(app.state, "health_ready_ic_redis_probe_last_ok", ic_ok)
+        setattr(app.state, "health_ready_ic_redis_probe_last_err", ic_err)
+        payload["inference_cache_redis_ping_ok"] = ic_ok
+        if ic_err:
+            payload["inference_cache_redis_ping_error"] = ic_err
+        if not ic_ok:
+            ic_reasons.append("inference_cache_redis_ping_failed")
+    except Exception:
+        pass
+    return ic_reasons
+
+
+def _arl_probe_fill_from_cache(
+    payload: dict, app: Any, *, now: float, cache_sec: float, strict_arl: bool
+) -> Optional[List[str]]:
+    if strict_arl or cache_sec <= 0.0:
+        return None
+    last_ts = getattr(app.state, "health_ready_arl_redis_probe_monotonic_ts", None)
+    if last_ts is None or (now - float(last_ts)) >= cache_sec:
+        return None
+    arl_reasons: List[str] = []
+    last_ok = getattr(app.state, "health_ready_arl_redis_probe_last_ok", None)
+    last_err = getattr(app.state, "health_ready_arl_redis_probe_last_err", None)
+    if last_ok is not None:
+        payload["api_rate_limit_redis_ping_ok"] = bool(last_ok)
+    if last_err:
+        payload["api_rate_limit_redis_ping_error"] = str(last_err)
+    if last_ok is False:
+        arl_reasons.append("api_rate_limit_redis_ping_failed")
+    return arl_reasons
+
+
+async def _collect_api_rate_limit_redis_ready_reasons(payload: dict, app: Any) -> List[str]:
+    """
+    API 限流 Redis PING：写入 payload 并返回降级原因码。
+    关闭实时探测且非 strict 时仅反映启动期探测结果（app.state）。
+    """
+    arl_reasons: List[str] = []
+    url = str(getattr(settings, "api_rate_limit_redis_url", "") or "").strip()
+    if not url:
+        return arl_reasons
+
+    strict_arl = bool(getattr(settings, "health_ready_strict_api_rate_limit_redis", False))
+    probe_enabled = bool(getattr(settings, "health_ready_api_rate_limit_redis_probe_enabled", True))
+    if not probe_enabled and not strict_arl:
+        ok = getattr(app.state, "api_rate_limit_redis_ping_ok", None)
+        err = getattr(app.state, "api_rate_limit_redis_ping_error", None)
+        if ok is not None:
+            payload["api_rate_limit_redis_ping_ok"] = ok
+        if err:
+            payload["api_rate_limit_redis_ping_error"] = err
+        if ok is False:
+            arl_reasons.append("api_rate_limit_redis_ping_failed")
+        return arl_reasons
+
+    cache_sec = float(getattr(settings, "health_ready_api_rate_limit_redis_probe_cache_seconds", 5.0) or 0.0)
+    now = time.monotonic()
+    cached = _arl_probe_fill_from_cache(payload, app, now=now, cache_sec=cache_sec, strict_arl=strict_arl)
+    if cached is not None:
+        return cached
+
+    try:
+        from core.events.redis_ping import probe_redis_url
+
+        timeout = float(getattr(settings, "api_rate_limit_redis_ping_timeout_seconds", 2.0) or 2.0)
+        await probe_redis_url(url, timeout_seconds=timeout)
+        setattr(app.state, "health_ready_arl_redis_probe_monotonic_ts", now)
+        setattr(app.state, "health_ready_arl_redis_probe_last_ok", True)
+        setattr(app.state, "health_ready_arl_redis_probe_last_err", None)
+        payload["api_rate_limit_redis_ping_ok"] = True
+        return arl_reasons
+    except Exception as exc:
+        err = str(exc)[:512]
+        setattr(app.state, "health_ready_arl_redis_probe_monotonic_ts", now)
+        setattr(app.state, "health_ready_arl_redis_probe_last_ok", False)
+        setattr(app.state, "health_ready_arl_redis_probe_last_err", err)
+        payload["api_rate_limit_redis_ping_ok"] = False
+        payload["api_rate_limit_redis_ping_error"] = err
+        arl_reasons.append("api_rate_limit_redis_ping_failed")
+        return arl_reasons
+
+
+async def _assemble_health_ready_payload(request: Request) -> tuple[dict, List[str], List[str], List[str]]:
+    """数据库已通过探测后的就绪负载（含事件总线、推理缓存 / API 限流 Redis 与 Prometheus 副作用）。返回四元组。"""
+    payload: dict = {"status": "ready", "database": "ok", "version": settings.version}
+    try:
+        from core.system.runtime_settings import get_workflow_scheduler_max_concurrency
+
+        payload["workflow_scheduler_max_concurrency"] = get_workflow_scheduler_max_concurrency()
+    except Exception:
+        pass
+    try:
+        eb_on = bool(getattr(settings, "event_bus_enabled", False))
+        if eb_on:
+            intended_be = str(getattr(settings, "event_bus_backend", "redis") or "redis").strip().lower()
+            payload["event_bus_backend"] = intended_be
+    except Exception:
+        pass
+    rp_ok = getattr(request.app.state, "event_bus_redis_ping_ok", None)
+    rp_err = getattr(request.app.state, "event_bus_redis_ping_error", None)
+    kk_ok = getattr(request.app.state, "event_bus_kafka_tcp_ok", None)
+    kk_err = getattr(request.app.state, "event_bus_kafka_tcp_error", None)
+    try:
+        if rp_ok is not None:
+            payload["event_bus_redis_ping_ok"] = rp_ok
+        if rp_err:
+            payload["event_bus_redis_ping_error"] = rp_err
+        if kk_ok is not None:
+            payload["event_bus_kafka_tcp_ok"] = kk_ok
+        if kk_err:
+            payload["event_bus_kafka_tcp_error"] = kk_err
+    except Exception:
+        pass
+    eb_reasons: List[str] = []
+    try:
+        bb_list, eb_reasons = await _resolve_event_bus_ready_snapshot(request.app)
+        if bb_list:
+            payload["event_bus_backends"] = bb_list
+    except Exception:
+        pass
+
+    ic_reasons = await _collect_inference_cache_ready_reasons(payload, request.app)
+
+    arl_reasons = await _collect_api_rate_limit_redis_ready_reasons(payload, request.app)
+
+    degraded_merge = [*eb_reasons, *ic_reasons, *arl_reasons]
+    if degraded_merge:
+        payload["degraded"] = True
+        payload["degraded_reasons"] = degraded_merge
+
+    _apply_health_ready_event_bus_degraded_metric(eb_reasons)
+    _apply_health_ready_inference_cache_redis_degraded_metric(ic_reasons)
+    _apply_health_ready_api_rate_limit_redis_degraded_metric(arl_reasons)
+    return payload, eb_reasons, ic_reasons, arl_reasons
+
+
+def _log_event_bus_degraded_transition(app: Any, reasons: List[str]) -> None:
+    """仅在事件总线降级原因集合相对上一次 /ready 检查发生变化时打 INFO，避免探针刷屏。"""
+    key = tuple(sorted(reasons))
+    prev = getattr(app.state, "health_ready_last_eb_degraded_key", None)
+    if key == prev:
+        return
+    setattr(app.state, "health_ready_last_eb_degraded_key", key)
+    if prev is None and not key:
+        return
+    if key:
+        logger.info("[HealthReady] event bus degraded: %s", list(key))
+    else:
+        logger.info("[HealthReady] event bus no longer degraded (recovered)")
+
+
+def _log_inference_cache_redis_degraded_transition(app: Any, reasons: List[str]) -> None:
+    key = tuple(sorted(reasons))
+    prev = getattr(app.state, "health_ready_last_ic_redis_degraded_key", None)
+    if key == prev:
+        return
+    setattr(app.state, "health_ready_last_ic_redis_degraded_key", key)
+    if prev is None and not key:
+        return
+    if key:
+        logger.info("[HealthReady] inference-cache Redis degraded: %s", list(key))
+    else:
+        logger.info("[HealthReady] inference-cache Redis no longer degraded (recovered)")
+
+
+def _log_api_rate_limit_redis_degraded_transition(app: Any, reasons: List[str]) -> None:
+    key = tuple(sorted(reasons))
+    prev = getattr(app.state, "health_ready_last_arl_redis_degraded_key", None)
+    if key == prev:
+        return
+    setattr(app.state, "health_ready_last_arl_redis_degraded_key", key)
+    if prev is None and not key:
+        return
+    if key:
+        logger.info("[HealthReady] API rate-limit Redis degraded: %s", list(key))
+    else:
+        logger.info("[HealthReady] API rate-limit Redis no longer degraded (recovered)")
+
+
+@app.get(
+    "/api/health/ready",
+    tags=["Health"],
+    summary="就绪探针（Kubernetes readiness）",
+    responses={
+        503: {
+            "description": "未就绪：数据库不可用；或 STRICT 模式下事件总线/推理缓存 Redis/API 限流 Redis 依赖降级",
+            "headers": {
+                "Retry-After": {
+                    "description": "建议重试间隔（秒），严格就绪返回 5",
+                    "schema": {"type": "string"},
+                }
+            },
+        },
+    },
+)
+async def health_ready(request: Request):
+    """就绪探针：关键依赖（数据库）是否可用；依赖降级时附带 degraded / degraded_reasons。"""
+    app = getattr(request, "app", None)
+    st = getattr(app, "state", None) if app is not None else None
+    if st is not None and getattr(st, "shutting_down", None) is True:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "database": "ok",
+                "version": settings.version,
+                "degraded": True,
+                "degraded_reasons": ["application_shutting_down"],
+            },
+            headers={"Retry-After": "1"},
+        )
     try:
         from core.data.base import get_engine
         from sqlalchemy import text
@@ -636,7 +1332,35 @@ async def health_ready():
         engine = get_engine()
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        return {"status": "ready", "database": "ok", "version": settings.version}
+        payload, eb_reasons, ic_reasons, arl_reasons = await _assemble_health_ready_payload(request)
+        _log_event_bus_degraded_transition(request.app, eb_reasons)
+        _log_inference_cache_redis_degraded_transition(request.app, ic_reasons)
+        _log_api_rate_limit_redis_degraded_transition(request.app, arl_reasons)
+        strict_eb = bool(getattr(settings, "health_ready_strict_event_bus", False))
+        if strict_eb and eb_reasons:
+            logger.debug("[HealthReady] strict readiness: event bus degraded: %s", eb_reasons)
+            return JSONResponse(
+                status_code=503,
+                content=payload,
+                headers={"Retry-After": "5"},
+            )
+        strict_ic = bool(getattr(settings, "health_ready_strict_inference_redis", False))
+        if strict_ic and ic_reasons:
+            logger.debug("[HealthReady] strict readiness: inference-cache Redis degraded: %s", ic_reasons)
+            return JSONResponse(
+                status_code=503,
+                content=payload,
+                headers={"Retry-After": "5"},
+            )
+        strict_arl = bool(getattr(settings, "health_ready_strict_api_rate_limit_redis", False))
+        if strict_arl and arl_reasons:
+            logger.debug("[HealthReady] strict readiness: API rate-limit Redis degraded: %s", arl_reasons)
+            return JSONResponse(
+                status_code=503,
+                content=payload,
+                headers={"Retry-After": "5"},
+            )
+        return payload
     except Exception as e:
         logger.warning(f"[HealthReady] dependency check failed: {e}")
         return {"status": "not_ready", "database": "error", "detail": str(e), "version": settings.version}
@@ -1171,9 +1895,49 @@ async def update_model_manifest(model_id: str, data: dict, _role: AdminRole = No
 
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.debug,
-    )
+    _uv_kw: Dict[str, Any] = {
+        "host": settings.host,
+        "port": settings.port,
+        "reload": settings.debug,
+    }
+    _tgs = getattr(settings, "uvicorn_timeout_graceful_shutdown_seconds", None)
+    if _tgs is not None:
+        _uv_kw["timeout_graceful_shutdown"] = int(_tgs)
+    _ka = getattr(settings, "uvicorn_timeout_keep_alive_seconds", None)
+    if _ka is not None:
+        _uv_kw["timeout_keep_alive"] = int(_ka)
+    _uv_kw["proxy_headers"] = bool(getattr(settings, "uvicorn_proxy_headers", True))
+    _fwd_allow = (getattr(settings, "uvicorn_forwarded_allow_ips", "") or "").strip()
+    if _fwd_allow:
+        _uv_kw["forwarded_allow_ips"] = _fwd_allow
+    _lc = getattr(settings, "uvicorn_limit_concurrency", None)
+    if _lc is not None:
+        _uv_kw["limit_concurrency"] = int(_lc)
+    _lmr = getattr(settings, "uvicorn_limit_max_requests", None)
+    if _lmr is not None:
+        _uv_kw["limit_max_requests"] = int(_lmr)
+    _uv_kw["server_header"] = bool(getattr(settings, "uvicorn_server_header", True))
+    _h11 = getattr(settings, "uvicorn_h11_max_incomplete_event_size", None)
+    if _h11 is not None:
+        _uv_kw["h11_max_incomplete_event_size"] = int(_h11)
+    _uv_kw["access_log"] = bool(getattr(settings, "uvicorn_access_log", True))
+    _bg = getattr(settings, "uvicorn_backlog", None)
+    if _bg is not None:
+        _uv_kw["backlog"] = int(_bg)
+    _wsz = getattr(settings, "uvicorn_ws_max_size", None)
+    if _wsz is not None:
+        _uv_kw["ws_max_size"] = int(_wsz)
+    _lmrj = getattr(settings, "uvicorn_limit_max_requests_jitter", None)
+    if _lmrj is not None:
+        _uv_kw["limit_max_requests_jitter"] = int(_lmrj)
+    _uv_kw["date_header"] = bool(getattr(settings, "uvicorn_date_header", True))
+    _wpi = getattr(settings, "uvicorn_ws_ping_interval_seconds", None)
+    if _wpi is not None:
+        _uv_kw["ws_ping_interval"] = float(_wpi)
+    _wpt = getattr(settings, "uvicorn_ws_ping_timeout_seconds", None)
+    if _wpt is not None:
+        _uv_kw["ws_ping_timeout"] = float(_wpt)
+    _twh = getattr(settings, "uvicorn_timeout_worker_healthcheck_seconds", None)
+    if _twh is not None:
+        _uv_kw["timeout_worker_healthcheck"] = int(_twh)
+    uvicorn.run("main:app", **_uv_kw)

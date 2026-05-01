@@ -1,5 +1,6 @@
 import types
 
+import pytest
 from fastapi.testclient import TestClient
 
 from config.settings import settings
@@ -215,8 +216,16 @@ def test_apply_production_security_defaults_in_non_debug():
         rbac_enforcement=False,
         tenant_enforcement_enabled=False,
         tenant_api_key_binding_enabled=False,
+        security_headers_enabled=False,
         file_read_allowed_roots="/",
         production_file_read_required_roots="./data",
+        inference_cache_enabled=True,
+        health_ready_strict_inference_redis=False,
+        api_rate_limit_enabled=True,
+        api_rate_limit_requests=120,
+        api_rate_limit_redis_url="redis://localhost:6379/14",
+        health_ready_strict_api_rate_limit_redis=False,
+        api_rate_limit_redis_fail_closed=False,
     )
     changes = apply_production_security_defaults(s)
     assert set(changes) >= {
@@ -224,13 +233,25 @@ def test_apply_production_security_defaults_in_non_debug():
         "rbac_enforcement",
         "tenant_enforcement_enabled",
         "tenant_api_key_binding_enabled",
+        "security_headers_enabled",
         "file_read_allowed_roots",
+        "http_max_request_body_bytes",
+        "chat_stream_resume_cancel_upstream_on_disconnect",
+        "health_ready_strict_inference_redis",
+        "health_ready_strict_api_rate_limit_redis",
+        "api_rate_limit_redis_fail_closed",
     }
     assert s.rbac_enabled is True
     assert s.rbac_enforcement is True
     assert s.tenant_enforcement_enabled is True
     assert s.tenant_api_key_binding_enabled is True
+    assert s.security_headers_enabled is True
     assert s.file_read_allowed_roots == "./data"
+    assert s.http_max_request_body_bytes == 52428800
+    assert s.chat_stream_resume_cancel_upstream_on_disconnect is True
+    assert s.health_ready_strict_inference_redis is True
+    assert s.health_ready_strict_api_rate_limit_redis is True
+    assert s.api_rate_limit_redis_fail_closed is True
 
 
 def test_apply_production_security_defaults_skip_in_debug():
@@ -258,6 +279,8 @@ def test_validate_production_security_guardrails_blocks_high_risk():
 
     s = _types.SimpleNamespace(
         debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
         file_read_allowed_roots="/",
         production_file_read_required_roots="./data",
         production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
@@ -277,6 +300,9 @@ def test_validate_production_security_guardrails_allows_safe_profile():
 
     s = _types.SimpleNamespace(
         debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
         file_read_allowed_roots="./data",
         production_file_read_required_roots="./data",
         production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
@@ -288,8 +314,806 @@ def test_validate_production_security_guardrails_allows_safe_profile():
     assert issues == []
 
 
+def test_validate_production_security_guardrails_blocks_rbac_enabled_without_api_keys():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        rbac_enabled=True,
+        rbac_admin_api_keys="",
+        rbac_operator_api_keys="",
+        rbac_viewer_api_keys="",
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=True,
+        tool_net_http_allowed_hosts="api.example.com,*.svc.local",
+        rbac_default_role="viewer",
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("rbac_enabled=True" in x and "RBAC_" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_allows_rbac_with_any_api_key():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        rbac_enabled=True,
+        rbac_default_role="viewer",
+        rbac_admin_api_keys="prod-integration-admin-k",
+        rbac_operator_api_keys="",
+        rbac_viewer_api_keys="",
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=True,
+        tool_net_http_allowed_hosts="api.example.com,*.svc.local",
+    )
+    issues = validate_production_security_guardrails(s)
+    assert issues == []
+
+
+def test_validate_production_security_guardrails_blocks_rbac_default_role_operator():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        rbac_enabled=True,
+        rbac_default_role="operator",
+        rbac_admin_api_keys="prod-integration-admin-k",
+        rbac_operator_api_keys="",
+        rbac_viewer_api_keys="",
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=True,
+        tool_net_http_allowed_hosts="api.example.com,*.svc.local",
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("rbac_default_role" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_placeholder_rbac_api_key():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        rbac_enabled=True,
+        rbac_default_role="viewer",
+        rbac_admin_api_keys="admin-key",
+        rbac_operator_api_keys="",
+        rbac_viewer_api_keys="",
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=True,
+        tool_net_http_allowed_hosts="api.example.com,*.svc.local",
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("RBAC_ADMIN_API_KEYS" in x for x in issues)
+    assert any("placeholder" in x.lower() or "characters" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_cors_wildcard():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="*",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("'*'" in x or "*" in x for x in issues)
+    assert any("cors_allowed_origins" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_cors_plain_http_origin():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="http://app.example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("https://" in x.lower() for x in issues)
+    assert any("cors_allowed_origins" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_allows_cors_localhost_http():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="http://localhost:5173,https://console.example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert issues == []
+
+
+def test_validate_production_security_guardrails_blocks_openapi_public_enabled():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        openapi_public_enabled=True,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("openapi_public_enabled" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_data_redaction_disabled():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        data_redaction_enabled=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("data_redaction_enabled" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_workflow_draft_execution_in_production():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        workflow_allow_draft_execution=True,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("workflow_allow_draft_execution" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_workflow_latest_subworkflow_in_production():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        workflow_allow_latest_subworkflow_in_production=True,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("workflow_allow_latest_subworkflow" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_tool_system_env_allow_all_in_production():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        tool_system_env_allow_all=True,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("tool_system_env_allow_all" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_trivial_database_password():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://postgres:postgres@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("database_url" in x.lower() and "trivial" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_trivial_execution_kernel_password():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        execution_kernel_db_url="postgresql+asyncpg://postgres:postgres@localhost:5432/ek",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("EXECUTION_KERNEL_DB_URL" in x and "trivial" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_requires_trusted_hosts():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("trusted_hosts" in x.lower() for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_redis_without_url():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=True,
+        event_bus_backend="redis",
+        event_bus_redis_url="",
+        event_bus_strict_startup=True,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("event_bus_redis_url" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_kafka_without_bootstrap():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=True,
+        event_bus_backend="kafka",
+        event_bus_kafka_bootstrap_servers="",
+        event_bus_strict_startup=True,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("event_bus_kafka_bootstrap_servers" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_event_bus_without_strict_startup():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=True,
+        event_bus_backend="redis",
+        event_bus_redis_url="redis://redis:6379/1",
+        event_bus_strict_startup=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("event_bus_strict_startup" in x.lower() for x in issues)
+
+
+def test_uvicorn_timeout_graceful_shutdown_seconds_optional():
+    from pydantic import ValidationError
+
+    from config.settings import Settings
+
+    assert Settings().uvicorn_timeout_graceful_shutdown_seconds is None
+    assert Settings(uvicorn_timeout_graceful_shutdown_seconds=40).uvicorn_timeout_graceful_shutdown_seconds == 40
+    with pytest.raises(ValidationError):
+        Settings(uvicorn_timeout_graceful_shutdown_seconds=0)
+
+
+def test_settings_uvicorn_proxy_headers_defaults():
+    from config.settings import Settings
+
+    s = Settings()
+    assert s.uvicorn_proxy_headers is True
+    assert s.uvicorn_forwarded_allow_ips == ""
+
+
+def test_settings_uvicorn_resilience_fields_optional():
+    from config.settings import Settings
+
+    s = Settings()
+    assert s.uvicorn_limit_concurrency is None
+    assert s.uvicorn_limit_max_requests is None
+    assert s.uvicorn_server_header is True
+    assert s.uvicorn_h11_max_incomplete_event_size is None
+    assert s.uvicorn_access_log is True
+    assert s.uvicorn_backlog is None
+    assert s.uvicorn_ws_max_size is None
+    assert s.uvicorn_limit_max_requests_jitter is None
+    assert s.uvicorn_date_header is True
+    assert s.uvicorn_ws_ping_interval_seconds is None
+    assert s.uvicorn_ws_ping_timeout_seconds is None
+    assert s.uvicorn_timeout_worker_healthcheck_seconds is None
+
+
+def test_log_format_must_be_text_or_json():
+    from pydantic import ValidationError
+
+    from config.settings import Settings
+
+    assert Settings(log_format="JSON").log_format == "json"
+    with pytest.raises(ValidationError):
+        Settings(log_format="yaml")
+
+
+def test_uvicorn_timeout_keep_alive_seconds_optional():
+    from pydantic import ValidationError
+
+    from config.settings import Settings
+
+    assert Settings().uvicorn_timeout_keep_alive_seconds is None
+    assert Settings(uvicorn_timeout_keep_alive_seconds=75).uvicorn_timeout_keep_alive_seconds == 75
+    with pytest.raises(ValidationError):
+        Settings(uvicorn_timeout_keep_alive_seconds=0)
+
+
+def test_validate_production_security_guardrails_requires_json_logs_when_not_debug():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="text",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("log_format" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_audit_root_prefix():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+        audit_log_enabled=True,
+        audit_log_path_prefixes="/",
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("audit_log_path_prefixes" in x and "/" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_warns_health_ready_strict_without_event_bus():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=True,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("health_ready_strict_event_bus" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_warns_health_ready_strict_inference_without_cache():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+        inference_cache_enabled=False,
+        health_ready_strict_inference_redis=True,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("health_ready_strict_inference_redis" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_warns_health_ready_strict_arl_without_redis_url():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+        inference_cache_enabled=False,
+        health_ready_strict_inference_redis=False,
+        api_rate_limit_redis_url="",
+        health_ready_strict_api_rate_limit_redis=True,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("health_ready_strict_api_rate_limit_redis" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_requires_database_url():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("database_url" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_sqlite_in_production():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="sqlite:///./app.db",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("SQLite" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_blocks_non_postgres_database_url():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="mysql+pymysql://u:p@db:3306/perilla",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("PostgreSQL" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_execution_kernel_db_url_sqlite():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        execution_kernel_db_url="sqlite+aiosqlite:///./ek.db",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("EXECUTION_KERNEL_DB_URL" in x and "SQLite" in x for x in issues)
+
+
+def test_validate_production_security_guardrails_execution_kernel_db_url_non_postgres():
+    import types as _types
+    from config.settings import validate_production_security_guardrails
+
+    s = _types.SimpleNamespace(
+        debug=False,
+        trusted_hosts="api.example.com",
+        database_url="postgresql+psycopg2://u:p@localhost:5432/perilla",
+        execution_kernel_db_url="mysql+pymysql://u:p@db:3306/ek",
+        log_format="json",
+        file_read_allowed_roots="./data",
+        production_file_read_required_roots="./data",
+        production_file_read_allowed_roots="./data,/app/data,/app/backend/data",
+        cors_allowed_origins="https://example.com",
+        tool_net_http_enabled=False,
+        event_bus_enabled=False,
+        health_ready_strict_event_bus=False,
+    )
+    issues = validate_production_security_guardrails(s)
+    assert any("EXECUTION_KERNEL_DB_URL" in x and "PostgreSQL" in x for x in issues)
+
+
+def test_settings_execution_kernel_db_url_field():
+    from config.settings import Settings
+
+    s = Settings(
+        execution_kernel_db_url="postgresql+asyncpg://u:p@localhost:5432/ek",
+    )
+    assert "postgresql" in s.execution_kernel_db_url
+
+
+def test_workflow_scheduler_max_concurrency_field_validation():
+    import pytest
+    from pydantic import ValidationError
+
+    from config.settings import Settings
+
+    s = Settings(workflow_scheduler_max_concurrency=32)
+    assert s.workflow_scheduler_max_concurrency == 32
+    with pytest.raises(ValidationError):
+        Settings(workflow_scheduler_max_concurrency=0)
+    with pytest.raises(ValidationError):
+        Settings(workflow_scheduler_max_concurrency=500)
+
+
+def test_prometheus_metrics_path_validation():
+    import pytest
+    from pydantic import ValidationError
+
+    from config.settings import Settings
+
+    assert Settings(prometheus_metrics_path="/metrics/custom").prometheus_metrics_path == "/metrics/custom"
+    with pytest.raises(ValidationError):
+        Settings(prometheus_metrics_path="metrics")
+    with pytest.raises(ValidationError):
+        Settings(prometheus_metrics_path="/foo/../metrics")
+
+
+def test_db_pool_timeout_seconds_field_validation():
+    import pytest
+    from pydantic import ValidationError
+
+    from config.settings import Settings
+
+    assert Settings(db_pool_timeout_seconds=45.5).db_pool_timeout_seconds == 45.5
+    with pytest.raises(ValidationError):
+        Settings(db_pool_timeout_seconds=0.5)
+    with pytest.raises(ValidationError):
+        Settings(db_pool_timeout_seconds=700)
+
+
+def test_event_bus_ping_timeout_seconds_field_validation():
+    import pytest
+    from pydantic import ValidationError
+
+    from config.settings import Settings
+
+    assert Settings(event_bus_redis_ping_timeout_seconds=0.5).event_bus_redis_ping_timeout_seconds == 0.5
+    with pytest.raises(ValidationError):
+        Settings(event_bus_redis_ping_timeout_seconds=0)
+    with pytest.raises(ValidationError):
+        Settings(event_bus_redis_ping_timeout_seconds=200)
+    with pytest.raises(ValidationError):
+        Settings(event_bus_kafka_ping_timeout_seconds=0)
+    with pytest.raises(ValidationError):
+        Settings(event_bus_kafka_ping_timeout_seconds=500)
+
+
 def test_security_guardrails_strict_default_true():
     from config.settings import Settings
 
     s = Settings()
     assert s.security_guardrails_strict is True
+
+
+def test_verify_event_bus_startup_alignment_warns_kafka_missing(monkeypatch):
+    from core.events import bus as bus_mod
+    from core.events.bus import CompositeEventBus, InProcessEventBus
+    from config.settings import settings
+    import main as main_mod
+
+    monkeypatch.setattr(settings, "event_bus_enabled", True)
+    monkeypatch.setattr(settings, "event_bus_backend", "kafka")
+    monkeypatch.setattr(settings, "event_bus_strict_startup", False)
+
+    fake_bus = CompositeEventBus(InProcessEventBus())
+    monkeypatch.setattr(bus_mod, "get_event_bus", lambda: fake_bus)
+
+    warnings: list[str] = []
+
+    def capture_warning(fmt: object, *args: object, **kwargs: object) -> None:
+        if args and isinstance(fmt, str) and "%" in fmt:
+            try:
+                warnings.append(fmt % args)
+            except Exception:
+                warnings.append(str(fmt))
+        else:
+            warnings.append(str(fmt))
+
+    monkeypatch.setattr(main_mod.logger, "warning", capture_warning)
+
+    main_mod._verify_event_bus_startup_alignment()
+    assert any("Kafka did not attach" in m for m in warnings)
+
+
+def test_verify_event_bus_startup_alignment_raises_when_strict_kafka_missing(monkeypatch):
+    import pytest
+
+    from core.events import bus as bus_mod
+    from core.events.bus import CompositeEventBus, InProcessEventBus
+    from config.settings import settings
+    import main as main_mod
+
+    monkeypatch.setattr(settings, "event_bus_enabled", True)
+    monkeypatch.setattr(settings, "event_bus_backend", "kafka")
+    monkeypatch.setattr(settings, "event_bus_strict_startup", True)
+
+    fake_bus = CompositeEventBus(InProcessEventBus())
+    monkeypatch.setattr(bus_mod, "get_event_bus", lambda: fake_bus)
+
+    with pytest.raises(RuntimeError, match="event_bus_strict_startup"):
+        main_mod._verify_event_bus_startup_alignment()

@@ -15,6 +15,9 @@ from core.data.vector_search import get_vector_provider
 
 Role = Literal["system", "user", "assistant", "tool"]
 
+# 与 settings.tenant_default_id / X-Tenant-Id 回落一致；ORM 层会话隔离命名空间
+DEFAULT_TENANT_ID = "default"
+
 
 @dataclass(frozen=True)
 class HistoryStoreConfig:
@@ -103,8 +106,18 @@ class HistoryStore:
                     conn.execute("ALTER TABLE messages ADD COLUMN request_id TEXT")
                 except sqlite3.OperationalError:
                     pass
+                try:
+                    conn.execute(
+                        "ALTER TABLE sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+                    )
+                except sqlite3.OperationalError:
+                    pass
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_sessions_user_updated_at ON sessions(user_id, updated_at);"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sessions_user_tenant_updated_at "
+                    "ON sessions(user_id, tenant_id, updated_at);"
                 )
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_messages_session_created_at ON messages(session_id, created_at);"
@@ -124,123 +137,162 @@ class HistoryStore:
     # ----------------------------
     # Sessions
     # ----------------------------
-    def create_session(self, *, user_id: str, title: str, last_model: Optional[str] = None) -> str:
+    def create_session(
+        self, *, user_id: str, title: str, last_model: Optional[str] = None, tenant_id: str = DEFAULT_TENANT_ID
+    ) -> str:
+        tid = (tenant_id or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
         sid = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO sessions (id, user_id, title, created_at, updated_at, last_model, deleted_at)
-                VALUES (?, ?, ?, ?, ?, ?, NULL)
+                INSERT INTO sessions (id, user_id, tenant_id, title, created_at, updated_at, last_model, deleted_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
-                (sid, user_id, title, now, now, last_model),
+                (sid, user_id, tid, title, now, now, last_model),
             )
         return sid
 
-    def touch_session(self, *, user_id: str, session_id: str, last_model: Optional[str] = None) -> None:
+    def touch_session(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        last_model: Optional[str] = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
+    ) -> None:
+        tid = (tenant_id or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE sessions
                 SET updated_at = ?, last_model = COALESCE(?, last_model)
-                WHERE user_id = ? AND id = ? AND deleted_at IS NULL
+                WHERE user_id = ? AND tenant_id = ? AND id = ? AND deleted_at IS NULL
                 """,
-                (now, last_model, user_id, session_id),
+                (now, last_model, user_id, tid, session_id),
             )
 
-    def rename_session(self, *, user_id: str, session_id: str, title: str) -> bool:
+    def rename_session(
+        self, *, user_id: str, session_id: str, title: str, tenant_id: str = DEFAULT_TENANT_ID
+    ) -> bool:
+        tid = (tenant_id or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             cur = conn.execute(
                 """
                 UPDATE sessions
                 SET title = ?, updated_at = ?
-                WHERE user_id = ? AND id = ? AND deleted_at IS NULL
+                WHERE user_id = ? AND tenant_id = ? AND id = ? AND deleted_at IS NULL
                 """,
-                (title, now, user_id, session_id),
+                (title, now, user_id, tid, session_id),
             )
             return cur.rowcount > 0
 
-    def delete_session(self, *, user_id: str, session_id: str, hard: bool = True) -> bool:
+    def delete_session(
+        self, *, user_id: str, session_id: str, hard: bool = True, tenant_id: str = DEFAULT_TENANT_ID
+    ) -> bool:
+        tid = (tenant_id or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
         with self._connect() as conn:
             if hard:
-                conn.execute("DELETE FROM messages WHERE session_id = ?;", (session_id,))
+                conn.execute(
+                    "DELETE FROM messages WHERE session_id IN "
+                    "(SELECT id FROM sessions WHERE user_id = ? AND tenant_id = ? AND id = ?);",
+                    (user_id, tid, session_id),
+                )
                 cur = conn.execute(
-                    "DELETE FROM sessions WHERE user_id = ? AND id = ?;",
-                    (user_id, session_id),
+                    "DELETE FROM sessions WHERE user_id = ? AND tenant_id = ? AND id = ?;",
+                    (user_id, tid, session_id),
                 )
                 return cur.rowcount > 0
             else:
                 now = datetime.now(timezone.utc).isoformat()
                 cur = conn.execute(
-                    "UPDATE sessions SET deleted_at = ? WHERE user_id = ? AND id = ?;",
-                    (now, user_id, session_id),
+                    "UPDATE sessions SET deleted_at = ? WHERE user_id = ? AND tenant_id = ? AND id = ?;",
+                    (now, user_id, tid, session_id),
                 )
                 return cur.rowcount > 0
 
-    def list_sessions(self, *, user_id: str, limit: int = 50, include_deleted: bool = False) -> list[dict[str, Any]]:
+    def list_sessions(
+        self,
+        *,
+        user_id: str,
+        limit: int = 50,
+        include_deleted: bool = False,
+        tenant_id: str = DEFAULT_TENANT_ID,
+    ) -> list[dict[str, Any]]:
+        tid = (tenant_id or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
         with self._connect() as conn:
             if include_deleted:
                 rows = conn.execute(
                     """
-                    SELECT id, user_id, title, created_at, updated_at, last_model, deleted_at
+                    SELECT id, user_id, tenant_id, title, created_at, updated_at, last_model, deleted_at
                     FROM sessions
-                    WHERE user_id = ?
+                    WHERE user_id = ? AND tenant_id = ?
                     ORDER BY updated_at DESC
                     LIMIT ?
                     """,
-                    (user_id, limit),
+                    (user_id, tid, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     """
-                    SELECT id, user_id, title, created_at, updated_at, last_model, deleted_at
+                    SELECT id, user_id, tenant_id, title, created_at, updated_at, last_model, deleted_at
                     FROM sessions
-                    WHERE user_id = ? AND deleted_at IS NULL
+                    WHERE user_id = ? AND tenant_id = ? AND deleted_at IS NULL
                     ORDER BY updated_at DESC
                     LIMIT ?
                     """,
-                    (user_id, limit),
+                    (user_id, tid, limit),
                 ).fetchall()
         return [dict(r) for r in rows]
 
-    def session_exists(self, *, user_id: str, session_id: str) -> bool:
+    def session_exists(
+        self, *, user_id: str, session_id: str, tenant_id: str = DEFAULT_TENANT_ID
+    ) -> bool:
+        tid = (tenant_id or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT 1 FROM sessions WHERE user_id = ? AND id = ? AND deleted_at IS NULL LIMIT 1;",
-                (user_id, session_id),
+                "SELECT 1 FROM sessions WHERE user_id = ? AND tenant_id = ? AND id = ? "
+                "AND deleted_at IS NULL LIMIT 1;",
+                (user_id, tid, session_id),
             ).fetchone()
             return row is not None
 
-    def get_session(self, *, user_id: str, session_id: str) -> Optional[dict[str, Any]]:
+    def get_session(
+        self, *, user_id: str, session_id: str, tenant_id: str = DEFAULT_TENANT_ID
+    ) -> Optional[dict[str, Any]]:
+        tid = (tenant_id or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, user_id, title, created_at, updated_at, last_model, deleted_at
+                SELECT id, user_id, tenant_id, title, created_at, updated_at, last_model, deleted_at
                 FROM sessions
-                WHERE user_id = ? AND id = ? AND deleted_at IS NULL
+                WHERE user_id = ? AND tenant_id = ? AND id = ? AND deleted_at IS NULL
                 LIMIT 1
                 """,
-                (user_id, session_id),
+                (user_id, tid, session_id),
             ).fetchone()
         return dict(row) if row else None
 
-    def get_recent_active_session_id(self, *, user_id: str, within_minutes: int = 15) -> Optional[str]:
+    def get_recent_active_session_id(
+        self, *, user_id: str, within_minutes: int = 15, tenant_id: str = DEFAULT_TENANT_ID
+    ) -> Optional[str]:
         """返回用户最近活跃会话 ID（用于无会话头时的自动复用）"""
         if within_minutes <= 0:
             return None
+        tid = (tenant_id or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
         threshold = (datetime.now(timezone.utc) - timedelta(minutes=within_minutes)).isoformat()
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT id
                 FROM sessions
-                WHERE user_id = ? AND deleted_at IS NULL AND updated_at >= ?
+                WHERE user_id = ? AND tenant_id = ? AND deleted_at IS NULL AND updated_at >= ?
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """,
-                (user_id, threshold),
+                (user_id, tid, threshold),
             ).fetchone()
         return row["id"] if row else None
 
@@ -256,6 +308,7 @@ class HistoryStore:
         model: Optional[str] = None,
         meta: Optional[dict[str, Any]] = None,
         request_id: Optional[str] = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> str:
         mid = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
@@ -276,16 +329,21 @@ class HistoryStore:
         else:
             content_str = content
         
+        tid = (tenant_id or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
         with self._connect() as conn:
-            # 获取 user_id（从 sessions 表查询，用于冗余存储）
+            # 获取 user_id（从 sessions 表查询，用于冗余存储）；校验租户防止跨租户 session_id 复用
             user_id_row = conn.execute(
-                "SELECT user_id FROM sessions WHERE id = ?",
+                "SELECT user_id, tenant_id FROM sessions WHERE id = ?",
                 (session_id,),
             ).fetchone()
-            
+
             if not user_id_row:
                 raise ValueError(f"Session {session_id} not found")
-            
+
+            row_tid = str(user_id_row["tenant_id"] or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
+            if row_tid != tid:
+                raise ValueError(f"Session {session_id} tenant mismatch")
+
             user_id = user_id_row["user_id"]
             
             # 插入消息（包含冗余的 user_id）
@@ -350,11 +408,12 @@ class HistoryStore:
         return mid
 
     def search_history(
-        self, 
-        *, 
-        user_id: str, 
-        query: str, 
-        limit: int = 5
+        self,
+        *,
+        user_id: str,
+        query: str,
+        limit: int = 5,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> List[dict[str, Any]]:
         """
         语义搜索历史消息（跨会话，使用 VectorSearchProvider）
@@ -365,6 +424,8 @@ class HistoryStore:
         norm_query = " ".join(query.strip().split())
         if not norm_query:
             return []
+
+        tid = (tenant_id or DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
 
         try:
             provider = get_vector_provider()
@@ -400,10 +461,10 @@ class HistoryStore:
                         m.rowid
                     FROM messages m
                     LEFT JOIN sessions s ON s.id = m.session_id
-                    WHERE m.rowid IN ({placeholders}) AND m.user_id = ?
+                    WHERE m.rowid IN ({placeholders}) AND m.user_id = ? AND s.tenant_id = ?
                     LIMIT ?
                     """,
-                    tuple(rowids) + (user_id, limit),
+                    tuple(rowids) + (user_id, tid, limit),
                 ).fetchall()
             
             # 按 VectorSearchProvider 返回的距离顺序排序
@@ -461,9 +522,16 @@ class HistoryStore:
             logger.warning(f"[HistoryStore] VectorSearchProvider init failed: {e}")
             return False
 
-    def list_messages(self, *, user_id: str, session_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    def list_messages(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        limit: int = 200,
+        tenant_id: str = DEFAULT_TENANT_ID,
+    ) -> list[dict[str, Any]]:
         # session 归属校验
-        if not self.session_exists(user_id=user_id, session_id=session_id):
+        if not self.session_exists(user_id=user_id, session_id=session_id, tenant_id=tenant_id):
             return []
         with self._connect() as conn:
             rows = conn.execute(

@@ -106,6 +106,16 @@ def test_make_help_contains_cb_entrypoints() -> None:
     _assert_targets_present(output, HELP_TARGET_GROUP_CONFIG["continuous_batching"]["targets"])
 
 
+def test_make_help_mentions_helm_chart_check() -> None:
+    output = _make_help_output()
+    assert "helm-chart-check" in output
+
+
+def test_make_help_mentions_helm_deploy_contract_check() -> None:
+    output = _make_help_output()
+    assert "helm-deploy-contract-check" in output
+
+
 def test_make_help_mentions_frontend_unit_coverage() -> None:
     output = _make_help_output()
     assert "make test-frontend-unit-coverage" in output

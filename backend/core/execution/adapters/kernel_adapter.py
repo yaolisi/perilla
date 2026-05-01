@@ -46,6 +46,7 @@ from core.agent_runtime.v2.models import Plan, AgentState, ExecutionTrace, StepL
 from core.agent_runtime.v2.agent_graph_adapter import AgentGraphAdapter
 from core.execution.adapters.plan_compiler import compile_plan
 from core.execution.adapters.node_executors import init_executors, get_executor_registry
+from core.system.runtime_settings import get_workflow_scheduler_max_concurrency
 
 
 logger = logging.getLogger(__name__)
@@ -413,17 +414,19 @@ class ExecutionKernelAdapter:
             cache = NodeCache(cache_repo)
             
             # V2.7: 创建 Scheduler 时传入 policy 和 snapshot
+            platform_cap = get_workflow_scheduler_max_concurrency()
             scheduler = Scheduler(
                 db=self.db,
                 state_machine=state_machine,
                 executor=None,
                 scheduler_policy=run_policy,
                 optimization_snapshot=run_snapshot,
+                max_concurrency=platform_cap,
             )
-            # Agent 级并发上限（parallel strategy 时才覆盖）
+            # Agent 级并发上限（parallel strategy 时覆盖，但不超过平台 cap）
             if graph_cfg.parallel_enabled and isinstance(graph_cfg.max_parallel_nodes, int):
-                scheduler._max_concurrency = graph_cfg.max_parallel_nodes
-                scheduler._semaphore = asyncio.Semaphore(scheduler._max_concurrency)
+                effective = min(int(graph_cfg.max_parallel_nodes), platform_cap)
+                scheduler.set_max_concurrency(effective)
             
             # Phase B: 创建完整的 runtime_context（包含 RePlan 所需信息）
             runtime_context = {

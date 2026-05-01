@@ -1,0 +1,35 @@
+# Ingress：由集群 Ingress Controller 提供 L7 负载均衡与 TLS 终结。
+# Helm：deploy/helm/perilla-backend（--set ingress.enabled=true）。
+# 替换 host / tls secret / ingressClassName 后应用。
+#
+# 超时协同（nginx ingress 示例注解）：
+# - 流式/SSE（如 /v1/chat/completions/stream）：proxy-read-timeout / proxy-send-timeout 须大于业务允许的整段流持续时间。
+#   若后端启用 CHAT_STREAM_WALL_CLOCK_MAX_SECONDS（>0），Ingress 读/写超时建议 ≥ 该值并留余量；未启用时按运维约定的最长会话设下限。
+# - HTTP Keep-Alive：后端 UVICORN_TIMEOUT_KEEP_ALIVE_SECONDS（默认未设置则用 Uvicorn 内置）与浏览器/LB 行为一致即可；长连接场景下通常 proxy-read-timeout ≥ Keep-Alive，避免空闲误判。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: perilla-backend
+  annotations:
+    # 示例：nginx ingress 上传体大小（按需）
+    # nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # 流式 API（与 backend-env 中 UVICORN_TIMEOUT_KEEP_ALIVE_SECONDS / CHAT_STREAM_* 协同调参）：
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: perilla-api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: perilla-backend
+                port:
+                  number: 8000
+  tls:
+    - hosts:
+        - perilla-api.example.com
+      secretName: perilla-api-tls

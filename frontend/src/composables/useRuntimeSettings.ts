@@ -91,6 +91,7 @@ export function useRuntimeSettings() {
   const agentStepDefaultTimeoutSeconds = ref(0)
   const agentStepDefaultMaxRetries = ref(0)
   const agentStepDefaultRetryIntervalSeconds = ref(1)
+  const workflowSchedulerMaxConcurrency = ref(10)
   const workflowGovernanceHealthyThreshold = ref(0.1)
   const workflowGovernanceWarningThreshold = ref(0.3)
   const inferencePriorityPanelHighSloCriticalRate = ref(0.95)
@@ -237,6 +238,16 @@ export function useRuntimeSettings() {
           agentStepDefaultRetryIntervalSeconds.value = 1
         }
       }
+      {
+        const fbW = 10
+        const wc = s.workflowSchedulerMaxConcurrency
+        if (wc !== undefined && wc !== null && String(wc) !== '') {
+          const n = Math.min(256, Math.max(1, Math.floor(Number(wc))))
+          workflowSchedulerMaxConcurrency.value = Number.isNaN(n) ? fbW : n
+        } else {
+          workflowSchedulerMaxConcurrency.value = fbW
+        }
+      }
       workflowGovernanceHealthyThreshold.value = parseFloat01(
         s.workflowGovernanceHealthyThreshold,
         0.1,
@@ -298,6 +309,10 @@ export function useRuntimeSettings() {
         ),
         skillDiscoveryMinHybridScore: parseFloat01(skillDiscoveryMinHybridScore.value, 0),
         agentPlanMaxParallelSteps: Math.min(32, Math.max(1, Math.floor(Number(agentPlanMaxParallelSteps.value) || 4))),
+        workflowSchedulerMaxConcurrency: Math.min(
+          256,
+          Math.max(1, Math.floor(Number(workflowSchedulerMaxConcurrency.value) || 10)),
+        ),
         agentStepDefaultTimeoutSeconds: Math.min(3600, Math.max(0, Number(agentStepDefaultTimeoutSeconds.value) || 0)),
         agentStepDefaultMaxRetries: Math.min(20, Math.max(0, Math.floor(Number(agentStepDefaultMaxRetries.value) || 0))),
         agentStepDefaultRetryIntervalSeconds: Math.min(
@@ -835,6 +850,7 @@ export function useRuntimeSettings() {
     agentStepDefaultTimeoutSeconds,
     agentStepDefaultMaxRetries,
     agentStepDefaultRetryIntervalSeconds,
+    workflowSchedulerMaxConcurrency,
     workflowGovernanceHealthyThreshold,
     workflowGovernanceWarningThreshold,
     inferencePriorityPanelHighSloCriticalRate,

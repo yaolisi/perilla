@@ -56,6 +56,7 @@ from execution_kernel.models.graph_definition import NodeDefinition
 from execution_kernel.models.node_models import NodeCacheEntry
 from execution_kernel.models.graph_instance import NodeCacheDB
 from config.settings import settings
+from core.system.runtime_settings import get_workflow_scheduler_max_concurrency
 from log import logger
 
 
@@ -123,7 +124,12 @@ class WorkflowRuntime:
             # Workflow 使用基础 node handlers（llm, tool, condition 等）
             node_handlers = self._create_default_node_handlers()
             executor = Executor(state_machine, cache, node_handlers)
-            self.scheduler = Scheduler(db_instance, state_machine, executor)
+            self.scheduler = Scheduler(
+                db_instance,
+                state_machine,
+                executor,
+                max_concurrency=get_workflow_scheduler_max_concurrency(),
+            )
     
     @staticmethod
     def _validate_simple_output_schema(
