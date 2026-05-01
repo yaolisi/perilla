@@ -30,7 +30,7 @@ anyio==4.12.1
 aiofiles==25.1.0
 redis>=5.0.0
 aiokafka>=0.11.0
-python-dotenv==1.2.1
+python-dotenv==1.2.2
 cryptography>=42.0.0
 
 # --- 系统与监控 ---
