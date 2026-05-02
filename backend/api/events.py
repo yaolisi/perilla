@@ -2,6 +2,9 @@
 V2.6: Observability & Replay Layer - Event API
 提供事件流查询、回放和指标计算的 API
 """
+from __future__ import annotations
+
+import re
 from typing import Annotated, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
@@ -25,6 +28,39 @@ from execution_kernel.analytics.metrics import MetricsCalculator
 from sqlalchemy import select, distinct
 
 router = APIRouter(prefix="/api/events", tags=["Events & Replay"])
+
+# Agent session id：用于路径与 JSON 子串匹配；禁止 LIKE 元字符与注入畸形输入（生产向约束）
+_AGENT_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_.@-]{1,128}$")
+
+
+def _validate_agent_session_id_value(session_id: str) -> str:
+    raw = session_id if isinstance(session_id, str) else ""
+    if any(c.isspace() for c in raw):
+        raise_api_error(
+            status_code=400,
+            code="events_invalid_agent_session_id",
+            message="invalid agent session id",
+            details={"reason": "whitespace_not_allowed"},
+        )
+    s = raw.strip()
+    if not _AGENT_SESSION_ID_RE.fullmatch(s):
+        raise_api_error(
+            status_code=400,
+            code="events_invalid_agent_session_id",
+            message="invalid agent session id",
+            details={"max_length": 128, "pattern": "alphanumeric, dot, underscore, hyphen, at"},
+        )
+    return s
+
+
+def _payload_json_session_substring_like_pattern(normalized_session_id: str) -> str:
+    """匹配 payload 中 \"session_id\": \"...\" 子串；对 LIKE 的 % _ \\ 转义。"""
+    esc = (
+        normalized_session_id.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    return f"%\"session_id\": \"{esc}\"%"
 
 
 # =========================
@@ -261,12 +297,14 @@ async def get_agent_session_events(
     通过 GraphStarted 事件 payload.initial_context.session_id 反查相关 instance。
     """
     try:
+        sid_val = _validate_agent_session_id_value(session_id)
         tenant_id = resolve_api_tenant_id(request)
         db = _get_db()
+        like_pat = _payload_json_session_substring_like_pattern(sid_val)
         async with db.async_session() as session:
             rows = await session.execute(
                 select(distinct(ExecutionEventDB.instance_id))
-                .where(ExecutionEventDB.payload_json.like(f"%\"session_id\": \"{session_id}\"%"))
+                .where(ExecutionEventDB.payload_json.like(like_pat, escape="\\"))
                 .order_by(ExecutionEventDB.instance_id.desc())
                 .limit(limit_instances)
             )
@@ -280,7 +318,7 @@ async def get_agent_session_events(
                 events = await store.get_events(instance_id=instance_id, start_sequence=1, end_sequence=None)
                 out[instance_id] = [_event_to_response(e) for e in events]
             return AgentSessionEventsResponse(
-                session_id=session_id,
+                session_id=sid_val,
                 instance_count=len(instance_ids),
                 instances=AgentSessionInstancesMap(out),
             )
