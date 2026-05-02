@@ -55,6 +55,7 @@ class PrometheusBusinessMetrics:
             self.health_ready_api_rate_limit_redis_degraded = noop
             self.health_ready_shutting_down = noop
             self.events_api_requests_total = noop
+            self.events_api_auth_blocked_total = noop
             self._legacy_mirror = False
             return
 
@@ -177,6 +178,12 @@ class PrometheusBusinessMetrics:
             "perilla_events_api_requests_total",
             "Execution Kernel /api/events 已进入业务处理（依赖鉴权通过后）的请求次数",
             labelnames=("handler",),
+        )
+
+        self.events_api_auth_blocked_total = Counter(
+            "perilla_events_api_auth_blocked_total",
+            "/api/events 鉴权依赖拒绝（如 rbac_disabled、后续可扩展 reason）",
+            labelnames=("reason",),
         )
 
         self._legacy_mirror = bool(getattr(settings, "metrics_legacy_openvitamin_names_enabled", True))
@@ -321,6 +328,10 @@ class PrometheusBusinessMetrics:
     def observe_events_api_request(self, *, handler: str) -> None:
         h = (handler or "unknown").strip() or "unknown"
         self.events_api_requests_total.labels(handler=h).inc()
+
+    def observe_events_api_auth_blocked(self, *, reason: str) -> None:
+        r = (reason or "unknown").strip() or "unknown"
+        self.events_api_auth_blocked_total.labels(reason=r).inc()
 
 
 _metrics: Optional[PrometheusBusinessMetrics] = None

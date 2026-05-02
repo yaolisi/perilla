@@ -39,6 +39,10 @@ def _enforce_events_api_authentication(request: Request) -> None:
     if not get_events_api_require_authenticated():
         return
     if not bool(getattr(settings, "rbac_enabled", False)):
+        try:
+            get_prometheus_business_metrics().observe_events_api_auth_blocked(reason="rbac_disabled")
+        except Exception:
+            pass
         raise_api_error(
             status_code=400,
             code="events_auth_requires_rbac",

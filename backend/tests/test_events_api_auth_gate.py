@@ -9,6 +9,7 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 from api import events as events_api
+from api.errors import APIException
 from config.settings import settings
 from tests.helpers import make_fastapi_app_router_only
 
@@ -48,6 +49,18 @@ def test_events_api_returns_401_when_auth_required_without_api_key(monkeypatch: 
     client = TestClient(app)
     r = client.get("/api/events/instance/gi-not-found-test")
     assert r.status_code == 401
+
+
+def test_rbac_misconfig_records_prometheus_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(events_api, "get_events_api_require_authenticated", lambda: True)
+    monkeypatch.setattr(settings, "rbac_enabled", False, raising=False)
+    pm = MagicMock()
+    monkeypatch.setattr(events_api, "get_prometheus_business_metrics", lambda: pm)
+    req = MagicMock(spec=Request)
+    with pytest.raises(APIException) as ei:
+        events_api._enforce_events_api_authentication(req)
+    assert ei.value.code == "events_auth_requires_rbac"
+    pm.observe_events_api_auth_blocked.assert_called_once_with(reason="rbac_disabled")
 
 
 def test_events_api_returns_400_when_gate_on_but_rbac_disabled(monkeypatch: pytest.MonkeyPatch) -> None:

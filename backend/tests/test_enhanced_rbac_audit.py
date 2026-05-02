@@ -5,6 +5,7 @@ from core.security.rbac import (
     PlatformRole,
     parse_api_key_list,
     resolve_role_from_api_key,
+    viewer_http_access_denied,
     viewer_http_write_denied,
 )
 from middleware.request_trace import _trace_id_from_traceparent
@@ -44,6 +45,20 @@ def test_resolve_role_from_api_key():
 )
 def test_viewer_write_denied(method, path, denied):
     assert viewer_http_write_denied(method, path) is denied
+
+
+@pytest.mark.parametrize(
+    "method,path,denied",
+    [
+        ("GET", "/api/events/instance/gi", True),
+        ("HEAD", "/api/events/agent-session/s1", True),
+        ("OPTIONS", "/api/events/instance/gi", False),
+        ("GET", "/api/v1/workflows/w1", False),
+        ("POST", "/api/v1/workflows/w1", True),
+    ],
+)
+def test_viewer_access_denied_includes_events_observability(method, path, denied):
+    assert viewer_http_access_denied(method, path) is denied
 
 
 def test_traceparent_parses_trace_id():

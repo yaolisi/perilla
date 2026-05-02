@@ -12,7 +12,7 @@ from core.security.rbac import (
     PlatformRole,
     parse_api_key_list,
     resolve_role_from_api_key,
-    viewer_http_write_denied,
+    viewer_http_access_denied,
 )
 
 
@@ -44,7 +44,7 @@ class RBACEnforcementMiddleware(BaseHTTPMiddleware):
         if role != PlatformRole.VIEWER:
             return await call_next(request)
 
-        if viewer_http_write_denied(request.method, request.url.path):
+        if viewer_http_access_denied(request.method, request.url.path):
             return JSONResponse(
                 status_code=403,
                 content={

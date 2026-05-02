@@ -68,3 +68,17 @@ def viewer_http_write_denied(method: str, path: str) -> bool:
     if p.startswith("/api/v1/audit"):
         return True
     return False
+
+
+def viewer_http_access_denied(method: str, path: str) -> bool:
+    """
+    viewer 是否应被拒绝：包含写拒绝 + 敏感只读前缀（如 Execution Kernel 事件观测）。
+    OPTIONS 放行以便浏览器 CORS 预检。
+    """
+    if viewer_http_write_denied(method, path):
+        return True
+    m = (method or "").upper()
+    p = path or ""
+    if m in ("GET", "HEAD") and p.startswith("/api/events"):
+        return True
+    return False

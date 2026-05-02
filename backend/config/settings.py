@@ -906,6 +906,7 @@ class Settings(BaseSettings):
     audit_log_enabled: bool = False
     # 逗号分隔路径前缀；匹配则记录（响应完成后写入 audit_logs）
     # 逗号分隔；/api/v1/audit 由中间件硬编码排除，避免自引用写放大
+    # 合规场景可将 /api/events 加入前缀并开启 audit_log_include_get 以审计观测读路径
     audit_log_path_prefixes: str = "/api/v1/workflows"
     # 是否记录 GET（默认仅写操作语义上已包含 GET 时需显式打开）
     audit_log_include_get: bool = False
