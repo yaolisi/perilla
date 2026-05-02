@@ -163,6 +163,16 @@ def _log_production_operational_warnings() -> None:
             "[SecurityBaseline] api_rate_limit_redis_url is empty while API rate limiting is enabled: "
             "limits apply per process only; set API_RATE_LIMIT_REDIS_URL for consistent enforcement across replicas."
         )
+    _arl_gateway_mw_active = bool(
+        getattr(settings, "api_rate_limit_enabled", True)
+        and int(getattr(settings, "api_rate_limit_requests", 0) or 0) > 0
+    )
+    if bool(getattr(settings, "events_api_require_authenticated", False)) and not _arl_gateway_mw_active:
+        logger.warning(
+            "[SecurityBaseline] events_api_require_authenticated=True but gateway rate-limit middleware is not active "
+            "(requires API_RATE_LIMIT_ENABLED=true and API_RATE_LIMIT_REQUESTS>0). "
+            "/api/events is not protected by the built-in limiter; use ingress/WAF limits or enable global RL."
+        )
     if (
         bool(getattr(settings, "api_rate_limit_enabled", False))
         and int(getattr(settings, "api_rate_limit_requests", 0) or 0) > 0

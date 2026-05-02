@@ -325,6 +325,23 @@ def test_log_production_warns_when_events_auth_without_dedicated_events_rate_lim
     assert any("API_RATE_LIMIT_EVENTS_REQUESTS" in m for m in warnings)
 
 
+def test_log_production_warns_when_events_auth_but_gateway_rl_middleware_inactive(monkeypatch):
+    """events 要求认证时若全局限流未挂载（与 main.py 门闩一致），提示无内置网关限流。"""
+    warnings: list[str] = []
+
+    def _capture(msg: str, *a, **k) -> None:
+        warnings.append(msg)
+
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod.logger, "warning", _capture)
+    monkeypatch.setattr(main_mod.settings, "events_api_require_authenticated", True)
+    monkeypatch.setattr(main_mod.settings, "api_rate_limit_enabled", True)
+    monkeypatch.setattr(main_mod.settings, "api_rate_limit_requests", 0)
+    main_mod._log_production_operational_warnings()
+    assert any("gateway rate-limit middleware is not active" in m for m in warnings)
+
+
 def test_validate_production_security_guardrails_allows_safe_profile():
     import types as _types
     from config.settings import validate_production_security_guardrails

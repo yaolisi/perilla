@@ -127,9 +127,14 @@ export function useRuntimeSettings() {
   const apiRateLimitEnabledEffective = ref<boolean>(true)
   const apiRateLimitRequestsEffective = ref<number>(0)
   const apiRateLimitWindowSecondsEffective = ref<number>(60)
+  const apiRateLimitMiddlewareActiveEffective = ref<boolean>(false)
+  const apiRateLimitRedisBackendConfiguredEffective = ref<boolean>(false)
+  const apiRateLimitUserMaxConcurrentEffective = ref<number>(5)
+  const apiRateLimitTrustXForwardedForEffective = ref<boolean>(true)
   /** 进程环境（Helm/.env）：/api/events* 专用限流；0 表示与全局限流共用计数键 */
   const apiRateLimitEventsRequestsEffective = ref<number>(0)
   const apiRateLimitEventsPathPrefixEffective = ref<string>('/api/events')
+  const apiRateLimitEventsDedicatedBucketActiveEffective = ref<boolean>(false)
   const isSaving = ref(false)
   const saveSuccess = ref(false)
   const saveError = ref('')
@@ -167,6 +172,23 @@ export function useRuntimeSettings() {
           typeof w === 'number' && !Number.isNaN(w) ? Math.max(1, Math.floor(Number(w))) : 60
       }
       {
+        const m = c.api_rate_limit_middleware_active_effective
+        apiRateLimitMiddlewareActiveEffective.value = typeof m === 'boolean' ? m : false
+      }
+      {
+        const r = c.api_rate_limit_redis_backend_configured_effective
+        apiRateLimitRedisBackendConfiguredEffective.value = typeof r === 'boolean' ? r : false
+      }
+      {
+        const u = c.api_rate_limit_user_max_concurrent_effective
+        apiRateLimitUserMaxConcurrentEffective.value =
+          typeof u === 'number' && !Number.isNaN(u) ? Math.max(1, Math.floor(Number(u))) : 5
+      }
+      {
+        const x = c.api_rate_limit_trust_x_forwarded_for_effective
+        apiRateLimitTrustXForwardedForEffective.value = typeof x === 'boolean' ? x : true
+      }
+      {
         const q = c.api_rate_limit_events_requests_effective
         apiRateLimitEventsRequestsEffective.value =
           typeof q === 'number' && !Number.isNaN(q) ? Math.floor(Number(q)) : 0
@@ -175,6 +197,10 @@ export function useRuntimeSettings() {
         const p = c.api_rate_limit_events_path_prefix_effective
         apiRateLimitEventsPathPrefixEffective.value =
           typeof p === 'string' && p.trim() ? p.trim() : '/api/events'
+      }
+      {
+        const d = c.api_rate_limit_events_dedicated_bucket_active_effective
+        apiRateLimitEventsDedicatedBucketActiveEffective.value = typeof d === 'boolean' ? d : false
       }
       const s = c.settings ?? {}
       autoUnloadLocalModelOnSwitch.value = parseBool(s.autoUnloadLocalModelOnSwitch, false)
@@ -902,8 +928,13 @@ export function useRuntimeSettings() {
     apiRateLimitEnabledEffective,
     apiRateLimitRequestsEffective,
     apiRateLimitWindowSecondsEffective,
+    apiRateLimitMiddlewareActiveEffective,
+    apiRateLimitRedisBackendConfiguredEffective,
+    apiRateLimitUserMaxConcurrentEffective,
+    apiRateLimitTrustXForwardedForEffective,
     apiRateLimitEventsRequestsEffective,
     apiRateLimitEventsPathPrefixEffective,
+    apiRateLimitEventsDedicatedBucketActiveEffective,
     config,
     isSaving,
     saveSuccess,

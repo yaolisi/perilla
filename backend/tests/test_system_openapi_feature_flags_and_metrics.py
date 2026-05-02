@@ -192,8 +192,13 @@ def test_openapi_system_config_named_schemas() -> None:
         "api_rate_limit_enabled_effective",
         "api_rate_limit_requests_effective",
         "api_rate_limit_window_seconds_effective",
+        "api_rate_limit_middleware_active_effective",
+        "api_rate_limit_redis_backend_configured_effective",
+        "api_rate_limit_user_max_concurrent_effective",
+        "api_rate_limit_trust_x_forwarded_for_effective",
         "api_rate_limit_events_requests_effective",
         "api_rate_limit_events_path_prefix_effective",
+        "api_rate_limit_events_dedicated_bucket_active_effective",
     }
 
     cfg_post = paths["/api/system/config"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
@@ -218,8 +223,13 @@ def test_openapi_system_config_named_schemas() -> None:
     assert isinstance(body["api_rate_limit_enabled_effective"], bool)
     assert isinstance(body["api_rate_limit_requests_effective"], int)
     assert isinstance(body["api_rate_limit_window_seconds_effective"], int)
+    assert isinstance(body["api_rate_limit_middleware_active_effective"], bool)
+    assert isinstance(body["api_rate_limit_redis_backend_configured_effective"], bool)
+    assert isinstance(body["api_rate_limit_user_max_concurrent_effective"], int)
+    assert isinstance(body["api_rate_limit_trust_x_forwarded_for_effective"], bool)
     assert isinstance(body["api_rate_limit_events_requests_effective"], int)
     assert isinstance(body["api_rate_limit_events_path_prefix_effective"], str)
+    assert isinstance(body["api_rate_limit_events_dedicated_bucket_active_effective"], bool)
 
 
 def test_openapi_plugins_and_market_named_schemas() -> None:

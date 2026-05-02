@@ -1434,6 +1434,7 @@
       "rl_on": "On",
       "rl_off": "Off",
       "api_rate_limit_global_env_hint": "Global API rate limit (read-only): {enabled}, up to {requests} requests per {window}s. Configure API_RATE_LIMIT_ENABLED, API_RATE_LIMIT_REQUESTS, API_RATE_LIMIT_WINDOW_SECONDS.",
+      "api_rate_limit_runtime_detail_hint": "Limiter runtime (read-only): middleware mounted {mw}; Redis-backed counter {redis}; max concurrent per identity {conc}; trust X-Forwarded-For {xff}; /api/events dedicated bucket {evDedicated}. Middleware mounts only when rate limiting is enabled and the request quota per window is greater than zero.",
       "events_api_rate_limit_env_hint": "Gateway env (read-only): dedicated {prefix} quota = {quota} requests per window (0 = share global rate-limit counter). Configure API_RATE_LIMIT_EVENTS_* in Helm or process env.",
       "workflow_scheduler_title": "Workflow DAG parallelism",
       "workflow_scheduler_desc": "Caps how many workflow nodes can run concurrently within one execution instance; combined with Agent graph max_parallel_nodes as min(platform cap, graph cap) to avoid overload or SQLite lock contention.",

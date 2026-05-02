@@ -101,8 +101,13 @@ const {
   apiRateLimitEnabledEffective,
   apiRateLimitRequestsEffective,
   apiRateLimitWindowSecondsEffective,
+  apiRateLimitMiddlewareActiveEffective,
+  apiRateLimitRedisBackendConfiguredEffective,
+  apiRateLimitUserMaxConcurrentEffective,
+  apiRateLimitTrustXForwardedForEffective,
   apiRateLimitEventsRequestsEffective,
   apiRateLimitEventsPathPrefixEffective,
+  apiRateLimitEventsDedicatedBucketActiveEffective,
   inferenceSmartRoutingEnabled,
   inferenceSmartRoutingPoliciesJson,
   skillDiscoveryTagMatchWeight,
@@ -693,6 +698,25 @@ watch(
                         : t('settings.runtime.rl_off'),
                       requests: apiRateLimitRequestsEffective,
                       window: apiRateLimitWindowSecondsEffective,
+                    })
+                  }}
+                </p>
+                <p class="text-xs text-muted-foreground pt-1 leading-relaxed">
+                  {{
+                    t('settings.runtime.api_rate_limit_runtime_detail_hint', {
+                      mw: apiRateLimitMiddlewareActiveEffective
+                        ? t('settings.runtime.rl_on')
+                        : t('settings.runtime.rl_off'),
+                      redis: apiRateLimitRedisBackendConfiguredEffective
+                        ? t('settings.runtime.rl_on')
+                        : t('settings.runtime.rl_off'),
+                      conc: apiRateLimitUserMaxConcurrentEffective,
+                      xff: apiRateLimitTrustXForwardedForEffective
+                        ? t('settings.runtime.rl_on')
+                        : t('settings.runtime.rl_off'),
+                      evDedicated: apiRateLimitEventsDedicatedBucketActiveEffective
+                        ? t('settings.runtime.rl_on')
+                        : t('settings.runtime.rl_off'),
                     })
                   }}
                 </p>

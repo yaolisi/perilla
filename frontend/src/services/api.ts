@@ -1022,9 +1022,14 @@ export interface SystemConfig {
   api_rate_limit_enabled_effective?: boolean
   api_rate_limit_requests_effective?: number
   api_rate_limit_window_seconds_effective?: number
+  api_rate_limit_middleware_active_effective?: boolean
+  api_rate_limit_redis_backend_configured_effective?: boolean
+  api_rate_limit_user_max_concurrent_effective?: number
+  api_rate_limit_trust_x_forwarded_for_effective?: boolean
   /** 网关进程环境：/api/events* 专用限流配额（0 表示与全局限流共用计数键） */
   api_rate_limit_events_requests_effective?: number
   api_rate_limit_events_path_prefix_effective?: string
+  api_rate_limit_events_dedicated_bucket_active_effective?: boolean
 }
 
 export async function getSystemMetrics(): Promise<SystemMetrics> {

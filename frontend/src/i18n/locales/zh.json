@@ -1434,6 +1434,7 @@
       "rl_on": "已启用",
       "rl_off": "未启用",
       "api_rate_limit_global_env_hint": "全局限流（只读）：{enabled}，每 {window} 秒最多 {requests} 次请求。请配置 API_RATE_LIMIT_ENABLED、API_RATE_LIMIT_REQUESTS、API_RATE_LIMIT_WINDOW_SECONDS。",
+      "api_rate_limit_runtime_detail_hint": "限流运行时（只读）：中间件已挂载 {mw}；Redis 共池计数 {redis}；单身份并发上限 {conc}；信任 X-Forwarded-For {xff}；/api/events 独立计数桶 {evDedicated}。仅当全局限流开启且每窗口配额大于 0 时才会挂载限流中间件。",
       "events_api_rate_limit_env_hint": "网关环境变量（只读）：路径前缀 {prefix} 的专用窗口配额为每窗口 {quota} 次请求（0 表示与全局限流共用计数键）。请在 Helm 或进程环境配置 API_RATE_LIMIT_EVENTS_*。",
       "workflow_scheduler_title": "工作流 DAG 并行调度",
       "workflow_scheduler_desc": "限制 execution_kernel 在同一运行实例内可同时执行的节点数；与 Agent 并行策略中的 max_parallel_nodes 取较小值，防止宽 DAG 撑爆 CPU/GPU 或 SQLite 锁竞争。",

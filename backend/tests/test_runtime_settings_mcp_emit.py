@@ -92,8 +92,34 @@ def test_get_config_includes_mcp_emit_effective(monkeypatch):
     assert isinstance(body.get("api_rate_limit_enabled_effective"), bool)
     assert isinstance(body.get("api_rate_limit_requests_effective"), int)
     assert isinstance(body.get("api_rate_limit_window_seconds_effective"), int)
+    assert isinstance(body.get("api_rate_limit_middleware_active_effective"), bool)
+    assert isinstance(body.get("api_rate_limit_redis_backend_configured_effective"), bool)
+    assert isinstance(body.get("api_rate_limit_user_max_concurrent_effective"), int)
+    assert isinstance(body.get("api_rate_limit_trust_x_forwarded_for_effective"), bool)
     assert isinstance(body.get("api_rate_limit_events_requests_effective"), int)
     assert isinstance(body.get("api_rate_limit_events_path_prefix_effective"), str)
+    assert isinstance(body.get("api_rate_limit_events_dedicated_bucket_active_effective"), bool)
+
+
+@pytest.mark.no_fallback
+def test_get_config_middleware_active_matches_main_gate(monkeypatch):
+    """api_rate_limit_middleware_active_effective 须与 main.py 挂载条件一致（enabled 且 requests>0）。"""
+    client = _build_client()
+
+    class _FakeStore:
+        def get_all_settings(self):
+            return {}
+
+    monkeypatch.setattr(system_api, "get_system_settings_store", lambda: _FakeStore())
+    monkeypatch.setattr(system_api, "get_mcp_http_emit_server_push_events", lambda: False)
+    s = system_api.settings
+    monkeypatch.setattr(s, "api_rate_limit_enabled", True, raising=False)
+    monkeypatch.setattr(s, "api_rate_limit_requests", 0, raising=False)
+    assert client.get("/api/system/config").json().get("api_rate_limit_middleware_active_effective") is False
+    monkeypatch.setattr(s, "api_rate_limit_requests", 100, raising=False)
+    assert client.get("/api/system/config").json().get("api_rate_limit_middleware_active_effective") is True
+    monkeypatch.setattr(s, "api_rate_limit_enabled", False, raising=False)
+    assert client.get("/api/system/config").json().get("api_rate_limit_middleware_active_effective") is False
 
 
 @pytest.mark.no_fallback

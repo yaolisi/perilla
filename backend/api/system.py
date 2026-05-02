@@ -839,9 +839,17 @@ class SystemConfigReadResponse(BaseModel):
     api_rate_limit_enabled_effective: bool
     api_rate_limit_requests_effective: int
     api_rate_limit_window_seconds_effective: int
+    # 与 main.py 一致：仅 api_rate_limit_enabled 且 requests>0 时挂载 InMemoryRateLimitMiddleware
+    api_rate_limit_middleware_active_effective: bool
+    # 是否配置了 API_RATE_LIMIT_REDIS_URL（多副本共池）；不返回 URL 本体
+    api_rate_limit_redis_backend_configured_effective: bool
+    api_rate_limit_user_max_concurrent_effective: int
+    api_rate_limit_trust_x_forwarded_for_effective: bool
     # 进程环境（Helm/.env）：/api/events* 专用限流；0 表示与全局限流共用窗口计数键
     api_rate_limit_events_requests_effective: int
     api_rate_limit_events_path_prefix_effective: str
+    # api_rate_limit_events_requests>0 时启用 ev: 独立计数桶
+    api_rate_limit_events_dedicated_bucket_active_effective: bool
 
 
 class SystemConfigUpdateResponse(BaseModel):
@@ -1230,6 +1238,15 @@ async def get_config() -> SystemConfigReadResponse:
     if _arl_ws < 1:
         _arl_ws = 1
 
+    _arl_en = bool(getattr(settings, "api_rate_limit_enabled", True))
+    _arl_req = int(getattr(settings, "api_rate_limit_requests", 0) or 0)
+    _arl_mw_active = bool(_arl_en and _arl_req > 0)
+    _arl_redis_url = (getattr(settings, "api_rate_limit_redis_url", "") or "").strip()
+    _arl_ev_req = int(getattr(settings, "api_rate_limit_events_requests", 0) or 0)
+    _arl_uconc = int(getattr(settings, "api_rate_limit_user_max_concurrent_requests", 5) or 5)
+    if _arl_uconc < 1:
+        _arl_uconc = 1
+
     return SystemConfigReadResponse(
         ollama_base_url=str(settings.ollama_base_url),
         localai_base_url=str(settings.localai_base_url),
@@ -1239,11 +1256,18 @@ async def get_config() -> SystemConfigReadResponse:
         local_model_directory=resolved_dir,
         settings=db_settings,
         mcp_http_emit_server_push_events_effective=get_mcp_http_emit_server_push_events(),
-        api_rate_limit_enabled_effective=bool(getattr(settings, "api_rate_limit_enabled", True)),
-        api_rate_limit_requests_effective=int(getattr(settings, "api_rate_limit_requests", 0) or 0),
+        api_rate_limit_enabled_effective=_arl_en,
+        api_rate_limit_requests_effective=_arl_req,
         api_rate_limit_window_seconds_effective=_arl_ws,
-        api_rate_limit_events_requests_effective=int(getattr(settings, "api_rate_limit_events_requests", 0) or 0),
+        api_rate_limit_middleware_active_effective=_arl_mw_active,
+        api_rate_limit_redis_backend_configured_effective=bool(_arl_redis_url),
+        api_rate_limit_user_max_concurrent_effective=_arl_uconc,
+        api_rate_limit_trust_x_forwarded_for_effective=bool(
+            getattr(settings, "api_rate_limit_trust_x_forwarded_for", True)
+        ),
+        api_rate_limit_events_requests_effective=_arl_ev_req,
         api_rate_limit_events_path_prefix_effective=_ev_ep,
+        api_rate_limit_events_dedicated_bucket_active_effective=bool(_arl_ev_req > 0),
     )
 
 @router.post("/config")
