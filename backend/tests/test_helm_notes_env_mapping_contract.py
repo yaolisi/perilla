@@ -17,6 +17,17 @@ def test_helm_notes_documents_api_rate_limit_trust_x_forwarded_mapping() -> None
 
 
 @pytest.mark.requires_monorepo
+def test_helm_notes_documents_api_rate_limit_events_path_mapping() -> None:
+    p = repo_path("deploy/helm/perilla-backend/templates/NOTES.txt")
+    assert p.is_file()
+    text = p.read_text(encoding="utf-8")
+    assert "apiRateLimitEventsRequests" in text
+    assert "API_RATE_LIMIT_EVENTS_REQUESTS" in text
+    assert "apiRateLimitEventsPathPrefix" in text
+    assert "API_RATE_LIMIT_EVENTS_PATH_PREFIX" in text
+
+
+@pytest.mark.requires_monorepo
 def test_helm_notes_documents_rbac_api_keys_production_guardrail() -> None:
     p = repo_path("deploy/helm/perilla-backend/templates/NOTES.txt")
     assert p.is_file()

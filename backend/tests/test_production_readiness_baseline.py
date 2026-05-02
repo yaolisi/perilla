@@ -307,6 +307,24 @@ def test_validate_production_security_guardrails_blocks_high_risk():
     assert any("tool_net_http_allowed_hosts" in x for x in issues)
 
 
+def test_log_production_warns_when_events_auth_without_dedicated_events_rate_limit(monkeypatch):
+    """生产启动建议：events 认证开启且未配 API_RATE_LIMIT_EVENTS_REQUESTS 时提示独立窗口。"""
+    warnings: list[str] = []
+
+    def _capture(msg: str, *a, **k) -> None:
+        warnings.append(msg)
+
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod.logger, "warning", _capture)
+    monkeypatch.setattr(main_mod.settings, "api_rate_limit_enabled", True)
+    monkeypatch.setattr(main_mod.settings, "api_rate_limit_requests", 120)
+    monkeypatch.setattr(main_mod.settings, "api_rate_limit_events_requests", 0)
+    monkeypatch.setattr(main_mod.settings, "events_api_require_authenticated", True)
+    main_mod._log_production_operational_warnings()
+    assert any("API_RATE_LIMIT_EVENTS_REQUESTS" in m for m in warnings)
+
+
 def test_validate_production_security_guardrails_allows_safe_profile():
     import types as _types
     from config.settings import validate_production_security_guardrails

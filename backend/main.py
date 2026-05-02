@@ -163,6 +163,17 @@ def _log_production_operational_warnings() -> None:
             "[SecurityBaseline] api_rate_limit_redis_url is empty while API rate limiting is enabled: "
             "limits apply per process only; set API_RATE_LIMIT_REDIS_URL for consistent enforcement across replicas."
         )
+    if (
+        bool(getattr(settings, "api_rate_limit_enabled", False))
+        and int(getattr(settings, "api_rate_limit_requests", 0) or 0) > 0
+        and int(getattr(settings, "api_rate_limit_events_requests", 0) or 0) == 0
+        and bool(getattr(settings, "events_api_require_authenticated", False))
+    ):
+        logger.warning(
+            "[SecurityBaseline] events_api_require_authenticated=True: /api/events shares the global rate-limit "
+            "counter (API_RATE_LIMIT_EVENTS_REQUESTS=0). Set API_RATE_LIMIT_EVENTS_REQUESTS>0 for a dedicated "
+            "/api/events window (ev: rate-limit key; see values env apiRateLimitEventsRequests)."
+        )
     _csrf_secure_effective = bool(
         getattr(settings, "csrf_cookie_secure", False)
         or not bool(getattr(settings, "debug", True))

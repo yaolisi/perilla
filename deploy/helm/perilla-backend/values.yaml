@@ -140,6 +140,10 @@ env:
   apiRateLimitEnabled: ""
   apiRateLimitRequests: ""
   apiRateLimitWindowSeconds: ""
+  # 非空时注入 API_RATE_LIMIT_EVENTS_REQUESTS（>0 时 /api/events* 独立计数键 ev:；0 与全局同桶）
+  apiRateLimitEventsRequests: ""
+  # 非空时注入 API_RATE_LIMIT_EVENTS_PATH_PREFIX（默认 /api/events）
+  apiRateLimitEventsPathPrefix: ""
   # 非空时注入 API_RATE_LIMIT_TRUST_X_FORWARDED_FOR（直连公网建议 "false"；限流与审计 client_ip 均受该开关影响）
   apiRateLimitTrustXForwardedFor: ""
   # 非空时注入 EVENT_BUS_STRICT_STARTUP（"true"/"false"；总线连不上时是否拒绝启动）
