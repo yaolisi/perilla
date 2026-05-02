@@ -144,6 +144,10 @@ env:
   apiRateLimitEventsRequests: ""
   # 非空时注入 API_RATE_LIMIT_EVENTS_PATH_PREFIX（默认 /api/events）
   apiRateLimitEventsPathPrefix: ""
+  # 非空时注入 EVENTS_STRICT_WORKFLOW_BINDING（true 时无 workflow_executions 行的 graph_instance 对租户不可见）
+  eventsStrictWorkflowBinding: ""
+  # 非空时注入 EVENTS_API_REQUIRE_AUTHENTICATED（须 rbac_enabled 且 admin API Key 访问 /api/events）
+  eventsApiRequireAuthenticated: ""
   # 非空时注入 API_RATE_LIMIT_TRUST_X_FORWARDED_FOR（直连公网建议 "false"；限流与审计 client_ip 均受该开关影响）
   apiRateLimitTrustXForwardedFor: ""
   # 非空时注入 EVENT_BUS_STRICT_STARTUP（"true"/"false"；总线连不上时是否拒绝启动）

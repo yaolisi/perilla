@@ -311,6 +311,14 @@ spec:
             - name: API_RATE_LIMIT_EVENTS_PATH_PREFIX
               value: {{ .Values.env.apiRateLimitEventsPathPrefix | quote }}
             {{- end }}
+            {{- if .Values.env.eventsStrictWorkflowBinding }}
+            - name: EVENTS_STRICT_WORKFLOW_BINDING
+              value: {{ .Values.env.eventsStrictWorkflowBinding | quote }}
+            {{- end }}
+            {{- if .Values.env.eventsApiRequireAuthenticated }}
+            - name: EVENTS_API_REQUIRE_AUTHENTICATED
+              value: {{ .Values.env.eventsApiRequireAuthenticated | quote }}
+            {{- end }}
             {{- if .Values.env.apiRateLimitTrustXForwardedFor }}
             - name: API_RATE_LIMIT_TRUST_X_FORWARDED_FOR
               value: {{ .Values.env.apiRateLimitTrustXForwardedFor | quote }}

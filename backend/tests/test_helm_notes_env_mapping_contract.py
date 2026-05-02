@@ -28,6 +28,17 @@ def test_helm_notes_documents_api_rate_limit_events_path_mapping() -> None:
 
 
 @pytest.mark.requires_monorepo
+def test_helm_notes_documents_events_api_guardrails_mapping() -> None:
+    p = repo_path("deploy/helm/perilla-backend/templates/NOTES.txt")
+    assert p.is_file()
+    text = p.read_text(encoding="utf-8")
+    assert "eventsStrictWorkflowBinding" in text
+    assert "EVENTS_STRICT_WORKFLOW_BINDING" in text
+    assert "eventsApiRequireAuthenticated" in text
+    assert "EVENTS_API_REQUIRE_AUTHENTICATED" in text
+
+
+@pytest.mark.requires_monorepo
 def test_helm_notes_documents_rbac_api_keys_production_guardrail() -> None:
     p = repo_path("deploy/helm/perilla-backend/templates/NOTES.txt")
     assert p.is_file()
