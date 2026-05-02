@@ -24,3 +24,18 @@ def test_helm_deployment_templates_extended_pool_inference_local_csrf_env_names(
         "CSRF_COOKIE_MAX_AGE_SECONDS",
     ):
         assert f"- name: {upper}" in text, f"missing deployment env block: {upper}"
+
+
+@pytest.mark.requires_monorepo
+def test_helm_deployment_templates_execution_kernel_events_rate_limit_env_names() -> None:
+    """Execution Kernel /api/events 与专用限流 env 须保留在 deployment 模板中（与 Settings 对齐）。"""
+    p = repo_path("deploy/helm/perilla-backend/templates/deployment.yaml")
+    assert p.is_file()
+    text = p.read_text(encoding="utf-8")
+    for upper in (
+        "API_RATE_LIMIT_EVENTS_REQUESTS",
+        "API_RATE_LIMIT_EVENTS_PATH_PREFIX",
+        "EVENTS_STRICT_WORKFLOW_BINDING",
+        "EVENTS_API_REQUIRE_AUTHENTICATED",
+    ):
+        assert f"- name: {upper}" in text, f"missing deployment env block: {upper}"
