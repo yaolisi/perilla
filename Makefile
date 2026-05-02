@@ -187,7 +187,7 @@ help:
 	@echo "  npm run quick-check"
 	@echo "                   - Same without make"
 	@echo "  make production-preflight"
-	@echo "                   - Backend deploy slice: quick-check + test-no-fallback + helm + merge-gate（对齐 CI backend-static-analysis；无前端）"
+	@echo "                   - Backend deploy slice: quick-check + test-no-fallback + tenant-isolation + helm + merge-gate（对齐 CI backend-static-analysis；无前端）"
 	@echo "  bash scripts/production-preflight.sh"
 	@echo "                   - Same from any cwd"
 	@echo "  npm run production-preflight"
