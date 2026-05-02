@@ -4,11 +4,15 @@ V2.6: Observability & Replay Layer - Event API
 """
 from typing import Annotated, Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, RootModel
 from log import logger
 
 from api.errors import raise_api_error
+
+from core.data.base import db_session
+from core.data.models.workflow import WorkflowExecutionORM
+from core.utils.tenant_request import resolve_api_tenant_id
 
 from execution_kernel.persistence.db import Database
 from execution_kernel.events.event_store import EventStore
@@ -135,6 +139,30 @@ class EventTypeBreakdownResponse(BaseModel):
     breakdown: EventTypeBreakdownCounts
 
 
+def _require_graph_instance_tenant_scope(instance_id: str, tenant_id: str) -> None:
+    """
+    若 workflow_executions 中已有该 graph_instance_id，则仅允许归属租户访问。
+    无 ORM 记录时不拦截（兼容仅有 execution_event 行的调试路径）。
+    """
+    tid = (tenant_id or "").strip() or "default"
+    with db_session() as db:
+        row = (
+            db.query(WorkflowExecutionORM)
+            .filter(WorkflowExecutionORM.graph_instance_id == instance_id)
+            .first()
+        )
+        if row is None:
+            return
+        row_tid = str(row.tenant_id or "default").strip() or "default"
+        if row_tid != tid:
+            raise_api_error(
+                status_code=404,
+                code="execution_instance_not_found",
+                message="instance not found",
+                details={"instance_id": instance_id},
+            )
+
+
 # =========================
 # Helper
 # =========================
@@ -164,6 +192,7 @@ def _event_to_response(event: ExecutionEvent) -> EventResponse:
 @router.get("/instance/{instance_id}", response_model=EventListResponse)
 async def get_instance_events(
     instance_id: str,
+    request: Request,
     start_sequence: Annotated[int, Query(ge=1, description="起始序列号")] = 1,
     end_sequence: Annotated[Optional[int], Query(ge=1, description="结束序列号")] = None,
 ) -> EventListResponse:
@@ -179,6 +208,7 @@ async def get_instance_events(
         事件列表（按序列号排序）
     """
     try:
+        _require_graph_instance_tenant_scope(instance_id, resolve_api_tenant_id(request))
         db = _get_db()
         
         async with db.async_session() as session:
@@ -247,7 +277,7 @@ async def get_agent_session_events(
 
 
 @router.get("/instance/{instance_id}/event-types")
-async def get_event_type_breakdown(instance_id: str) -> EventTypeBreakdownResponse:
+async def get_event_type_breakdown(instance_id: str, request: Request) -> EventTypeBreakdownResponse:
     """
     获取实例的事件类型分布
     
@@ -255,6 +285,7 @@ async def get_event_type_breakdown(instance_id: str) -> EventTypeBreakdownRespon
         各事件类型的数量统计
     """
     try:
+        _require_graph_instance_tenant_scope(instance_id, resolve_api_tenant_id(request))
         db = _get_db()
         
         async with db.async_session() as session:
@@ -289,6 +320,7 @@ async def get_event_type_breakdown(instance_id: str) -> EventTypeBreakdownRespon
 @router.get("/instance/{instance_id}/replay", response_model=RebuiltStateResponse)
 async def replay_instance_state(
     instance_id: str,
+    request: Request,
     target_sequence: Annotated[Optional[int], Query(ge=1, description="目标序列号（用于断点调试）")] = None,
 ) -> RebuiltStateResponse:
     """
@@ -304,6 +336,7 @@ async def replay_instance_state(
         重建的图状态
     """
     try:
+        _require_graph_instance_tenant_scope(instance_id, resolve_api_tenant_id(request))
         db = _get_db()
         
         async with db.async_session() as session:
@@ -345,7 +378,7 @@ async def replay_instance_state(
 
 
 @router.get("/instance/{instance_id}/validate", response_model=ValidationResponse)
-async def validate_event_stream(instance_id: str) -> ValidationResponse:
+async def validate_event_stream(instance_id: str, request: Request) -> ValidationResponse:
     """
     验证事件流完整性
     
@@ -359,6 +392,7 @@ async def validate_event_stream(instance_id: str) -> ValidationResponse:
         验证报告
     """
     try:
+        _require_graph_instance_tenant_scope(instance_id, resolve_api_tenant_id(request))
         db = _get_db()
         
         async with db.async_session() as session:
@@ -389,7 +423,7 @@ async def validate_event_stream(instance_id: str) -> ValidationResponse:
 # =========================
 
 @router.get("/instance/{instance_id}/metrics", response_model=MetricsResponse)
-async def get_instance_metrics(instance_id: str) -> MetricsResponse:
+async def get_instance_metrics(instance_id: str, request: Request) -> MetricsResponse:
     """
     获取实例执行指标
     
@@ -399,6 +433,7 @@ async def get_instance_metrics(instance_id: str) -> MetricsResponse:
         执行指标
     """
     try:
+        _require_graph_instance_tenant_scope(instance_id, resolve_api_tenant_id(request))
         db = _get_db()
         
         async with db.async_session() as session:
