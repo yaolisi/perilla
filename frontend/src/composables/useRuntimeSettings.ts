@@ -124,6 +124,9 @@ export function useRuntimeSettings() {
   const config = ref<SystemConfig | null>(null)
   /** GET /api/system/config 返回的 MCP 服务端推送→事件总线生效值；旧后端则为 null（不展示只读条） */
   const mcpHttpEmitEffective = ref<boolean | null>(null)
+  const apiRateLimitEnabledEffective = ref<boolean>(true)
+  const apiRateLimitRequestsEffective = ref<number>(0)
+  const apiRateLimitWindowSecondsEffective = ref<number>(60)
   /** 进程环境（Helm/.env）：/api/events* 专用限流；0 表示与全局限流共用计数键 */
   const apiRateLimitEventsRequestsEffective = ref<number>(0)
   const apiRateLimitEventsPathPrefixEffective = ref<string>('/api/events')
@@ -148,6 +151,20 @@ export function useRuntimeSettings() {
       {
         const eff = c.mcp_http_emit_server_push_events_effective
         mcpHttpEmitEffective.value = typeof eff === 'boolean' ? eff : null
+      }
+      {
+        const on = c.api_rate_limit_enabled_effective
+        apiRateLimitEnabledEffective.value = typeof on === 'boolean' ? on : true
+      }
+      {
+        const r = c.api_rate_limit_requests_effective
+        apiRateLimitRequestsEffective.value =
+          typeof r === 'number' && !Number.isNaN(r) ? Math.max(0, Math.floor(Number(r))) : 0
+      }
+      {
+        const w = c.api_rate_limit_window_seconds_effective
+        apiRateLimitWindowSecondsEffective.value =
+          typeof w === 'number' && !Number.isNaN(w) ? Math.max(1, Math.floor(Number(w))) : 60
       }
       {
         const q = c.api_rate_limit_events_requests_effective
@@ -882,6 +899,9 @@ export function useRuntimeSettings() {
     fillSmartRoutingTemplate,
     clearSmartRoutingPolicies,
     mcpHttpEmitEffective,
+    apiRateLimitEnabledEffective,
+    apiRateLimitRequestsEffective,
+    apiRateLimitWindowSecondsEffective,
     apiRateLimitEventsRequestsEffective,
     apiRateLimitEventsPathPrefixEffective,
     config,

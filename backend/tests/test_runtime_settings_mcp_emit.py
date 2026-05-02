@@ -89,6 +89,9 @@ def test_get_config_includes_mcp_emit_effective(monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body.get("mcp_http_emit_server_push_events_effective") is False
+    assert isinstance(body.get("api_rate_limit_enabled_effective"), bool)
+    assert isinstance(body.get("api_rate_limit_requests_effective"), int)
+    assert isinstance(body.get("api_rate_limit_window_seconds_effective"), int)
     assert isinstance(body.get("api_rate_limit_events_requests_effective"), int)
     assert isinstance(body.get("api_rate_limit_events_path_prefix_effective"), str)
 

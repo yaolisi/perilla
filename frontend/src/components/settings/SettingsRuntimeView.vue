@@ -98,6 +98,9 @@ const {
   chatStreamResumeCancelUpstreamOnDisconnect,
   eventsStrictWorkflowBinding,
   eventsApiRequireAuthenticated,
+  apiRateLimitEnabledEffective,
+  apiRateLimitRequestsEffective,
+  apiRateLimitWindowSecondsEffective,
   apiRateLimitEventsRequestsEffective,
   apiRateLimitEventsPathPrefixEffective,
   inferenceSmartRoutingEnabled,
@@ -683,6 +686,17 @@ watch(
                   />
                 </div>
                 <p class="text-xs text-muted-foreground pt-2 border-t border-border/50 leading-relaxed">
+                  {{
+                    t('settings.runtime.api_rate_limit_global_env_hint', {
+                      enabled: apiRateLimitEnabledEffective
+                        ? t('settings.runtime.rl_on')
+                        : t('settings.runtime.rl_off'),
+                      requests: apiRateLimitRequestsEffective,
+                      window: apiRateLimitWindowSecondsEffective,
+                    })
+                  }}
+                </p>
+                <p class="text-xs text-muted-foreground pt-1 leading-relaxed">
                   {{
                     t('settings.runtime.events_api_rate_limit_env_hint', {
                       quota: apiRateLimitEventsRequestsEffective,

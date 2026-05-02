@@ -835,6 +835,10 @@ class SystemConfigReadResponse(BaseModel):
     local_model_directory: str
     settings: SystemJsonMap
     mcp_http_emit_server_push_events_effective: bool
+    # 进程环境（Helm/.env）：网关全局限流开关与滑动窗口参数（与 middleware.rate_limit 一致）
+    api_rate_limit_enabled_effective: bool
+    api_rate_limit_requests_effective: int
+    api_rate_limit_window_seconds_effective: int
     # 进程环境（Helm/.env）：/api/events* 专用限流；0 表示与全局限流共用窗口计数键
     api_rate_limit_events_requests_effective: int
     api_rate_limit_events_path_prefix_effective: str
@@ -1222,6 +1226,10 @@ async def get_config() -> SystemConfigReadResponse:
     if not _ev_ep:
         _ev_ep = "/api/events"
 
+    _arl_ws = int(getattr(settings, "api_rate_limit_window_seconds", 60) or 60)
+    if _arl_ws < 1:
+        _arl_ws = 1
+
     return SystemConfigReadResponse(
         ollama_base_url=str(settings.ollama_base_url),
         localai_base_url=str(settings.localai_base_url),
@@ -1231,6 +1239,9 @@ async def get_config() -> SystemConfigReadResponse:
         local_model_directory=resolved_dir,
         settings=db_settings,
         mcp_http_emit_server_push_events_effective=get_mcp_http_emit_server_push_events(),
+        api_rate_limit_enabled_effective=bool(getattr(settings, "api_rate_limit_enabled", True)),
+        api_rate_limit_requests_effective=int(getattr(settings, "api_rate_limit_requests", 0) or 0),
+        api_rate_limit_window_seconds_effective=_arl_ws,
         api_rate_limit_events_requests_effective=int(getattr(settings, "api_rate_limit_events_requests", 0) or 0),
         api_rate_limit_events_path_prefix_effective=_ev_ep,
     )
