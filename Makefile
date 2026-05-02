@@ -81,7 +81,7 @@ ROADMAP_GATE_LOG_PREFIX ?= [roadmap-gate]
 
 help:
 	@echo "perilla Docker helper targets:"
-	@echo "Quick ref (CI parity): make quick-check | make ci-fast | make npm-scripts"
+	@echo "Quick ref (CI parity): make quick-check | make release-preflight | make ci-fast | make npm-scripts"
 	@echo "  npm run help       - Same as make help (requires make in PATH)"
 	@echo "  make npm-scripts   - List root package.json scripts (scripts/npm-scripts.sh; any cwd)"
 	@echo "  npm run npm-scripts"
