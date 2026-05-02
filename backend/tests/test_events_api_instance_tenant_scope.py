@@ -8,6 +8,7 @@ import pytest
 
 from api import events as events_api
 from api.errors import APIException
+from config.settings import settings
 
 pytestmark = pytest.mark.tenant_isolation
 
@@ -112,3 +113,49 @@ def test_graph_instance_visible_to_tenant_true_when_no_row(monkeypatch: pytest.M
 
     monkeypatch.setattr(events_api, "db_session", fake_session)
     assert events_api._graph_instance_visible_to_tenant("gi_orphan", "any") is True
+
+
+def test_graph_instance_visible_to_tenant_false_when_no_row_and_strict_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "events_strict_workflow_binding", True, raising=False)
+
+    fake_db = MagicMock()
+    fake_db.query.return_value.filter.return_value.first.return_value = None
+
+    def fake_session():
+        class CM:
+            def __enter__(self):
+                return fake_db
+
+            def __exit__(self, *_args):
+                return None
+
+        return CM()
+
+    monkeypatch.setattr(events_api, "db_session", fake_session)
+    assert events_api._graph_instance_visible_to_tenant("gi_orphan", "any") is False
+
+
+def test_require_graph_instance_tenant_scope_raises_when_no_row_and_strict_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "events_strict_workflow_binding", True, raising=False)
+
+    fake_db = MagicMock()
+    fake_db.query.return_value.filter.return_value.first.return_value = None
+
+    def fake_session():
+        class CM:
+            def __enter__(self):
+                return fake_db
+
+            def __exit__(self, *_args):
+                return None
+
+        return CM()
+
+    monkeypatch.setattr(events_api, "db_session", fake_session)
+    with pytest.raises(APIException) as ei:
+        events_api._require_graph_instance_tenant_scope("gi_orphan", "tenant_a")
+    assert ei.value.status_code == 404

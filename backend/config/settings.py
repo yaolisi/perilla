@@ -231,6 +231,7 @@ def apply_production_security_defaults(s: "Settings") -> list[str]:
     _set_true("rbac_enforcement")
     _set_true("tenant_enforcement_enabled")
     _set_true("tenant_api_key_binding_enabled")
+    _set_true("events_strict_workflow_binding")
     # X-Content-Type-Options / X-Frame-Options / Referrer-Policy（HSTS 仍由配置显式开启）
     _set_true("security_headers_enabled")
     # 断连时停止上游生成，避免僵尸推理占用 GPU/配额（可按环境关闭）
@@ -933,6 +934,8 @@ class Settings(BaseSettings):
     # API Key 与租户绑定校验（JSON：{"api-key-1":["tenant-a"],"api-key-2":["*"]}）
     tenant_api_key_binding_enabled: bool = False
     tenant_api_key_tenants_json: str = "{}"
+    # Execution Kernel /events：无 workflow_executions(graph_instance_id) 行时是否拒绝访问（True=仅允许已登记实例）
+    events_strict_workflow_binding: bool = False
     # 6) CORS 白名单（逗号分隔）。为空时由 main.py 回退到 http://localhost 与 http://127.0.0.1，而非通配 "*"
     cors_allowed_origins: str = ""
     # 7) CSRF（双提交 Cookie）：对非安全方法校验 X-CSRF-Token 与 csrf cookie 一致
