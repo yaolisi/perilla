@@ -280,7 +280,7 @@ SYSTEM_CONFIG_SCHEMA_HINTS: Dict[str, Dict[str, Any]] = {
         "type": "boolean",
         "default": False,
         "recommended": True,
-        "description": "为 True 时，/api/events 须携带 X-Api-Key（或配置的 api key 头）且平台角色为 admin；与 system/mcp 控制面对齐。",
+        "description": "为 True 时，/api/events 须携带 API Key 头且平台角色为 admin；须同时启用 rbac_enabled（否则返回 events_auth_requires_rbac）。",
     },
 }
 

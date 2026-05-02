@@ -9,6 +9,7 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 from api import events as events_api
+from config.settings import settings
 from tests.helpers import make_fastapi_app_router_only
 
 pytestmark = pytest.mark.no_fallback
@@ -25,6 +26,7 @@ def test_events_api_auth_gate_skips_when_disabled(monkeypatch: pytest.MonkeyPatc
 
 def test_events_api_auth_gate_calls_admin_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(events_api, "get_events_api_require_authenticated", lambda: True)
+    monkeypatch.setattr(settings, "rbac_enabled", True, raising=False)
     spy = MagicMock()
     monkeypatch.setattr(events_api, "require_authenticated_platform_admin", spy)
     req = MagicMock(spec=Request)
@@ -34,6 +36,7 @@ def test_events_api_auth_gate_calls_admin_when_enabled(monkeypatch: pytest.Monke
 
 def test_events_api_returns_401_when_auth_required_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(events_api, "get_events_api_require_authenticated", lambda: True)
+    monkeypatch.setattr(settings, "rbac_enabled", True, raising=False)
 
     app = make_fastapi_app_router_only(events_api)
 
@@ -45,3 +48,21 @@ def test_events_api_returns_401_when_auth_required_without_api_key(monkeypatch: 
     client = TestClient(app)
     r = client.get("/api/events/instance/gi-not-found-test")
     assert r.status_code == 401
+
+
+def test_events_api_returns_400_when_gate_on_but_rbac_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(events_api, "get_events_api_require_authenticated", lambda: True)
+    monkeypatch.setattr(settings, "rbac_enabled", False, raising=False)
+
+    app = make_fastapi_app_router_only(events_api)
+
+    @app.middleware("http")
+    async def _tenant(request: Request, call_next):  # type: ignore[no-untyped-def]
+        request.state.tenant_id = "default"
+        return await call_next(request)
+
+    client = TestClient(app)
+    r = client.get("/api/events/instance/gi-not-found-test")
+    assert r.status_code == 400
+    err = r.json().get("error") or {}
+    assert err.get("code") == "events_auth_requires_rbac"

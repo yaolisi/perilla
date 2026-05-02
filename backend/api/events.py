@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, RootModel
 from log import logger
 
 from api.errors import APIException, raise_api_error
+from config.settings import settings
 
 from core.data.base import db_session
 from core.observability.prometheus_metrics import get_prometheus_business_metrics
@@ -37,6 +38,13 @@ def _enforce_events_api_authentication(request: Request) -> None:
     """生产向：与 system/mcp 一致要求 API Key + admin；可通过配置/env/系统设置关闭。"""
     if not get_events_api_require_authenticated():
         return
+    if not bool(getattr(settings, "rbac_enabled", False)):
+        raise_api_error(
+            status_code=400,
+            code="events_auth_requires_rbac",
+            message="events API authentication requires rbac_enabled=true (admin keys resolve platform_role)",
+            details=None,
+        )
     require_authenticated_platform_admin(request)
 
 
