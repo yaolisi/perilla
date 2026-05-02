@@ -30,6 +30,7 @@ from middleware.ops_paths import is_ops_probe_or_metrics_path
 logger = logging.getLogger(__name__)
 
 _DEFAULT_REDIS_KEY_PREFIX = "perilla:ratelimit"
+_DEFAULT_EVENTS_RATE_PATH_PREFIX = "/api/events"
 
 # 分布式并发：超过上限则撤销本次 INCR并拒绝（ARGV[1]=max concurrent, ARGV[2]=key TTL 秒）
 _ACQUIRE_CONCURRENCY_LUA = """
@@ -63,6 +64,8 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
         redis_url: str | None = None,
         redis_key_prefix: str = _DEFAULT_REDIS_KEY_PREFIX,
         trust_x_forwarded_for: bool = True,
+        events_requests_per_window: int = 0,
+        events_path_prefix: str = _DEFAULT_EVENTS_RATE_PATH_PREFIX,
     ):
         super().__init__(app)
         self._trust_x_forwarded_for = bool(trust_x_forwarded_for)
@@ -70,6 +73,9 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
         self._window_seconds = max(1, int(window_seconds))
         self._api_key_header = api_key_header
         self._max_concurrent_per_user = max(1, int(max_concurrent_per_user))
+        self._events_requests_per_window = max(0, int(events_requests_per_window))
+        ep = (events_path_prefix or _DEFAULT_EVENTS_RATE_PATH_PREFIX).strip() or _DEFAULT_EVENTS_RATE_PATH_PREFIX
+        self._events_path_prefix = ep.rstrip("/") or _DEFAULT_EVENTS_RATE_PATH_PREFIX
         self._redis_url = (redis_url or "").strip() or None
         rp = (redis_key_prefix or _DEFAULT_REDIS_KEY_PREFIX).strip().rstrip(":")
         self._redis_key_prefix = rp or _DEFAULT_REDIS_KEY_PREFIX
@@ -122,41 +128,54 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _identity_type(identity: str) -> str:
-        if identity.startswith("user:"):
+        raw = identity[3:] if identity.startswith("ev:") else identity
+        if raw.startswith("user:"):
             return "user"
-        if identity.startswith("key:"):
+        if raw.startswith("key:"):
             return "api_key"
-        if identity.startswith("ip:"):
+        if raw.startswith("ip:"):
             return "ip"
         return "unknown"
 
-    def _allow_memory(self, identity: str) -> bool:
+    def _window_identity_and_cap(self, path: str, identity: str) -> tuple[str, int]:
+        """路径命中 events 前缀且配置了专用配额时，使用独立计数键 ev:{identity}。"""
+        if self._events_requests_per_window <= 0:
+            return identity, self._requests_per_window
+        p = path or ""
+        pref = self._events_path_prefix
+        if p == pref or p.startswith(pref + "/"):
+            return f"ev:{identity}", self._events_requests_per_window
+        return identity, self._requests_per_window
+
+    def _allow_memory(self, identity: str, max_requests: int) -> bool:
         now = time.time()
         cutoff = now - self._window_seconds
+        mr = max(1, int(max_requests))
         with self._lock:
             q = self._buckets[identity]
             while q and q[0] < cutoff:
                 q.popleft()
-            if len(q) >= self._requests_per_window:
+            if len(q) >= mr:
                 return False
             q.append(now)
             return True
 
-    async def _allow_redis(self, redis: Any, identity: str) -> bool:
+    async def _allow_redis(self, redis: Any, identity: str, max_requests: int) -> bool:
         digest = self._identity_digest(identity)
         bucket = int(time.time() // self._window_seconds)
         key = f"{self._redis_key_prefix}:w:{digest}:{bucket}"
         n = int(await redis.incr(key))
         if n == 1:
             await redis.expire(key, self._window_seconds * 2 + 1)
-        return n <= self._requests_per_window
+        mr = max(1, int(max_requests))
+        return n <= mr
 
-    async def _allow(self, identity: str) -> bool:
+    async def _allow(self, identity: str, max_requests: int) -> bool:
         if not self._redis_url:
-            return self._allow_memory(identity)
+            return self._allow_memory(identity, max_requests)
         try:
             redis = await self._get_redis()
-            return await self._allow_redis(redis, identity)
+            return await self._allow_redis(redis, identity, max_requests)
         except Exception as e:
             get_prometheus_business_metrics().observe_rate_limit_redis_backend_error(phase="allow")
             if getattr(settings, "api_rate_limit_redis_fail_closed", False):
@@ -238,8 +257,9 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
         except Exception:
             pass
 
-    def _json_429_rate(self, identity: str) -> JSONResponse:
+    def _json_429_rate(self, identity: str, *, limit: int | None = None) -> JSONResponse:
         ra = str(max(1, int(self._window_seconds)))
+        lim = int(limit) if limit is not None else int(self._requests_per_window)
         return JSONResponse(
             status_code=429,
             headers={"Retry-After": ra},
@@ -248,7 +268,7 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
                 "message": "Too many requests. Please retry later.",
                 "identity_type": self._identity_type(identity),
                 "window_seconds": self._window_seconds,
-                "limit": self._requests_per_window,
+                "limit": lim,
             },
         )
 
@@ -280,15 +300,16 @@ class InMemoryRateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         identity = self._identity(request)
+        rl_identity, window_cap = self._window_identity_and_cap(path, identity)
 
         try:
-            allowed = await self._allow(identity)
+            allowed = await self._allow(rl_identity, window_cap)
         except RateLimitRedisUnavailableError:
             return self._json_503_redis_backend()
 
         if not allowed:
-            self._observe_blocked("window", identity)
-            return self._json_429_rate(identity)
+            self._observe_blocked("window", rl_identity)
+            return self._json_429_rate(rl_identity, limit=window_cap)
 
         redis = None
         if self._redis_url:

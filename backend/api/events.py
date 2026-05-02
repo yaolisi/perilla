@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, RootModel
 from log import logger
 
-from api.errors import APIException, raise_api_error
+from api.errors import APIErrorHttpEnvelope, APIException, raise_api_error
 from config.settings import settings
 
 from core.data.base import db_session
@@ -59,10 +59,41 @@ def _observe_events_request(handler: str) -> None:
         pass
 
 
+_EVENTS_API_OPENAPI_RESPONSES = {
+    400: {
+        "model": APIErrorHttpEnvelope,
+        "description": "配置或校验失败：如 code=events_auth_requires_rbac、events_invalid_agent_session_id。",
+    },
+    401: {
+        "model": APIErrorHttpEnvelope,
+        "description": "开启 events_api_require_authenticated 且 RBAC 启用时：缺少 API Key 或非 admin。",
+    },
+    403: {
+        "model": APIErrorHttpEnvelope,
+        "description": "RBAC 拒绝（如 viewer）。",
+    },
+    404: {
+        "model": APIErrorHttpEnvelope,
+        "description": "租户不可见实例、回放不可恢复等（code=execution_instance_not_found、events_replay_not_found）。",
+    },
+    422: {
+        "model": APIErrorHttpEnvelope,
+        "description": "Query 参数超出约束。",
+    },
+    429: {
+        "description": "命中全局或 api_rate_limit_events_requests 专用窗口限流（中间件返回 rate_limit_exceeded JSON）。",
+    },
+    500: {
+        "model": APIErrorHttpEnvelope,
+        "description": "内部错误（code=events_internal_error）。",
+    },
+}
+
 router = APIRouter(
     prefix="/api/events",
     tags=["Events & Replay"],
     dependencies=[Depends(_enforce_events_api_authentication)],
+    responses=_EVENTS_API_OPENAPI_RESPONSES,
 )
 
 # Agent session id：用于路径与 JSON 子串匹配；禁止 LIKE 元字符与注入畸形输入（生产向约束）

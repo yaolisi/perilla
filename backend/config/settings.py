@@ -883,6 +883,11 @@ class Settings(BaseSettings):
     api_rate_limit_redis_url: str = ""
     # Redis 键前缀（ standalone / cluster 均适用）
     api_rate_limit_redis_key_prefix: str = "perilla:ratelimit"
+    # Execution Kernel：对 /api/events* 使用独立窗口计数（同一 api_rate_limit_window_seconds）。
+    # 为 0 时不启用专用配额（与全局 api_rate_limit_requests 共用同一计数键）。
+    # 生产可对观测类密集读路径单独收紧（例如 30～60），键前缀 ev: 与全局 identity 隔离。
+    api_rate_limit_events_requests: int = 0
+    api_rate_limit_events_path_prefix: str = "/api/events"
     # 为 True 且配置了 Redis URL：Redis 故障时不放行请求，返回 503（默认 False：fail-open）
     api_rate_limit_redis_fail_closed: bool = False
     api_rate_limit_redis_ping_timeout_seconds: float = Field(default=2.0, gt=0, le=120)

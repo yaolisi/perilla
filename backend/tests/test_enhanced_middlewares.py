@@ -125,6 +125,37 @@ def test_rate_limit_blocks_after_threshold():
     assert body["identity_type"] == "api_key"
 
 
+def test_rate_limit_events_path_uses_stricter_window_and_isolated_from_global():
+    """api_rate_limit_events_requests > 0：仅 /api/events* 使用 ev: 计数键，与其它路径配额独立。"""
+    app = FastAPI()
+    app.add_middleware(
+        InMemoryRateLimitMiddleware,
+        requests_per_window=100,
+        window_seconds=60,
+        api_key_header="X-Api-Key",
+        events_requests_per_window=2,
+        events_path_prefix="/api/events",
+    )
+
+    @app.get("/ok")
+    def ok():
+        return {"ok": True}
+
+    @app.get("/api/events/smoke")
+    def ev():
+        return {"events": True}
+
+    client = TestClient(app)
+    h = {"X-Api-Key": "k1"}
+    assert client.get("/api/events/smoke", headers=h).status_code == 200
+    assert client.get("/api/events/smoke", headers=h).status_code == 200
+    blocked_ev = client.get("/api/events/smoke", headers=h)
+    assert blocked_ev.status_code == 429
+    assert blocked_ev.json()["limit"] == 2
+    # 全局桶仍空，非 events 路径放行
+    assert client.get("/ok", headers=h).status_code == 200
+
+
 def test_rate_limit_blocked_observes_prometheus(monkeypatch):
     from core.observability.prometheus_metrics import get_prometheus_business_metrics
 

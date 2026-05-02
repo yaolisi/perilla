@@ -1102,6 +1102,8 @@ if getattr(settings, "api_rate_limit_enabled", True) and int(getattr(settings, "
         redis_url=_rl_redis or None,
         redis_key_prefix=str(getattr(settings, "api_rate_limit_redis_key_prefix", "perilla:ratelimit") or "perilla:ratelimit"),
         trust_x_forwarded_for=bool(getattr(settings, "api_rate_limit_trust_x_forwarded_for", True)),
+        events_requests_per_window=int(getattr(settings, "api_rate_limit_events_requests", 0) or 0),
+        events_path_prefix=str(getattr(settings, "api_rate_limit_events_path_prefix", "/api/events") or "/api/events"),
     )
 
 app.add_middleware(TenantContextMiddleware)
