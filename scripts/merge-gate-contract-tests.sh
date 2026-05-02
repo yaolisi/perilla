@@ -17,6 +17,7 @@ exec pytest \
   backend/tests/test_deploy_k8s_example_alignment_contract.py \
   backend/tests/test_deploy_k8s_grace_budget_contract.py \
   backend/tests/test_deploy_secret_env_rate_limit_trust_contract.py \
+  backend/tests/test_audit_log_events_path_coverage.py \
   backend/tests/test_deploy_ingress_streaming_hints_contract.py \
   backend/tests/test_runtime_health_paths_contract.py \
   backend/tests/test_docker_compose_production_hints_contract.py \

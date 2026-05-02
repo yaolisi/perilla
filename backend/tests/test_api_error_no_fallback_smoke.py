@@ -89,7 +89,7 @@ def test_knowledge_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPat
 
 
 def test_images_warmup_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPatch, fallback_probe):
-    monkeypatch.setattr(images_api, "_db_get_latest_warmup", lambda model: None)
+    monkeypatch.setattr(images_api, "_db_get_latest_warmup", lambda model=None, *, tenant_id="default": None)
     client = TestClient(make_fastapi_app_router_only(images_api))
 
     resp = client.get("/api/v1/images/warmup/latest", params={"model": "smoke-model"})

@@ -27,3 +27,15 @@ def test_secret_env_example_documents_api_rate_limit_events_execution_kernel() -
     assert "/api/events" in text
     assert "EVENTS_API_REQUIRE_AUTHENTICATED" in text
     assert "EVENTS_STRICT_WORKFLOW_BINDING" in text
+
+
+@pytest.mark.requires_monorepo
+def test_secret_env_example_documents_audit_execution_kernel_path_hint() -> None:
+    """审计段须提示 Execution Kernel 路径前缀与 GET 开关（与 audit_settings_cover_events_api_paths 运维对齐）。"""
+    p = repo_path("deploy/k8s/secret-env.example.yaml")
+    assert p.is_file()
+    text = p.read_text(encoding="utf-8")
+    assert "AUDIT_LOG_PATH_PREFIXES" in text
+    assert "AUDIT_LOG_INCLUDE_GET" in text
+    assert ",/api/events" in text
+    assert "/api/system/config" in text

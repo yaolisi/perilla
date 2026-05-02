@@ -20,6 +20,7 @@ fi
 #   make test-no-fallback TEST_ARGS="-k memory -x"
 PYTHONPATH=backend pytest \
   backend/tests/test_api_error_no_fallback_smoke.py \
+  backend/tests/test_audit_log_events_path_coverage.py \
   backend/tests/test_memory_api_integration.py \
   backend/tests/test_sessions_api_integration.py \
   backend/tests/test_agent_sessions_api_integration.py \

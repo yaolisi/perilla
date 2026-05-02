@@ -6,6 +6,8 @@ import pytest
 
 from middleware.audit_log import audit_settings_cover_events_api_paths
 
+pytestmark = pytest.mark.no_fallback
+
 
 def test_audit_cover_events_false_when_audit_disabled(monkeypatch):
     from config.settings import settings
