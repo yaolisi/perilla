@@ -1427,6 +1427,8 @@
       "chat_sse_wall_clock_hint": "0–86400；可按网关与运维策略设定（例如 900），避免僵尸流长期占用连接与算力。",
       "chat_resume_cancel_upstream": "断连即取消上游（续传开启时）",
       "chat_resume_cancel_upstream_desc": "开启后：检测到客户端断连即停止推理流（省 GPU/队列）；续传缓冲可能不完整。关闭则继续生成直至结束以填满续传缓冲（默认）。指标：perilla_chat_stream_resume_upstream_cancel_total。",
+      "events_strict_workflow_binding": "执行内核事件 API 要求工作流登记",
+      "events_strict_workflow_binding_desc": "开启后：仅允许已在 workflow_executions 中登记的 graph_instance_id 访问 /api/events；无登记则返回不可见/404。关闭时允许仅有 execution_event 行的调试路径（默认）。多租户或生产环境建议开启。",
       "workflow_scheduler_title": "工作流 DAG 并行调度",
       "workflow_scheduler_desc": "限制 execution_kernel 在同一运行实例内可同时执行的节点数；与 Agent 并行策略中的 max_parallel_nodes 取较小值，防止宽 DAG 撑爆 CPU/GPU 或 SQLite 锁竞争。",
       "workflow_scheduler_concurrency_label": "并行节点上限（1–256）",

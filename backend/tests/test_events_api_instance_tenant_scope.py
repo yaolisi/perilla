@@ -8,7 +8,6 @@ import pytest
 
 from api import events as events_api
 from api.errors import APIException
-from config.settings import settings
 
 pytestmark = pytest.mark.tenant_isolation
 
@@ -38,6 +37,8 @@ def test_require_graph_instance_tenant_scope_blocks_wrong_tenant(monkeypatch: py
 
 
 def test_require_graph_instance_tenant_scope_allows_when_no_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(events_api, "get_events_strict_workflow_binding", lambda: False)
+
     fake_db = MagicMock()
     fake_db.query.return_value.filter.return_value.first.return_value = None
 
@@ -98,6 +99,8 @@ def test_graph_instance_visible_to_tenant_true_when_row_matches(monkeypatch: pyt
 
 
 def test_graph_instance_visible_to_tenant_true_when_no_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(events_api, "get_events_strict_workflow_binding", lambda: False)
+
     fake_db = MagicMock()
     fake_db.query.return_value.filter.return_value.first.return_value = None
 
@@ -118,7 +121,7 @@ def test_graph_instance_visible_to_tenant_true_when_no_row(monkeypatch: pytest.M
 def test_graph_instance_visible_to_tenant_false_when_no_row_and_strict_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "events_strict_workflow_binding", True, raising=False)
+    monkeypatch.setattr(events_api, "get_events_strict_workflow_binding", lambda: True)
 
     fake_db = MagicMock()
     fake_db.query.return_value.filter.return_value.first.return_value = None
@@ -140,7 +143,7 @@ def test_graph_instance_visible_to_tenant_false_when_no_row_and_strict_binding(
 def test_require_graph_instance_tenant_scope_raises_when_no_row_and_strict_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "events_strict_workflow_binding", True, raising=False)
+    monkeypatch.setattr(events_api, "get_events_strict_workflow_binding", lambda: True)
 
     fake_db = MagicMock()
     fake_db.query.return_value.filter.return_value.first.return_value = None

@@ -398,6 +398,7 @@ def test_update_config_accepts_torch_stream_settings(monkeypatch):
             "torchStreamChunkQueueMax": 32,
             "chatStreamWallClockMaxSeconds": 1800,
             "chatStreamResumeCancelUpstreamOnDisconnect": True,
+            "eventsStrictWorkflowBinding": True,
         },
     )
     assert resp.status_code == 200
@@ -406,6 +407,7 @@ def test_update_config_accepts_torch_stream_settings(monkeypatch):
     assert captured.get("torchStreamChunkQueueMax") == 32
     assert captured.get("chatStreamWallClockMaxSeconds") == 1800
     assert captured.get("chatStreamResumeCancelUpstreamOnDisconnect") is True
+    assert captured.get("eventsStrictWorkflowBinding") is True
 
 
 def test_update_config_rejects_invalid_governance_threshold_order(monkeypatch):

@@ -96,6 +96,7 @@ const {
   torchStreamChunkQueueMax,
   chatStreamWallClockMaxSeconds,
   chatStreamResumeCancelUpstreamOnDisconnect,
+  eventsStrictWorkflowBinding,
   inferenceSmartRoutingEnabled,
   inferenceSmartRoutingPoliciesJson,
   skillDiscoveryTagMatchWeight,
@@ -648,6 +649,20 @@ watch(
                   <Switch
                     :checked="chatStreamResumeCancelUpstreamOnDisconnect"
                     @update:checked="(v: boolean) => { chatStreamResumeCancelUpstreamOnDisconnect = v; isEditing = true }"
+                  />
+                </div>
+                <div class="flex items-center justify-between gap-4 pt-1 border-t border-border/50">
+                  <div class="space-y-1 min-w-0 pr-2">
+                    <p class="text-sm font-medium text-foreground">
+                      {{ t('settings.runtime.events_strict_workflow_binding') }}
+                    </p>
+                    <p class="text-xs text-muted-foreground leading-relaxed">
+                      {{ t('settings.runtime.events_strict_workflow_binding_desc') }}
+                    </p>
+                  </div>
+                  <Switch
+                    :checked="eventsStrictWorkflowBinding"
+                    @update:checked="(v: boolean) => { eventsStrictWorkflowBinding = v; isEditing = true }"
                   />
                 </div>
               </div>

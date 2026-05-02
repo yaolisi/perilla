@@ -223,6 +223,14 @@ def get_chat_stream_resume_cancel_upstream_on_disconnect() -> bool:
     )
 
 
+def get_events_strict_workflow_binding() -> bool:
+    """Execution Kernel /api/events：无 workflow_executions(graph_instance_id) 行时是否拒绝访问。"""
+    return _get_bool(
+        "eventsStrictWorkflowBinding",
+        bool(getattr(settings, "events_strict_workflow_binding", False)),
+    )
+
+
 def get_torch_stream_chunk_queue_max() -> int:
     """
     Torch VLM 流式 chunk 队列最大深度；0 表示不限制（SimpleQueue）。

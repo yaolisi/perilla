@@ -9,9 +9,9 @@ from pydantic import BaseModel, ConfigDict, RootModel
 from log import logger
 
 from api.errors import raise_api_error
-from config.settings import settings
 
 from core.data.base import db_session
+from core.system.runtime_settings import get_events_strict_workflow_binding
 from core.data.models.workflow import WorkflowExecutionORM
 from core.utils.tenant_request import resolve_api_tenant_id
 
@@ -143,7 +143,7 @@ class EventTypeBreakdownResponse(BaseModel):
 def _graph_instance_visible_to_tenant(instance_id: str, tenant_id: str) -> bool:
     """
     workflow_executions 无记录：默认 True（仅有 execution_event 的调试路径）；
-    settings.events_strict_workflow_binding 时改为 False。
+    get_events_strict_workflow_binding() 为 True 时改为 False（系统设置 / .env 可配）。
     有记录则 tenant_id 必须一致。
     """
     tid = (tenant_id or "").strip() or "default"
@@ -154,7 +154,7 @@ def _graph_instance_visible_to_tenant(instance_id: str, tenant_id: str) -> bool:
             .first()
         )
         if row is None:
-            if bool(getattr(settings, "events_strict_workflow_binding", False)):
+            if get_events_strict_workflow_binding():
                 return False
             return True
         row_tid = str(row.tenant_id or "default").strip() or "default"

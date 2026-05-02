@@ -77,6 +77,8 @@ export function useRuntimeSettings() {
   const chatStreamWallClockMaxSeconds = ref(0)
   /** 断点续传开启时：断连即取消上游；与 chatStreamResumeCancelUpstreamOnDisconnect 对齐 */
   const chatStreamResumeCancelUpstreamOnDisconnect = ref(false)
+  /** /api/events 是否要求 graph_instance 已登记 workflow_executions；与 eventsStrictWorkflowBinding 对齐 */
+  const eventsStrictWorkflowBinding = ref(false)
   const inferenceSmartRoutingEnabled = ref(true)
   const inferenceSmartRoutingPoliciesJson = ref('')
   /** 技能语义发现：混合分中标签匹配权重（0–1），语义为 1 - 该值 */
@@ -193,6 +195,7 @@ export function useRuntimeSettings() {
         s.chatStreamResumeCancelUpstreamOnDisconnect,
         false,
       )
+      eventsStrictWorkflowBinding.value = parseBool(s.eventsStrictWorkflowBinding, false)
       inferenceSmartRoutingEnabled.value = parseBool(s.inferenceSmartRoutingEnabled, true)
       inferenceSmartRoutingPoliciesJson.value = String(s.inferenceSmartRoutingPoliciesJson || '')
       skillDiscoveryTagMatchWeight.value = parseFloat01(s.skillDiscoveryTagMatchWeight, 0.3)
@@ -352,6 +355,7 @@ export function useRuntimeSettings() {
           Math.max(0, Math.floor(Number(chatStreamWallClockMaxSeconds.value) || 0)),
         ),
         chatStreamResumeCancelUpstreamOnDisconnect: Boolean(chatStreamResumeCancelUpstreamOnDisconnect.value),
+        eventsStrictWorkflowBinding: Boolean(eventsStrictWorkflowBinding.value),
       })
       await loadConfig()
       if (policyText) {
@@ -841,6 +845,7 @@ export function useRuntimeSettings() {
     torchStreamChunkQueueMax,
     chatStreamWallClockMaxSeconds,
     chatStreamResumeCancelUpstreamOnDisconnect,
+    eventsStrictWorkflowBinding,
     inferenceSmartRoutingEnabled,
     inferenceSmartRoutingPoliciesJson,
     skillDiscoveryTagMatchWeight,

@@ -153,6 +153,7 @@ ALLOWED_SYSTEM_CONFIG_KEYS = {
     "torchStreamChunkQueueMax",
     "chatStreamWallClockMaxSeconds",
     "chatStreamResumeCancelUpstreamOnDisconnect",
+    "eventsStrictWorkflowBinding",
     "skillDiscoveryTagMatchWeight",
     "skillDiscoveryMinSemanticSimilarity",
     "skillDiscoveryMinHybridScore",
@@ -268,6 +269,12 @@ SYSTEM_CONFIG_SCHEMA_HINTS: Dict[str, Dict[str, Any]] = {
         "recommended": False,
         "description": "启用断点续传时，是否在检测到客户端断连后立即取消上游； True 省算力但 resume 缓冲可能不完整；False 继续生成直至结束以填满缓冲。见 perilla_chat_stream_resume_upstream_cancel_total。",
     },
+    "eventsStrictWorkflowBinding": {
+        "type": "boolean",
+        "default": False,
+        "recommended": True,
+        "description": "为 True 时，/api/events 仅允许已写入 workflow_executions 的 graph_instance_id；无 ORM 行则拒绝（多租户/生产建议开启）。",
+    },
 }
 
 SYSTEM_CONFIG_EXAMPLE_PAYLOAD: Dict[str, Any] = {
@@ -329,6 +336,7 @@ class SystemConfigUpdate(BaseModel):
     torchStreamChunkQueueMax: Optional[int] = Field(default=None, ge=0, le=4096)
     chatStreamWallClockMaxSeconds: Optional[int] = Field(default=None, ge=0, le=86400)
     chatStreamResumeCancelUpstreamOnDisconnect: Optional[bool] = None
+    eventsStrictWorkflowBinding: Optional[bool] = None
     skillDiscoveryTagMatchWeight: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     skillDiscoveryMinSemanticSimilarity: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     skillDiscoveryMinHybridScore: Optional[float] = Field(default=None, ge=0.0, le=1.0)
