@@ -11,6 +11,7 @@ on:
       - "scripts/check-nvmrc-align.sh"
       - "scripts/lint-backend.sh"
       - "scripts/quick-check.sh"
+      - "scripts/production-preflight.sh"
       - "scripts/doctor.sh"
       - "scripts/npm-scripts.sh"
       # Local `make pr-check*` / CI script parity (scripts/pr-check*.sh → make).
@@ -42,6 +43,7 @@ on:
       - "scripts/check-nvmrc-align.sh"
       - "scripts/lint-backend.sh"
       - "scripts/quick-check.sh"
+      - "scripts/production-preflight.sh"
       - "scripts/doctor.sh"
       - "scripts/npm-scripts.sh"
       # Local `make pr-check*` / CI script parity (scripts/pr-check*.sh → make).
