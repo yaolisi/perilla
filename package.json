@@ -14,6 +14,7 @@
     "doctor": "bash scripts/doctor.sh",
     "healthcheck": "make healthcheck",
     "security-guardrails": "make security-guardrails",
+    "compose-config-check": "bash scripts/compose-config-check.sh",
     "helm-chart-check": "make helm-chart-check",
     "helm-deploy-contract-check": "make helm-deploy-contract-check",
     "merge-gate-contract-tests": "bash scripts/merge-gate-contract-tests.sh",

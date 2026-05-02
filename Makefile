@@ -1,4 +1,4 @@
-.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend helm-chart-check helm-deploy-contract-check merge-gate-contract-tests check-nvmrc-align test-frontend-unit test-frontend-unit-coverage build-frontend pr-check pr-check-fast ci ci-fast quick-check production-preflight release-preflight dependency-policy dependency-scan test-no-fallback test-workflow-control-flow test-tenant-isolation roadmap-acceptance-unit roadmap-acceptance-smoke roadmap-acceptance-all roadmap-acceptance-validate-schema-version roadmap-acceptance-validate-output roadmap-acceptance-run-validated roadmap-release-gate smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
+.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend helm-chart-check helm-deploy-contract-check compose-config-check merge-gate-contract-tests check-nvmrc-align test-frontend-unit test-frontend-unit-coverage build-frontend pr-check pr-check-fast ci ci-fast quick-check production-preflight release-preflight dependency-policy dependency-scan test-no-fallback test-workflow-control-flow test-tenant-isolation roadmap-acceptance-unit roadmap-acceptance-smoke roadmap-acceptance-all roadmap-acceptance-validate-schema-version roadmap-acceptance-validate-output roadmap-acceptance-run-validated roadmap-release-gate smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
 
 CB_BASE_URL ?= http://127.0.0.1:8000
 CB_MODEL ?= ollama:deepseek-r1:32b
@@ -148,6 +148,8 @@ help:
 	@echo "                   - Alias for make lint-backend"
 	@echo "  make helm-chart-check"
 	@echo "                   - helm lint + helm template（deploy/helm/perilla-backend；无本地 helm 时可 Docker；均无则跳过）"
+	@echo "  make compose-config-check"
+	@echo "                   - docker compose config（docker-compose.yml + prod overlay；无 compose/daemon 则跳过）"
 	@echo "  make helm-deploy-contract-check"
 	@echo "                   - helm-chart-check + scripts/merge-gate-contract-tests.sh（pr-check / CI backend-static-analysis）"
 	@echo "  make merge-gate-contract-tests"
@@ -187,13 +189,13 @@ help:
 	@echo "  npm run quick-check"
 	@echo "                   - Same without make"
 	@echo "  make production-preflight"
-	@echo "                   - Backend deploy slice: quick-check + test-no-fallback + tenant-isolation + helm + merge-gate（对齐 CI backend-static-analysis；无前端）"
+	@echo "                   - Backend deploy slice: quick-check + test-no-fallback + tenant-isolation + helm + merge-gate + compose-config-check（对齐 CI backend-static-analysis；无前端）"
 	@echo "  bash scripts/production-preflight.sh"
 	@echo "                   - Same from any cwd"
 	@echo "  npm run production-preflight"
 	@echo "                   - Same without make"
 	@echo "  make release-preflight"
-	@echo "                   - production-preflight + i18n scan + Vitest + prod build（对齐 backend-static-analysis + frontend-build；无 roadmap）"
+	@echo "                   - production-preflight + i18n scan + Vitest + prod build（compose 已在 production-preflight；无 roadmap）"
 	@echo "  bash scripts/release-preflight.sh"
 	@echo "                   - Same from any cwd"
 	@echo "  npm run release-preflight"
@@ -558,6 +560,9 @@ lint: lint-backend
 
 helm-chart-check:
 	@bash scripts/helm-chart-check.sh
+
+compose-config-check:
+	@bash scripts/compose-config-check.sh
 
 # Helm lint/template + 合并门禁契约（列表见 scripts/merge-gate-contract-tests.sh）
 helm-deploy-contract-check: helm-chart-check
