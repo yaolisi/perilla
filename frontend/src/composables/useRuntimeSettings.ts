@@ -124,6 +124,9 @@ export function useRuntimeSettings() {
   const config = ref<SystemConfig | null>(null)
   /** GET /api/system/config 返回的 MCP 服务端推送→事件总线生效值；旧后端则为 null（不展示只读条） */
   const mcpHttpEmitEffective = ref<boolean | null>(null)
+  /** 进程环境（Helm/.env）：/api/events* 专用限流；0 表示与全局限流共用计数键 */
+  const apiRateLimitEventsRequestsEffective = ref<number>(0)
+  const apiRateLimitEventsPathPrefixEffective = ref<string>('/api/events')
   const isSaving = ref(false)
   const saveSuccess = ref(false)
   const saveError = ref('')
@@ -145,6 +148,16 @@ export function useRuntimeSettings() {
       {
         const eff = c.mcp_http_emit_server_push_events_effective
         mcpHttpEmitEffective.value = typeof eff === 'boolean' ? eff : null
+      }
+      {
+        const q = c.api_rate_limit_events_requests_effective
+        apiRateLimitEventsRequestsEffective.value =
+          typeof q === 'number' && !Number.isNaN(q) ? Math.floor(Number(q)) : 0
+      }
+      {
+        const p = c.api_rate_limit_events_path_prefix_effective
+        apiRateLimitEventsPathPrefixEffective.value =
+          typeof p === 'string' && p.trim() ? p.trim() : '/api/events'
       }
       const s = c.settings ?? {}
       autoUnloadLocalModelOnSwitch.value = parseBool(s.autoUnloadLocalModelOnSwitch, false)
@@ -869,6 +882,8 @@ export function useRuntimeSettings() {
     fillSmartRoutingTemplate,
     clearSmartRoutingPolicies,
     mcpHttpEmitEffective,
+    apiRateLimitEventsRequestsEffective,
+    apiRateLimitEventsPathPrefixEffective,
     config,
     isSaving,
     saveSuccess,

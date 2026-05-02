@@ -98,6 +98,8 @@ const {
   chatStreamResumeCancelUpstreamOnDisconnect,
   eventsStrictWorkflowBinding,
   eventsApiRequireAuthenticated,
+  apiRateLimitEventsRequestsEffective,
+  apiRateLimitEventsPathPrefixEffective,
   inferenceSmartRoutingEnabled,
   inferenceSmartRoutingPoliciesJson,
   skillDiscoveryTagMatchWeight,
@@ -680,6 +682,14 @@ watch(
                     @update:checked="(v: boolean) => { eventsApiRequireAuthenticated = v; isEditing = true }"
                   />
                 </div>
+                <p class="text-xs text-muted-foreground pt-2 border-t border-border/50 leading-relaxed">
+                  {{
+                    t('settings.runtime.events_api_rate_limit_env_hint', {
+                      quota: apiRateLimitEventsRequestsEffective,
+                      prefix: apiRateLimitEventsPathPrefixEffective,
+                    })
+                  }}
+                </p>
               </div>
               <div class="rounded-2xl border border-border/60 bg-background/40 p-5 space-y-4">
                 <div>

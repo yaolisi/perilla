@@ -189,6 +189,8 @@ def test_openapi_system_config_named_schemas() -> None:
         "local_model_directory",
         "settings",
         "mcp_http_emit_server_push_events_effective",
+        "api_rate_limit_events_requests_effective",
+        "api_rate_limit_events_path_prefix_effective",
     }
 
     cfg_post = paths["/api/system/config"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
@@ -210,6 +212,8 @@ def test_openapi_system_config_named_schemas() -> None:
     body = client.get("/api/system/config").json()
     assert body["settings"] is not None
     assert isinstance(body["mcp_http_emit_server_push_events_effective"], bool)
+    assert isinstance(body["api_rate_limit_events_requests_effective"], int)
+    assert isinstance(body["api_rate_limit_events_path_prefix_effective"], str)
 
 
 def test_openapi_plugins_and_market_named_schemas() -> None:

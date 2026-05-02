@@ -835,6 +835,9 @@ class SystemConfigReadResponse(BaseModel):
     local_model_directory: str
     settings: SystemJsonMap
     mcp_http_emit_server_push_events_effective: bool
+    # 进程环境（Helm/.env）：/api/events* 专用限流；0 表示与全局限流共用窗口计数键
+    api_rate_limit_events_requests_effective: int
+    api_rate_limit_events_path_prefix_effective: str
 
 
 class SystemConfigUpdateResponse(BaseModel):
@@ -1215,6 +1218,10 @@ async def get_config() -> SystemConfigReadResponse:
     local_model_dir = db_settings.get("dataDirectory") or settings.local_model_directory
     resolved_dir = str(local_model_dir) if local_model_dir is not None else str(settings.local_model_directory)
 
+    _ev_ep = str(getattr(settings, "api_rate_limit_events_path_prefix", "/api/events") or "").strip()
+    if not _ev_ep:
+        _ev_ep = "/api/events"
+
     return SystemConfigReadResponse(
         ollama_base_url=str(settings.ollama_base_url),
         localai_base_url=str(settings.localai_base_url),
@@ -1224,6 +1231,8 @@ async def get_config() -> SystemConfigReadResponse:
         local_model_directory=resolved_dir,
         settings=db_settings,
         mcp_http_emit_server_push_events_effective=get_mcp_http_emit_server_push_events(),
+        api_rate_limit_events_requests_effective=int(getattr(settings, "api_rate_limit_events_requests", 0) or 0),
+        api_rate_limit_events_path_prefix_effective=_ev_ep,
     )
 
 @router.post("/config")

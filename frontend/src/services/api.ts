@@ -1018,6 +1018,9 @@ export interface SystemConfig {
   settings?: Record<string, any>
   /** MCP Streamable HTTP：服务端 SSE 推送是否写入事件总线（DB 覆盖 + .env 回退后的生效值） */
   mcp_http_emit_server_push_events_effective?: boolean
+  /** 网关进程环境：/api/events* 专用限流配额（0 表示与全局限流共用计数键） */
+  api_rate_limit_events_requests_effective?: number
+  api_rate_limit_events_path_prefix_effective?: string
 }
 
 export async function getSystemMetrics(): Promise<SystemMetrics> {
