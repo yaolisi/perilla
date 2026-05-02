@@ -147,7 +147,7 @@ help:
 	@echo "  make lint"
 	@echo "                   - Alias for make lint-backend"
 	@echo "  make helm-chart-check"
-	@echo "                   - helm lint + helm template（deploy/helm/perilla-backend；未安装 helm 则跳过）"
+	@echo "                   - helm lint + helm template（deploy/helm/perilla-backend；无本地 helm 时可 Docker；均无则跳过）"
 	@echo "  make helm-deploy-contract-check"
 	@echo "                   - helm-chart-check + scripts/merge-gate-contract-tests.sh（pr-check / CI backend-static-analysis）"
 	@echo "  make merge-gate-contract-tests"
