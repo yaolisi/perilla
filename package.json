@@ -29,6 +29,7 @@
     "pr-check": "bash scripts/pr-check.sh",
     "pr-check-fast": "bash scripts/pr-check-fast.sh",
     "production-preflight": "bash scripts/production-preflight.sh",
+    "release-preflight": "bash scripts/release-preflight.sh",
     "quick-check": "bash scripts/quick-check.sh",
     "roadmap-acceptance-all": "make roadmap-acceptance-all",
     "roadmap-acceptance-run-validated": "bash scripts/acceptance/roadmap_run_validated.sh",
