@@ -1,4 +1,4 @@
-# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`** → `scripts/test-no-fallback.sh` → **`scripts/helm-chart-check.sh`** → **`scripts/merge-gate-contract-tests.sh`**（与 **`make helm-deploy-contract-check`** 后半段同一清单）。本地 **`make pr-check`** / **`pr-check-fast`** 其后还有 Vitest、**`roadmap-acceptance-unit`**（可 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`**）、**`build-frontend`**（仅 `pr-check`；见 `frontend-build`）。
+# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`** → `scripts/test-no-fallback.sh`（no_fallback 用例 + **`test_production_readiness_baseline`**) → **`scripts/helm-chart-check.sh`** → **`scripts/merge-gate-contract-tests.sh`**（与 **`make helm-deploy-contract-check`** 后半段同一清单）。本地 **`make pr-check`** / **`pr-check-fast`** 其后还有 Vitest、**`roadmap-acceptance-unit`**（可 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`**）、**`build-frontend`**（仅 `pr-check`；见 `frontend-build`）。
 name: backend-static-analysis
 
 on:

@@ -157,7 +157,7 @@ help:
 	@echo "  npm run lint"
 	@echo "                   - Alias for npm run lint-backend"
 	@echo "  make test-no-fallback"
-	@echo "                   - API no-fallback integration tests (CI backend-static-analysis; step 2 of pr-check)"
+	@echo "                   - API no-fallback tests + production readiness baseline (CI backend-static-analysis; step 2 of pr-check)"
 	@echo "                   - scripts/test-no-fallback.sh cd to repo root (invoke by path from any cwd)"
 	@echo "  make test-no-fallback TEST_ARGS=\"-k memory -x\""
 	@echo "                   - Same suite with extra pytest args"
