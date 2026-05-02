@@ -75,6 +75,8 @@ def test_config_schema_endpoint_exposes_workflow_contract_policy_examples():
     assert "workflowSchedulerMaxConcurrency" in hints
     assert "workflowGovernanceHealthyThreshold" in hints
     assert "workflowGovernanceWarningThreshold" in hints
+    assert "eventsStrictWorkflowBinding" in body.get("allowed_keys", [])
+    assert "eventsStrictWorkflowBinding" in hints
     query_examples = body.get("query_examples", {})
     assert "combined" in query_examples
     assert "compact=true" in str(query_examples.get("combined"))
