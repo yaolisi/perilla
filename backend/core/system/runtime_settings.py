@@ -231,6 +231,14 @@ def get_events_strict_workflow_binding() -> bool:
     )
 
 
+def get_events_api_require_authenticated() -> bool:
+    """为 True 时 /api/events 须携带 API Key 且平台角色为 admin（与 require_authenticated_platform_admin 一致）。"""
+    return _get_bool(
+        "eventsApiRequireAuthenticated",
+        bool(getattr(settings, "events_api_require_authenticated", False)),
+    )
+
+
 def get_torch_stream_chunk_queue_max() -> int:
     """
     Torch VLM 流式 chunk 队列最大深度；0 表示不限制（SimpleQueue）。

@@ -97,6 +97,7 @@ const {
   chatStreamWallClockMaxSeconds,
   chatStreamResumeCancelUpstreamOnDisconnect,
   eventsStrictWorkflowBinding,
+  eventsApiRequireAuthenticated,
   inferenceSmartRoutingEnabled,
   inferenceSmartRoutingPoliciesJson,
   skillDiscoveryTagMatchWeight,
@@ -663,6 +664,20 @@ watch(
                   <Switch
                     :checked="eventsStrictWorkflowBinding"
                     @update:checked="(v: boolean) => { eventsStrictWorkflowBinding = v; isEditing = true }"
+                  />
+                </div>
+                <div class="flex items-center justify-between gap-4 pt-1 border-t border-border/50">
+                  <div class="space-y-1 min-w-0 pr-2">
+                    <p class="text-sm font-medium text-foreground">
+                      {{ t('settings.runtime.events_api_require_auth') }}
+                    </p>
+                    <p class="text-xs text-muted-foreground leading-relaxed">
+                      {{ t('settings.runtime.events_api_require_auth_desc') }}
+                    </p>
+                  </div>
+                  <Switch
+                    :checked="eventsApiRequireAuthenticated"
+                    @update:checked="(v: boolean) => { eventsApiRequireAuthenticated = v; isEditing = true }"
                   />
                 </div>
               </div>

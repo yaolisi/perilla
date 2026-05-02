@@ -77,6 +77,8 @@ def test_config_schema_endpoint_exposes_workflow_contract_policy_examples():
     assert "workflowGovernanceWarningThreshold" in hints
     assert "eventsStrictWorkflowBinding" in body.get("allowed_keys", [])
     assert "eventsStrictWorkflowBinding" in hints
+    assert "eventsApiRequireAuthenticated" in body.get("allowed_keys", [])
+    assert "eventsApiRequireAuthenticated" in hints
     query_examples = body.get("query_examples", {})
     assert "combined" in query_examples
     assert "compact=true" in str(query_examples.get("combined"))
@@ -401,6 +403,7 @@ def test_update_config_accepts_torch_stream_settings(monkeypatch):
             "chatStreamWallClockMaxSeconds": 1800,
             "chatStreamResumeCancelUpstreamOnDisconnect": True,
             "eventsStrictWorkflowBinding": True,
+            "eventsApiRequireAuthenticated": True,
         },
     )
     assert resp.status_code == 200
@@ -410,6 +413,7 @@ def test_update_config_accepts_torch_stream_settings(monkeypatch):
     assert captured.get("chatStreamWallClockMaxSeconds") == 1800
     assert captured.get("chatStreamResumeCancelUpstreamOnDisconnect") is True
     assert captured.get("eventsStrictWorkflowBinding") is True
+    assert captured.get("eventsApiRequireAuthenticated") is True
 
 
 def test_update_config_rejects_invalid_governance_threshold_order(monkeypatch):

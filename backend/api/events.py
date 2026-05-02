@@ -7,14 +7,19 @@ from __future__ import annotations
 import re
 from typing import Annotated, Dict, List, Optional
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, RootModel
 from log import logger
 
 from api.errors import APIException, raise_api_error
 
 from core.data.base import db_session
-from core.system.runtime_settings import get_events_strict_workflow_binding
+from core.observability.prometheus_metrics import get_prometheus_business_metrics
+from core.security.deps import require_authenticated_platform_admin
+from core.system.runtime_settings import (
+    get_events_api_require_authenticated,
+    get_events_strict_workflow_binding,
+)
 from core.data.models.workflow import WorkflowExecutionORM
 from core.utils.tenant_request import resolve_api_tenant_id
 
@@ -27,7 +32,26 @@ from execution_kernel.replay.replay_engine import ReplayEngine
 from execution_kernel.analytics.metrics import MetricsCalculator
 from sqlalchemy import select, distinct
 
-router = APIRouter(prefix="/api/events", tags=["Events & Replay"])
+
+def _enforce_events_api_authentication(request: Request) -> None:
+    """生产向：与 system/mcp 一致要求 API Key + admin；可通过配置/env/系统设置关闭。"""
+    if not get_events_api_require_authenticated():
+        return
+    require_authenticated_platform_admin(request)
+
+
+def _observe_events_request(handler: str) -> None:
+    try:
+        get_prometheus_business_metrics().observe_events_api_request(handler=handler)
+    except Exception:
+        pass
+
+
+router = APIRouter(
+    prefix="/api/events",
+    tags=["Events & Replay"],
+    dependencies=[Depends(_enforce_events_api_authentication)],
+)
 
 # Agent session id：用于路径与 JSON 子串匹配；禁止 LIKE 元字符与注入畸形输入（生产向约束）
 _AGENT_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_.@-]{1,128}$")
@@ -256,6 +280,7 @@ async def get_instance_events(
         事件列表（按序列号排序）
     """
     try:
+        _observe_events_request("instance")
         _require_graph_instance_tenant_scope(instance_id, resolve_api_tenant_id(request))
         db = _get_db()
         
@@ -297,6 +322,7 @@ async def get_agent_session_events(
     通过 GraphStarted 事件 payload.initial_context.session_id 反查相关 instance。
     """
     try:
+        _observe_events_request("agent_session")
         sid_val = _validate_agent_session_id_value(session_id)
         tenant_id = resolve_api_tenant_id(request)
         db = _get_db()
@@ -344,6 +370,7 @@ async def get_event_type_breakdown(instance_id: str, request: Request) -> EventT
         各事件类型的数量统计
     """
     try:
+        _observe_events_request("event_types")
         _require_graph_instance_tenant_scope(instance_id, resolve_api_tenant_id(request))
         db = _get_db()
         
@@ -397,6 +424,7 @@ async def replay_instance_state(
         重建的图状态
     """
     try:
+        _observe_events_request("replay")
         _require_graph_instance_tenant_scope(instance_id, resolve_api_tenant_id(request))
         db = _get_db()
         
@@ -455,6 +483,7 @@ async def validate_event_stream(instance_id: str, request: Request) -> Validatio
         验证报告
     """
     try:
+        _observe_events_request("validate")
         _require_graph_instance_tenant_scope(instance_id, resolve_api_tenant_id(request))
         db = _get_db()
         
@@ -498,6 +527,7 @@ async def get_instance_metrics(instance_id: str, request: Request) -> MetricsRes
         执行指标
     """
     try:
+        _observe_events_request("metrics")
         _require_graph_instance_tenant_scope(instance_id, resolve_api_tenant_id(request))
         db = _get_db()
         

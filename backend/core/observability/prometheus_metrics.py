@@ -54,6 +54,7 @@ class PrometheusBusinessMetrics:
             self.http_rate_limit_redis_backend_errors_total = noop
             self.health_ready_api_rate_limit_redis_degraded = noop
             self.health_ready_shutting_down = noop
+            self.events_api_requests_total = noop
             self._legacy_mirror = False
             return
 
@@ -170,6 +171,12 @@ class PrometheusBusinessMetrics:
             "perilla_http_rate_limit_redis_backend_errors_total",
             "Redis-backed rate limit operations that raised (before fail-open or fail-closed)",
             labelnames=("phase",),
+        )
+
+        self.events_api_requests_total = Counter(
+            "perilla_events_api_requests_total",
+            "Execution Kernel /api/events 已进入业务处理（依赖鉴权通过后）的请求次数",
+            labelnames=("handler",),
         )
 
         self._legacy_mirror = bool(getattr(settings, "metrics_legacy_openvitamin_names_enabled", True))
@@ -310,6 +317,10 @@ class PrometheusBusinessMetrics:
     def observe_rate_limit_redis_backend_error(self, *, phase: str) -> None:
         p = phase if phase in ("allow", "acquire", "release") else "allow"
         self.http_rate_limit_redis_backend_errors_total.labels(phase=p).inc()
+
+    def observe_events_api_request(self, *, handler: str) -> None:
+        h = (handler or "unknown").strip() or "unknown"
+        self.events_api_requests_total.labels(handler=h).inc()
 
 
 _metrics: Optional[PrometheusBusinessMetrics] = None

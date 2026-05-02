@@ -1429,6 +1429,8 @@
       "chat_resume_cancel_upstream_desc": "When enabled: detect client disconnect and stop inference immediately (saves GPU/queue); resume buffer may be incomplete. When disabled: continue generation until the model finishes to fill the resume buffer (default). Metric: perilla_chat_stream_resume_upstream_cancel_total.",
       "events_strict_workflow_binding": "Require workflow_executions row for /api/events",
       "events_strict_workflow_binding_desc": "When enabled: only graph_instance_id registered in workflow_executions can access /api/events; otherwise hidden/404. When disabled, instances with only execution_event rows still work (default for local debug). Recommended for multi-tenant or production.",
+      "events_api_require_auth": "Require API key (admin) for /api/events",
+      "events_api_require_auth_desc": "When enabled: calls to /api/events must send the configured API key header with platform admin role (same as system settings / MCP admin surfaces). Disable for local debugging; recommended for production.",
       "workflow_scheduler_title": "Workflow DAG parallelism",
       "workflow_scheduler_desc": "Caps how many workflow nodes can run concurrently within one execution instance; combined with Agent graph max_parallel_nodes as min(platform cap, graph cap) to avoid overload or SQLite lock contention.",
       "workflow_scheduler_concurrency_label": "Max concurrent nodes (1–256)",

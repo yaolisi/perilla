@@ -79,6 +79,8 @@ export function useRuntimeSettings() {
   const chatStreamResumeCancelUpstreamOnDisconnect = ref(false)
   /** /api/events 是否要求 graph_instance 已登记 workflow_executions；与 eventsStrictWorkflowBinding 对齐 */
   const eventsStrictWorkflowBinding = ref(false)
+  /** /api/events 是否要求 API Key + 平台 admin；与 eventsApiRequireAuthenticated 对齐 */
+  const eventsApiRequireAuthenticated = ref(false)
   const inferenceSmartRoutingEnabled = ref(true)
   const inferenceSmartRoutingPoliciesJson = ref('')
   /** 技能语义发现：混合分中标签匹配权重（0–1），语义为 1 - 该值 */
@@ -196,6 +198,7 @@ export function useRuntimeSettings() {
         false,
       )
       eventsStrictWorkflowBinding.value = parseBool(s.eventsStrictWorkflowBinding, false)
+      eventsApiRequireAuthenticated.value = parseBool(s.eventsApiRequireAuthenticated, false)
       inferenceSmartRoutingEnabled.value = parseBool(s.inferenceSmartRoutingEnabled, true)
       inferenceSmartRoutingPoliciesJson.value = String(s.inferenceSmartRoutingPoliciesJson || '')
       skillDiscoveryTagMatchWeight.value = parseFloat01(s.skillDiscoveryTagMatchWeight, 0.3)
@@ -356,6 +359,7 @@ export function useRuntimeSettings() {
         ),
         chatStreamResumeCancelUpstreamOnDisconnect: Boolean(chatStreamResumeCancelUpstreamOnDisconnect.value),
         eventsStrictWorkflowBinding: Boolean(eventsStrictWorkflowBinding.value),
+        eventsApiRequireAuthenticated: Boolean(eventsApiRequireAuthenticated.value),
       })
       await loadConfig()
       if (policyText) {
@@ -846,6 +850,7 @@ export function useRuntimeSettings() {
     chatStreamWallClockMaxSeconds,
     chatStreamResumeCancelUpstreamOnDisconnect,
     eventsStrictWorkflowBinding,
+    eventsApiRequireAuthenticated,
     inferenceSmartRoutingEnabled,
     inferenceSmartRoutingPoliciesJson,
     skillDiscoveryTagMatchWeight,

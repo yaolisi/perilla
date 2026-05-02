@@ -43,3 +43,16 @@ def test_get_events_strict_workflow_binding_store_overrides_settings(monkeypatch
     monkeypatch.setattr(rs.settings, "events_strict_workflow_binding", False, raising=False)
     monkeypatch.setattr(rs, "get_system_settings_store", lambda: _StoreTrue())
     assert rs.get_events_strict_workflow_binding() is True
+
+
+class _StoreEventsAuthTrue:
+    def get_setting(self, key: str):
+        if key == "eventsApiRequireAuthenticated":
+            return True
+        return None
+
+
+def test_get_events_api_require_authenticated_store_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rs.settings, "events_api_require_authenticated", False, raising=False)
+    monkeypatch.setattr(rs, "get_system_settings_store", lambda: _StoreEventsAuthTrue())
+    assert rs.get_events_api_require_authenticated() is True

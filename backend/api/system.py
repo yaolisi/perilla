@@ -154,6 +154,7 @@ ALLOWED_SYSTEM_CONFIG_KEYS = {
     "chatStreamWallClockMaxSeconds",
     "chatStreamResumeCancelUpstreamOnDisconnect",
     "eventsStrictWorkflowBinding",
+    "eventsApiRequireAuthenticated",
     "skillDiscoveryTagMatchWeight",
     "skillDiscoveryMinSemanticSimilarity",
     "skillDiscoveryMinHybridScore",
@@ -275,6 +276,12 @@ SYSTEM_CONFIG_SCHEMA_HINTS: Dict[str, Dict[str, Any]] = {
         "recommended": True,
         "description": "为 True 时，/api/events 仅允许已写入 workflow_executions 的 graph_instance_id；无 ORM 行则拒绝（多租户/生产建议开启）。",
     },
+    "eventsApiRequireAuthenticated": {
+        "type": "boolean",
+        "default": False,
+        "recommended": True,
+        "description": "为 True 时，/api/events 须携带 X-Api-Key（或配置的 api key 头）且平台角色为 admin；与 system/mcp 控制面对齐。",
+    },
 }
 
 SYSTEM_CONFIG_EXAMPLE_PAYLOAD: Dict[str, Any] = {
@@ -337,6 +344,7 @@ class SystemConfigUpdate(BaseModel):
     chatStreamWallClockMaxSeconds: Optional[int] = Field(default=None, ge=0, le=86400)
     chatStreamResumeCancelUpstreamOnDisconnect: Optional[bool] = None
     eventsStrictWorkflowBinding: Optional[bool] = None
+    eventsApiRequireAuthenticated: Optional[bool] = None
     skillDiscoveryTagMatchWeight: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     skillDiscoveryMinSemanticSimilarity: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     skillDiscoveryMinHybridScore: Optional[float] = Field(default=None, ge=0.0, le=1.0)

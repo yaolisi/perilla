@@ -243,6 +243,7 @@ def test_apply_production_security_defaults_in_non_debug():
         "tenant_enforcement_enabled",
         "tenant_api_key_binding_enabled",
         "events_strict_workflow_binding",
+        "events_api_require_authenticated",
         "security_headers_enabled",
         "file_read_allowed_roots",
         "http_max_request_body_bytes",
@@ -256,6 +257,7 @@ def test_apply_production_security_defaults_in_non_debug():
     assert s.tenant_enforcement_enabled is True
     assert s.tenant_api_key_binding_enabled is True
     assert s.events_strict_workflow_binding is True
+    assert s.events_api_require_authenticated is True
     assert s.security_headers_enabled is True
     assert s.file_read_allowed_roots == "./data"
     assert s.http_max_request_body_bytes == 52428800
