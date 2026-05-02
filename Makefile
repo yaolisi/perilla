@@ -139,7 +139,7 @@ help:
 	@echo "  make doctor        - Run environment diagnostics (incl. check-nvmrc-align)"
 	@echo "  npm run doctor     - Same (DOCTOR_STRICT_WARNINGS=1 npm run doctor for strict)"
 	@echo "  make security-guardrails"
-	@echo "                   - Enforce production security config gate"
+	@echo "                   - Enforce production security config gate (needs conda/backend deps or PERILLA_PYTHON)"
 	@echo "  npm run security-guardrails"
 	@echo "                   - Same as make security-guardrails"
 	@echo "  make lint-backend"
