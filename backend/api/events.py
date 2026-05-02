@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, RootModel
 from log import logger
 
-from api.errors import raise_api_error
+from api.errors import APIException, raise_api_error
 
 from core.data.base import db_session
 from core.system.runtime_settings import get_events_strict_workflow_binding
@@ -236,6 +236,8 @@ async def get_instance_events(
                 total=len(events),
                 events=[_event_to_response(e) for e in events],
             )
+    except APIException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get events for instance {instance_id}: {e}")
         raise_api_error(
@@ -282,6 +284,8 @@ async def get_agent_session_events(
                 instance_count=len(instance_ids),
                 instances=AgentSessionInstancesMap(out),
             )
+    except APIException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get events by session {session_id}: {e}")
         raise_api_error(
@@ -319,6 +323,8 @@ async def get_event_type_breakdown(instance_id: str, request: Request) -> EventT
                 total_events=len(events),
                 breakdown=EventTypeBreakdownCounts(breakdown),
             )
+    except APIException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get event breakdown for instance {instance_id}: {e}")
         raise_api_error(
@@ -375,6 +381,8 @@ async def replay_instance_state(
                 event_count=state.event_count,
                 last_sequence=state.last_sequence,
             )
+    except APIException:
+        raise
     except ValueError as e:
         raise_api_error(
             status_code=404,
@@ -424,6 +432,8 @@ async def validate_event_stream(instance_id: str, request: Request) -> Validatio
                 first_sequence=validation.get("first_sequence"),
                 last_sequence=validation.get("last_sequence"),
             )
+    except APIException:
+        raise
     except Exception as e:
         logger.error(f"Failed to validate event stream for instance {instance_id}: {e}")
         raise_api_error(
@@ -468,6 +478,8 @@ async def get_instance_metrics(instance_id: str, request: Request) -> MetricsRes
                 failed_nodes=metrics.failed_nodes,
                 details=MetricsDetailsSnapshot.model_validate(metrics.details),
             )
+    except APIException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get metrics for instance {instance_id}: {e}")
         raise_api_error(
