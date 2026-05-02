@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from core.data.base import get_db
 from core.security.audit_service import query_audit_logs
 from core.security.deps import require_audit_reader
+from core.utils.tenant_request import resolve_api_tenant_id
 
 router = APIRouter(prefix="/api/v1/audit", tags=["audit"])
 
@@ -65,7 +66,7 @@ def list_audit_logs(
             since_dt = None
     items, total = query_audit_logs(
         db,
-        tenant_id=getattr(request.state, "tenant_id", None),
+        tenant_id=resolve_api_tenant_id(request),
         limit=limit,
         offset=offset,
         user_id=user_id,

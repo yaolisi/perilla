@@ -1117,7 +1117,7 @@ async def _stream_event_generator(
 
     if resume_enabled and resume_store:
         stream_id = str(uuid.uuid4())
-        rsess = resume_store.create(stream_id, user_id)
+        rsess = resume_store.create(stream_id, user_id, tenant_id)
         rsess.completion_id = completion_id
         rsess.model_id = model_id
         rsess.sse_created = int(created_time)
@@ -1843,7 +1843,8 @@ async def chat_stream_resume(body: ChatStreamResumeBody, request: Request) -> St
     user_id = _get_user_id(request)
     store = get_stream_resume_store()
     sess = store.get(body.stream_id)
-    if not sess or sess.user_id != user_id:
+    tid = _tenant_id(request)
+    if not sess or sess.user_id != user_id or sess.tenant_id != tid:
         raise_api_error(status_code=404, code="stream_not_found", message="stream not found or expired")
 
     wait_timeout = float(getattr(settings, "chat_stream_resume_wait_timeout_seconds", 120) or 120)
@@ -1958,16 +1959,24 @@ async def chat_completions_async_submit(req: ChatCompletionRequest, request: Req
             raise RuntimeError("unexpected streaming response in async submit")
         return result.model_dump()
 
-    request_id = await get_async_chat_job_manager().submit(_runner)
+    request_id = await get_async_chat_job_manager().submit(
+        _runner,
+        user_id=_get_user_id(request),
+        tenant_id=_tenant_id(request),
+    )
     return ChatAsyncSubmitResponse(request_id=request_id, status="queued")
 
 
 @router.get("/v1/chat/completions/async/{request_id}")
-async def chat_completions_async_result(request_id: str) -> ChatAsyncResultResponse:
+async def chat_completions_async_result(request_id: str, request: Request) -> ChatAsyncResultResponse:
     """
     查询异步聊天任务状态/结果。
     """
-    job = await get_async_chat_job_manager().get(request_id)
+    job = await get_async_chat_job_manager().get(
+        request_id,
+        user_id=_get_user_id(request),
+        tenant_id=_tenant_id(request),
+    )
     if not job:
         raise_api_error(status_code=404, code="chat_async_job_not_found", message="request not found or expired")
     result_obj: Optional[ChatCompletionResponse] = None

@@ -7,6 +7,7 @@ from typing import TypedDict
 from fastapi.testclient import TestClient
 
 from api.stream_resume_store import StreamResumeStore
+from config.settings import settings
 
 
 class ChatDeltaPayload(TypedDict):
@@ -51,6 +52,7 @@ def chat_seed_stream_store(
     *,
     stream_id: str,
     user_id: str,
+    tenant_id: str | None = None,
     completion_id: str,
     model_id: str = "dummy-model",
     created: int = 1700000000,
@@ -60,8 +62,12 @@ def chat_seed_stream_store(
 ) -> None:
     """Seed StreamResumeStore with test chunks (optionally DONE/finish)."""
 
+    tid = tenant_id
+    if tid is None:
+        tid = str(getattr(settings, "tenant_default_id", "default") or "default").strip() or "default"
+
     async def _fill() -> None:
-        sess = store.create(stream_id, user_id=user_id)
+        sess = store.create(stream_id, user_id=user_id, tenant_id=tid)
         sess.completion_id = completion_id
         sess.model_id = model_id
         sess.sse_created = created

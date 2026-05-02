@@ -13,7 +13,7 @@ pytestmark = pytest.mark.tenant_isolation
     ("path", "protected"),
     [
         ("/api/v1/workflows/w1", True),
-        ("/api/v1/audit/events", True),
+        ("/api/v1/audit/logs", True),
         ("/api/system/health", True),
         ("/v1/chat/completions", True),
         ("/api/sessions/s1", True),

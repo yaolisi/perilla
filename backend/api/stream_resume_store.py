@@ -33,6 +33,7 @@ class StreamSession:
     # chat_stream_resume_max_sessions 压力下被弹出全局表；iter_resume_chunks 仍可能持有引用
     pressure_evicted: bool = False
     user_id: str = ""
+    tenant_id: str = ""
     completion_id: str = ""
     model_id: str = ""
     sse_created: int = 0
@@ -72,14 +73,17 @@ class StreamResumeStore:
         )
         schedule_finalize_evicted_session(victim)
 
-    def create(self, stream_id: str, user_id: str) -> StreamSession:
+    def create(self, stream_id: str, user_id: str, tenant_id: str) -> StreamSession:
+        from config.settings import settings
+
+        tid = (tenant_id or "").strip() or str(getattr(settings, "tenant_default_id", "default") or "default").strip() or "default"
         self._evict_if_needed()
         while len(self._sessions) >= self._max:
             oldest_key = min(self._sessions.keys(), key=lambda k: self._sessions[k].created_at)
             victim = self._sessions.pop(oldest_key)
             victim.pressure_evicted = True
             self._notify_pressure_eviction(oldest_key, victim)
-        sess = StreamSession(user_id=user_id)
+        sess = StreamSession(user_id=user_id, tenant_id=tid)
         self._sessions[stream_id] = sess
         self._publish_session_count()
         return sess

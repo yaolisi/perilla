@@ -38,6 +38,35 @@ def test_stream_resume_ok_with_csrf_and_x_user_id(chat_stream_resume_client: tup
     assert "[DONE]" in body
 
 
+@pytest.mark.tenant_isolation
+def test_stream_resume_wrong_tenant_returns_404(chat_stream_resume_client: tuple[TestClient, StreamResumeStore]) -> None:
+    client, store = chat_stream_resume_client
+    hdr = getattr(settings, "tenant_header_name", "X-Tenant-Id")
+    uid = "same-user-cross-tenant"
+    sid = "resume-integration-sid-tenant-mismatch"
+    chat_seed_stream_store(
+        store,
+        stream_id=sid,
+        user_id=uid,
+        tenant_id="tenant_alpha",
+        completion_id="chatcmpl-tenant-mismatch",
+        contents=["secret-alpha"],
+    )
+
+    token = chat_prime_csrf(client)
+    resp = client.post(
+        "/v1/chat/completions/stream/resume",
+        json={"stream_id": sid, "chunk_index": 0},
+        headers={
+            "X-User-Id": uid,
+            hdr: "tenant_beta",
+            "X-CSRF-Token": token,
+        },
+    )
+    assert resp.status_code == 404
+    assert resp.json().get("error", {}).get("code") == "stream_not_found"
+
+
 def test_stream_resume_wrong_x_user_id_returns_404(chat_stream_resume_client: tuple[TestClient, StreamResumeStore]) -> None:
     client, store = chat_stream_resume_client
     owner = "owner-user-99"

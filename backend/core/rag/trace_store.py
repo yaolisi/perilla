@@ -65,6 +65,8 @@ class RAGTraceStore:
                         vector_store TEXT NOT NULL,
                         top_k INTEGER NOT NULL,
                         retrieved_count INTEGER NOT NULL DEFAULT 0,
+                        user_id TEXT NOT NULL DEFAULT 'default',
+                        tenant_id TEXT NOT NULL DEFAULT 'default',
                         version_id TEXT,
                         injected_token_count INTEGER,
                         finalized BOOLEAN NOT NULL DEFAULT 0,
@@ -73,6 +75,18 @@ class RAGTraceStore:
                 """)
                 try:
                     conn.execute("ALTER TABLE rag_traces ADD COLUMN version_id TEXT")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute(
+                        "ALTER TABLE rag_traces ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute(
+                        "ALTER TABLE rag_traces ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+                    )
                 except sqlite3.OperationalError:
                     pass
                 
@@ -96,6 +110,14 @@ class RAGTraceStore:
                 conn.execute("""
                     CREATE INDEX IF NOT EXISTS idx_rag_traces_message_id 
                     ON rag_traces(message_id);
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_rag_traces_message_user
+                    ON rag_traces(message_id, user_id);
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_rag_traces_scope_lookup
+                    ON rag_traces(message_id, user_id, tenant_id);
                 """)
                 conn.execute("""
                     CREATE INDEX IF NOT EXISTS idx_rag_traces_session_id 
@@ -122,6 +144,7 @@ class RAGTraceStore:
         vector_store: str,
         top_k: int,
         user_id: str = "default",
+        tenant_id: str = "default",
         version_id: Optional[str] = None,
     ) -> str:
         """
@@ -129,25 +152,27 @@ class RAGTraceStore:
         
         Args:
             user_id: 用户 ID（多用户架构）
+            tenant_id: 租户命名空间（与 KB / 会话一致）
             
         Returns:
             trace_id
         """
         trace_id = f"ragtrace_{uuid.uuid4().hex[:16]}"
+        tid = (tenant_id or "").strip() or "default"
         
         with self._connect() as conn:
             conn.execute("""
                 INSERT INTO rag_traces (
                     id, session_id, message_id, rag_id, rag_type,
-                    query, embedding_model, vector_store, top_k, user_id, version_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    query, embedding_model, vector_store, top_k, user_id, tenant_id, version_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 trace_id, session_id, message_id, rag_id, rag_type,
-                query, embedding_model, vector_store, top_k, user_id, version_id
+                query, embedding_model, vector_store, top_k, user_id, tid, version_id
             ))
             conn.commit()
         
-        logger.debug(f"[RAGTraceStore] Created trace: {trace_id} for user: {user_id}")
+        logger.debug(f"[RAGTraceStore] Created trace: {trace_id} for user: {user_id} tenant: {tid}")
         return trace_id
     
     def add_chunks(
@@ -263,20 +288,26 @@ class RAGTraceStore:
         
         logger.debug(f"[RAGTraceStore] Finalized trace {trace_id}")
     
-    def get_trace_by_message_id(self, message_id: str, user_id: str = "default") -> Optional[Dict[str, Any]]:
+    def get_trace_by_message_id(
+        self,
+        message_id: str,
+        user_id: str = "default",
+        tenant_id: str = "default",
+    ) -> Optional[Dict[str, Any]]:
         """
-        通过 message_id 获取 Trace（按用户过滤）
+        通过 message_id 获取 Trace（按用户 + 租户过滤）
         
         Returns:
             Trace 字典，包含 trace 信息和 chunks，如果不存在返回 None
         """
+        tid = (tenant_id or "").strip() or "default"
         with self._connect() as conn:
             trace = conn.execute("""
                 SELECT * FROM rag_traces
-                WHERE message_id = ? AND user_id = ?
+                WHERE message_id = ? AND user_id = ? AND tenant_id = ?
                 ORDER BY created_at DESC
                 LIMIT 1
-            """, (message_id, user_id)).fetchone()
+            """, (message_id, user_id, tid)).fetchone()
             
             if not trace:
                 return None
@@ -318,12 +349,18 @@ class RAGTraceStore:
                 ],
             }
     
-    def get_trace_by_id(self, trace_id: str, user_id: str = "default") -> Optional[Dict[str, Any]]:
-        '''通过 trace_id 获取 Trace（前端兜底：message_id 未同步时可用 meta.rag.trace_id 查询，按用户过滤）'''
+    def get_trace_by_id(
+        self,
+        trace_id: str,
+        user_id: str = "default",
+        tenant_id: str = "default",
+    ) -> Optional[Dict[str, Any]]:
+        '''通过 trace_id 获取 Trace（前端兜底：message_id 未同步时可用 meta.rag.trace_id 查询，按用户 + 租户过滤）'''
+        tid = (tenant_id or "").strip() or "default"
         with self._connect() as conn:
             trace = conn.execute(
-                "SELECT * FROM rag_traces WHERE id = ? AND user_id = ?", 
-                (trace_id, user_id)
+                "SELECT * FROM rag_traces WHERE id = ? AND user_id = ? AND tenant_id = ?",
+                (trace_id, user_id, tid),
             ).fetchone()
             if not trace:
                 return None

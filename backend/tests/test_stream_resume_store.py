@@ -13,7 +13,7 @@ def test_iter_resume_waits_for_chunks_then_finishes() -> None:
     async def _run() -> None:
         store = StreamResumeStore(ttl_seconds=60.0, max_sessions=10)
         sid = "test-stream-id-00000000"
-        sess = store.create(sid, user_id="u1")
+        sess = store.create(sid, user_id="u1", tenant_id="default")
         sess.model_id = "m"
         sess.sse_created = 1
         sess.completion_id = "chatcmpl-x"
@@ -42,7 +42,7 @@ def test_iter_resume_waits_for_chunks_then_finishes() -> None:
 async def test_pressure_eviction_finishes_victim_so_resume_iterator_unblocks() -> None:
     """驱逐时会标记 victim finished，持有 Session 的 iter_resume_chunks 应迅速结束，而非卡到 wait_timeout。"""
     store = StreamResumeStore(ttl_seconds=3600.0, max_sessions=1)
-    store.create("s_first", "u1")
+    store.create("s_first", "u1", "default")
     await store.append_chunk("s_first", 'data: {"x":1}\n\n')
 
     chunks_out: list[str] = []
@@ -53,7 +53,7 @@ async def test_pressure_eviction_finishes_victim_so_resume_iterator_unblocks() -
 
     task = asyncio.create_task(drain())
     await asyncio.sleep(0.02)
-    store.create("s_second", "u2")
+    store.create("s_second", "u2", "default")
     await asyncio.wait_for(task, timeout=2.0)
     assert len(chunks_out) >= 1
     assert 'data: {"x":1}' in chunks_out[0] or "x" in chunks_out[0]
@@ -63,12 +63,12 @@ async def test_pressure_eviction_finishes_victim_so_resume_iterator_unblocks() -
 def test_create_evicts_oldest_when_at_cap_even_if_unfinished() -> None:
     """生产边界：仅已完成 TTL 回收不足以腾出槽位时，驱逐最旧会话，防止内存无限增长。"""
     store = StreamResumeStore(ttl_seconds=3600.0, max_sessions=2)
-    store.create("s1", user_id="u1")
-    store.create("s2", user_id="u2")
+    store.create("s1", user_id="u1", tenant_id="default")
+    store.create("s2", user_id="u2", tenant_id="default")
     assert len(store._sessions) == 2
     victim_ref = store.get("s1")
     assert victim_ref is not None
-    store.create("s3", user_id="u3")
+    store.create("s3", user_id="u3", tenant_id="default")
     assert len(store._sessions) == 2
     assert store.get("s1") is None
     assert victim_ref.pressure_evicted is True
@@ -80,7 +80,7 @@ def test_iter_resume_from_offset() -> None:
     async def _run() -> None:
         store = StreamResumeStore(ttl_seconds=60.0, max_sessions=10)
         sid = "test-stream-id-00000001"
-        store.create(sid, user_id="u1")
+        store.create(sid, user_id="u1", tenant_id="default")
         await store.append_chunk(sid, "first\n\n")
         await store.append_chunk(sid, "second\n\n")
         await store.finish(sid)

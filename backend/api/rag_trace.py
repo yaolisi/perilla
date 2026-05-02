@@ -14,6 +14,7 @@ from core.types import RAGTraceResponse, RAGTraceChunk
 from pathlib import Path
 from config.settings import settings
 from core.utils.user_context import get_user_id
+from core.utils.tenant_request import get_effective_tenant_id
 
 router = APIRouter(prefix="/api/rag", tags=["RAG Trace"])
 
@@ -57,6 +58,7 @@ async def start_trace(
     """
     try:
         user_id = get_user_id(request)
+        tenant_id = get_effective_tenant_id(request)
         trace_id = _trace_store.create_trace(
             session_id=session_id,
             message_id=message_id,
@@ -67,6 +69,7 @@ async def start_trace(
             vector_store=vector_store,
             top_k=top_k,
             user_id=user_id,
+            tenant_id=tenant_id,
         )
         return RagTraceStartResponse(trace_id=trace_id)
     except Exception as e:
@@ -124,7 +127,7 @@ async def finalize_trace(
 # =========================
 
 @router.get("/trace/by-message/{message_id}")
-async def get_trace_by_message(message_id: str) -> RAGTraceResponse:
+async def get_trace_by_message(message_id: str, request: Request) -> RAGTraceResponse:
     """
     通过 message_id 获取 RAG Trace（前端调用）
     
@@ -135,7 +138,11 @@ async def get_trace_by_message(message_id: str) -> RAGTraceResponse:
     }
     """
     try:
-        trace_data = _trace_store.get_trace_by_message_id(message_id)
+        trace_data = _trace_store.get_trace_by_message_id(
+            message_id,
+            user_id=get_user_id(request),
+            tenant_id=get_effective_tenant_id(request),
+        )
         
         if not trace_data:
             return RAGTraceResponse(rag_used=False, trace=None)
@@ -152,12 +159,16 @@ async def get_trace_by_message(message_id: str) -> RAGTraceResponse:
 
 
 @router.get("/trace/{trace_id}")
-async def get_trace_by_id(trace_id: str) -> RAGTraceResponse:
+async def get_trace_by_id(trace_id: str, request: Request) -> RAGTraceResponse:
     """
     通过 trace_id 获取 RAG Trace（前端兜底：当 by-message 查不到时可用 meta.rag.trace_id 查询）
     """
     try:
-        trace_data = _trace_store.get_trace_by_id(trace_id)
+        trace_data = _trace_store.get_trace_by_id(
+            trace_id,
+            user_id=get_user_id(request),
+            tenant_id=get_effective_tenant_id(request),
+        )
         if not trace_data:
             return RAGTraceResponse(rag_used=False, trace=None)
         from core.types import RAGTrace

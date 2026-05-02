@@ -659,6 +659,7 @@ class RAGPlugin(Plugin):
             
             # 获取用户 ID（多用户架构）
             user_id = context.user_id or "default"
+            tid = (context.tenant_id or DEFAULT_KB_TENANT_ID).strip() or DEFAULT_KB_TENANT_ID
             
             # 创建 trace
             rag_id = ",".join(kb_ids)  # 多个 KB 用逗号连接
@@ -672,6 +673,7 @@ class RAGPlugin(Plugin):
                 vector_store="sqlite-vec",
                 top_k=top_k,
                 user_id=user_id,
+                tenant_id=tid,
                 version_id=version_id,
             )
             

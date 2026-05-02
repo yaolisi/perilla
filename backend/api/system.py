@@ -2112,7 +2112,7 @@ async def queue_summary_api(
 
 @router.get("/feature-flags")
 async def get_feature_flags_api(request: Request) -> FeatureFlagsReadResponse:
-    tenant_id = getattr(request.state, "tenant_id", None)
+    tenant_id = resolve_api_tenant_id(request)
     return FeatureFlagsReadResponse(tenant_id=tenant_id, flags=get_feature_flags(tenant_id))
 
 
@@ -2130,7 +2130,7 @@ async def update_feature_flags_api(
             code="system_feature_flags_invalid",
             message="flags must be object",
         )
-    tenant_id = getattr(request.state, "tenant_id", None)
+    tenant_id = resolve_api_tenant_id(request)
     saved = set_feature_flags(flags, tenant_id=tenant_id)
     return FeatureFlagsUpdateResponse(success=True, tenant_id=tenant_id, flags=saved)
 

@@ -18,6 +18,8 @@ class AsyncChatJob:
     status: str  # queued | running | succeeded | failed
     created_at: float
     updated_at: float
+    user_id: str = ""
+    tenant_id: str = ""
     result: Optional[dict[str, Any]] = None
     error: Optional[str] = None
 
@@ -28,7 +30,7 @@ class AsyncChatJobManager:
         self._lock = asyncio.Lock()
         self._running_tasks: set[asyncio.Task[Any]] = set()
 
-    async def submit(self, runner) -> str:
+    async def submit(self, runner, *, user_id: str, tenant_id: str) -> str:
         request_id = f"job_{uuid.uuid4().hex}"
         now = time.time()
         job = AsyncChatJob(
@@ -36,6 +38,8 @@ class AsyncChatJobManager:
             status="queued",
             created_at=now,
             updated_at=now,
+            user_id=str(user_id or ""),
+            tenant_id=str(tenant_id or ""),
         )
         async with self._lock:
             self._jobs[request_id] = job
@@ -70,10 +74,23 @@ class AsyncChatJobManager:
                 job.error = str(e)
                 job.updated_at = time.time()
 
-    async def get(self, request_id: str) -> Optional[AsyncChatJob]:
+    async def get(
+        self,
+        request_id: str,
+        *,
+        user_id: str,
+        tenant_id: str,
+    ) -> Optional[AsyncChatJob]:
+        uid = str(user_id or "")
+        tid = str(tenant_id or "")
         async with self._lock:
             self._cleanup_locked()
-            return self._jobs.get(request_id)
+            job = self._jobs.get(request_id)
+            if not job:
+                return None
+            if job.user_id != uid or job.tenant_id != tid:
+                return None
+            return job
 
     def _cleanup_locked(self) -> None:
         ttl_seconds = max(60, int(getattr(settings, "async_chat_job_ttl_seconds", 1800) or 1800))
