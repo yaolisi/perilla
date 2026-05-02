@@ -149,7 +149,7 @@ help:
 	@echo "  make helm-chart-check"
 	@echo "                   - helm lint + helm template（deploy/helm/perilla-backend；无本地 helm 时可 Docker；均无则跳过）"
 	@echo "  make compose-config-check"
-	@echo "                   - docker compose config（docker-compose.yml + prod overlay；无 compose/daemon 则跳过）"
+	@echo "                   - docker compose config（base、prod、可选 monitoring 叠加；无 compose/daemon 则跳过）"
 	@echo "  make helm-deploy-contract-check"
 	@echo "                   - helm-chart-check + scripts/merge-gate-contract-tests.sh（pr-check / CI backend-static-analysis）"
 	@echo "  make merge-gate-contract-tests"

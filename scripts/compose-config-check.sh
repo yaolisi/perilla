@@ -40,5 +40,12 @@ run_merge() {
   echo "[compose-config-check] OK: ${label}"
 }
 
+MON="${ROOT}/deploy/monitoring/docker-compose.monitoring.yml"
+
 run_merge "docker-compose.yml" "${DC[@]}" -f docker-compose.yml config
 run_merge "docker-compose.yml + docker-compose.prod.yml" "${DC[@]}" -f docker-compose.yml -f docker-compose.prod.yml config
+
+if [[ -f "$MON" ]]; then
+  run_merge "docker-compose.yml + monitoring overlay" "${DC[@]}" -f docker-compose.yml -f "$MON" config
+  run_merge "docker-compose.yml + prod + monitoring overlay" "${DC[@]}" -f docker-compose.yml -f docker-compose.prod.yml -f "$MON" config
+fi
