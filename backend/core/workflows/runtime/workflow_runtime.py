@@ -97,7 +97,11 @@ class WorkflowRuntime:
     """
     AGENT_NODE_MAX_CALL_DEPTH = 2
     AGENT_NODE_DEFAULT_MAX_CALLS = 20
-    
+
+    @staticmethod
+    def _repo_tid(ex: WorkflowExecution) -> str:
+        return (str(getattr(ex, "tenant_id", None) or "").strip() or "default")
+
     def __init__(
         self,
         db: Session,
@@ -430,7 +434,8 @@ class WorkflowRuntime:
         execution_id = str(global_ctx.get("execution_id") or "").strip()
         if not execution_id:
             return
-        execution = self.execution_repository.get_by_id(execution_id)
+        tid = str(global_ctx.get("tenant_id") or "").strip() or None
+        execution = self.execution_repository.get_by_id(execution_id, tenant_id=tid)
         if execution and execution.state == WorkflowExecutionState.CANCELLED:
             raise RuntimeError(f"WORKFLOW_CANCELLED: execution_id={execution_id}")
 
@@ -699,11 +704,14 @@ class WorkflowRuntime:
         trace_id = global_ctx.get("trace_id")
         agent_id_raw = global_ctx.get("agent_id")
         tool_agent_id = str(agent_id_raw).strip() if agent_id_raw is not None else None
+        tid_raw = global_ctx.get("tenant_id")
+        wf_tool_tid = (str(tid_raw).strip() if tid_raw is not None else "") or None
         tool_ctx = ToolContext(
             agent_id=tool_agent_id,
             trace_id=trace_id,
             workspace=workspace,
             permissions=permissions,
+            tenant_id=wf_tool_tid,
         )
 
         tool_input = dict(input_data or {})
@@ -1143,7 +1151,9 @@ class WorkflowRuntime:
             if cur is None:
                 return
             merged = {**(cur.global_context or {}), "orchestrator_agent_id": oid}
-            self.execution_repository.update_global_context(workflow_execution_id, merged)
+            self.execution_repository.update_global_context(
+                workflow_execution_id, merged, tenant_id=self._repo_tid(cur)
+            )
         except Exception as e:
             logger.warning(
                 "[WorkflowRuntime] Failed to persist orchestrator_agent_id to global_context: %s",
@@ -1859,12 +1869,14 @@ class WorkflowRuntime:
         return version
 
     async def _request_governance_slot(
-        self, execution_id: str, workflow_id: str, version_id: str, version: WorkflowVersion
+        self, execution: WorkflowExecution, version: WorkflowVersion
     ) -> None:
+        tid = self._repo_tid(execution)
         request = ExecutionRequest(
-            execution_id=execution_id,
-            workflow_id=workflow_id,
-            version_id=version_id,
+            execution_id=execution.execution_id,
+            workflow_id=execution.workflow_id,
+            version_id=execution.version_id,
+            tenant_id=tid,
             estimated_tokens=self._estimate_tokens(version),
         )
         result = await self.execution_manager.wait_for_execution(request)
@@ -1878,26 +1890,29 @@ class WorkflowRuntime:
             except Exception:
                 queued_at_dt = None
         self.execution_repository.update_queue_metrics(
-            execution_id,
+            execution.execution_id,
             queue_position=result.queue_position,
             queued_at=queued_at_dt,
             wait_duration_ms=result.wait_duration_ms,
+            tenant_id=tid,
         )
 
-        await self._wait_distributed_running_slot(workflow_id, execution_id)
+        await self._wait_distributed_running_slot(execution.workflow_id, execution.execution_id, tenant_id=tid)
 
     def _start_execution_instance(
         self,
-        execution_id: str,
+        execution: WorkflowExecution,
         *,
         on_state_change: Optional[Callable[[WorkflowExecution], None]],
     ) -> tuple[WorkflowExecution, str]:
+        tid = self._repo_tid(execution)
         running_execution = self.execution_repository.update_state(
-            execution_id,
-            WorkflowExecutionState.RUNNING
+            execution.execution_id,
+            WorkflowExecutionState.RUNNING,
+            tenant_id=tid,
         )
         if running_execution is None:
-            raise RuntimeError(f"Failed to mark execution as running: {execution_id}")
+            raise RuntimeError(f"Failed to mark execution as running: {execution.execution_id}")
         current_execution = running_execution
         if on_state_change:
             on_state_change(current_execution)
@@ -1915,10 +1930,12 @@ class WorkflowRuntime:
         base_gc = dict(execution.global_context or {})
         if not str(base_gc.get("correlation_id") or "").strip():
             base_gc["correlation_id"] = f"wfex_{execution.execution_id}"
+        rtid = self._repo_tid(execution)
         global_context = {
             "workflow_id": execution.workflow_id,
             "version_id": execution.version_id,
             "execution_id": execution.execution_id,
+            "tenant_id": rtid,
             "input_data": execution.input_data or {},
             "workflow_global_config": version.dag.global_config or {},
             "workspace": workspace_dir,
@@ -1926,11 +1943,14 @@ class WorkflowRuntime:
         }
         # 将归一化后的 correlation_id 写回 DB，使 GET execution / 前端与调度时 global_context 一致
         persisted_gc = {**(execution.global_context or {}), "correlation_id": global_context["correlation_id"]}
-        self.execution_repository.update_global_context(execution.execution_id, persisted_gc)
+        self.execution_repository.update_global_context(
+            execution.execution_id, persisted_gc, tenant_id=rtid
+        )
 
         self.execution_repository.update_graph_instance_id(
             execution.execution_id,
-            instance_id
+            instance_id,
+            tenant_id=rtid,
         )
         await self.scheduler.start_instance(
             graph_def=graph_def,
@@ -1969,6 +1989,7 @@ class WorkflowRuntime:
                         "wait_timeout_seconds": wait_timeout_seconds,
                         "execution_id": execution_id,
                     },
+                    tenant_id=self._repo_tid(execution),
                 )
                 if timeout_execution is None:
                     raise RuntimeError(f"Failed to update timeout state: {execution_id}")
@@ -1980,11 +2001,12 @@ class WorkflowRuntime:
             return await self._handle_completion(
                 execution_id,
                 instance_id,
-                on_state_change
+                on_state_change,
+                tenant_id=self._repo_tid(execution),
             )
 
         task = asyncio.create_task(
-            self._execute_async(execution_id, instance_id, on_state_change)
+            self._execute_async(execution_id, instance_id, on_state_change, self._repo_tid(execution))
         )
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -2029,14 +2051,15 @@ class WorkflowRuntime:
                     WorkflowExecutionState.PAUSED,
                     error_message="Awaiting approval",
                     error_details={"code": "WORKFLOW_APPROVAL_PENDING"},
+                    tenant_id=self._repo_tid(execution),
                 )
                 if on_state_change and paused:
                     on_state_change(paused)
                 return paused or execution
             
-            await self._request_governance_slot(execution_id, workflow_id, version_id, version)
+            await self._request_governance_slot(execution, version)
             execution, instance_id = self._start_execution_instance(
-                execution_id, on_state_change=on_state_change
+                execution, on_state_change=on_state_change
             )
             await self._bootstrap_scheduler_instance(execution, version, instance_id)
             return await self._await_or_background_execution(
@@ -2051,6 +2074,7 @@ class WorkflowRuntime:
         except Exception as e:
             logger.error(f"[WorkflowRuntime] Execution failed: {execution_id} - {e}")
             latest_execution = self.execution_repository.get_by_id(execution_id) or execution
+            ftid = self._repo_tid(latest_execution)
             failure_details = self._build_global_failure_details(
                 latest_execution,
                 error_message=str(e),
@@ -2063,9 +2087,10 @@ class WorkflowRuntime:
                 WorkflowExecutionState.FAILED,
                 error_message=str(e),
                 error_details=failure_details,
+                tenant_id=ftid,
             )
             if failed_execution is None:
-                latest = self.execution_repository.get_by_id(execution_id)
+                latest = self.execution_repository.get_by_id(execution_id, tenant_id=ftid)
                 if latest is None:
                     raise RuntimeError(f"Execution not found after failure: {execution_id}") from e
                 failed_execution = latest
@@ -2079,7 +2104,9 @@ class WorkflowRuntime:
             
             return execution
 
-    async def _wait_distributed_running_slot(self, workflow_id: str, execution_id: str) -> None:
+    async def _wait_distributed_running_slot(
+        self, workflow_id: str, execution_id: str, *, tenant_id: Optional[str] = None
+    ) -> None:
         if not bool(getattr(settings, "workflow_distributed_running_limit_enabled", True)):
             return
         limit = max(1, int(getattr(settings, "workflow_distributed_running_limit_per_workflow", 3) or 3))
@@ -2091,7 +2118,7 @@ class WorkflowRuntime:
         while True:
             now = datetime.now(UTC)
             stale_cutoff = now - timedelta(seconds=stale_seconds)
-            running_execs = self.execution_repository.get_running_executions(workflow_id)
+            running_execs = self.execution_repository.get_running_executions(workflow_id, tenant_id=tenant_id)
             active_running, stale_running = self._partition_running_executions(
                 running_execs,
                 current_execution_id=execution_id,
@@ -2161,6 +2188,7 @@ class WorkflowRuntime:
                     WorkflowExecutionState.FAILED,
                     error_message=msg,
                     error_details={"code": "STALE_RUNNING_RECONCILED"},
+                    tenant_id=self._repo_tid(ex),
                 )
                 logger.warning(
                     f"[WorkflowRuntime] Reconciled stale running execution: "
@@ -2176,7 +2204,8 @@ class WorkflowRuntime:
         self,
         execution_id: str,
         instance_id: str,
-        on_state_change: Optional[Callable[[WorkflowExecution], None]]
+        on_state_change: Optional[Callable[[WorkflowExecution], None]],
+        tenant_id: str,
     ) -> None:
         """异步执行"""
         try:
@@ -2185,14 +2214,15 @@ class WorkflowRuntime:
                 instance_id=instance_id,
                 timeout=3600
             )
-            await self._handle_completion(execution_id, instance_id, on_state_change)
+            await self._handle_completion(execution_id, instance_id, on_state_change, tenant_id=tenant_id)
         except Exception as e:
             logger.error(f"[WorkflowRuntime] Async execution failed: {execution_id} - {e}")
             
             execution = self.execution_repository.update_state(
                 execution_id,
                 WorkflowExecutionState.FAILED,
-                error_message=str(e)
+                error_message=str(e),
+                tenant_id=tenant_id,
             )
             
             if on_state_change and execution is not None:
@@ -2202,7 +2232,9 @@ class WorkflowRuntime:
         self,
         execution_id: str,
         instance_id: str,
-        on_state_change: Optional[Callable[[WorkflowExecution], None]]
+        on_state_change: Optional[Callable[[WorkflowExecution], None]],
+        *,
+        tenant_id: str,
     ) -> WorkflowExecution:
         """处理执行完成"""
         result = await GraphRuntimeAdapter.extract_execution_result_from_kernel(
@@ -2210,13 +2242,14 @@ class WorkflowRuntime:
             self.scheduler.db
         )
         final_state = self._map_kernel_state_to_workflow_state(result.get("state", "failed"))
-        self._persist_completion_result(execution_id, result)
+        self._persist_completion_result(execution_id, result, tenant_id=tenant_id)
         execution = self.execution_repository.update_state(
             execution_id,
-            final_state
+            final_state,
+            tenant_id=tenant_id,
         )
         if execution is None:
-            latest = self.execution_repository.get_by_id(execution_id)
+            latest = self.execution_repository.get_by_id(execution_id, tenant_id=tenant_id)
             if latest is None:
                 raise RuntimeError(f"Execution not found while handling completion: {execution_id}")
             execution = latest
@@ -2235,7 +2268,7 @@ class WorkflowRuntime:
         if on_state_change:
             on_state_change(execution)
 
-        self._record_runtime_tool_sequence_learning(execution_id, result)
+        self._record_runtime_tool_sequence_learning(execution_id, result, tenant_id=tenant_id)
         
         logger.info(f"[WorkflowRuntime] Execution completed: {execution_id} - {final_state.value}")
         
@@ -2245,10 +2278,12 @@ class WorkflowRuntime:
         self,
         execution_id: str,
         result: Dict[str, Any],
+        *,
+        tenant_id: str,
     ) -> None:
         """执行完成后按真实节点执行结果提取工具序列，更新推荐学习数据。"""
         try:
-            execution = self.execution_repository.get_by_id(execution_id)
+            execution = self.execution_repository.get_by_id(execution_id, tenant_id=tenant_id)
             if not execution:
                 return
             version = self.version_repository.get_version_by_id(execution.version_id)
@@ -2312,14 +2347,18 @@ class WorkflowRuntime:
             return WorkflowExecutionState.FAILED
         return WorkflowExecutionState.FAILED
 
-    def _persist_completion_result(self, execution_id: str, result: Dict[str, Any]) -> None:
+    def _persist_completion_result(
+        self, execution_id: str, result: Dict[str, Any], *, tenant_id: str
+    ) -> None:
         output_data = self._build_completion_output_data(result)
         if output_data:
-            self.execution_repository.update_output(execution_id, output_data)
+            self.execution_repository.update_output(execution_id, output_data, tenant_id=tenant_id)
 
         normalized_nodes = self._normalize_completion_node_states(result.get("node_states", []))
         if normalized_nodes:
-            self.execution_repository.update_node_states(execution_id, normalized_nodes)
+            self.execution_repository.update_node_states(
+                execution_id, normalized_nodes, tenant_id=tenant_id
+            )
 
     @staticmethod
     def _build_completion_output_data(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -2395,6 +2434,7 @@ class WorkflowRuntime:
         await self._update_state_with_retry(
             execution_id,
             WorkflowExecutionState.CANCELLED,
+            tenant_id=self._repo_tid(execution),
         )
         
         # 如果有 GraphInstance，取消它
@@ -2419,13 +2459,14 @@ class WorkflowRuntime:
         execution_id: str,
         state: WorkflowExecutionState,
         *,
+        tenant_id: Optional[str] = None,
         retries: int = 6,
         base_delay_seconds: float = 0.1,
     ) -> Optional[WorkflowExecution]:
         last_err: Optional[Exception] = None
         for i in range(retries):
             try:
-                return self.execution_repository.update_state(execution_id, state)
+                return self.execution_repository.update_state(execution_id, state, tenant_id=tenant_id)
             except OperationalError as e:
                 last_err = e
                 msg = str(e).lower()
@@ -2478,7 +2519,8 @@ class WorkflowRuntime:
             if self._create_pending_approval_task_if_missing(execution, node_id, cfg, requested_by):
                 pending_created = True
 
-        has_pending = len(self.approval_repository.list_pending_by_execution(execution.execution_id)) > 0
+        tid = self._repo_tid(execution)
+        has_pending = len(self.approval_repository.list_pending_by_execution(execution.execution_id, tid)) > 0
         return pending_created or has_pending
 
     def _collect_unapproved_approval_nodes(
@@ -2505,7 +2547,8 @@ class WorkflowRuntime:
         cfg: Dict[str, Any],
         requested_by: str,
     ) -> bool:
-        existing = self.approval_repository.get_pending_by_execution_node(execution.execution_id, node_id)
+        tid = self._repo_tid(execution)
+        existing = self.approval_repository.get_pending_by_execution_node(execution.execution_id, node_id, tid)
         if existing:
             return False
         self.approval_repository.create_task(
@@ -2516,6 +2559,7 @@ class WorkflowRuntime:
             reason=str(cfg.get("reason") or "Workflow requires approval before execution"),
             payload={"node_config": cfg},
             requested_by=requested_by,
+            tenant_id=tid,
             expires_in_seconds=cfg.get("expires_in_seconds"),
         )
         return True

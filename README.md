@@ -104,6 +104,16 @@ curl -s http://127.0.0.1:8000/api/health/ready | jq .
 - 中文 FAQ：[`#6-故障排查-faq`](docs/GETTING_STARTED_ZH.md#6-故障排查-faq)
 - 中文发布清单：[`#7-生产发布最小清单`](docs/GETTING_STARTED_ZH.md#7-生产发布最小清单)
 
+### 多租户 HTTP（摘要）
+
+开启 **`TENANT_ENFORCEMENT_ENABLED`** / **`TENANT_API_KEY_BINDING_ENABLED`** 时，下列前缀下的请求须显式携带 **`X-Tenant-Id`**（名称可由 `TENANT_HEADER_NAME` 配置）：
+
+- `/api/v1/workflows`、`/api/v1/audit`、`/api/system`
+- `/v1/chat`、`/api/sessions`、`/api/memory`
+- `/api/knowledge-bases`、`/api/agent-sessions`、`/v1/vlm`
+
+权威列表见后端 **`backend/middleware/tenant_paths.py`**（`is_tenant_enforcement_protected_path`）。业务侧持久化（Workflow、会话、知识库、记忆、治理审计等）在存储层按 **tenant_id** 过滤；控制面解析以中间件注入为准（详见 `backend/core/utils/tenant_request.py`）。完整说明见 **`tutorials/tutorial.md`**「多租户」章节。
+
 ### 命名与迁移边界（目录名 / Redis）
 
 - **仓库目录名 vs 包名**：本地克隆目录可能仍为历史路径 `openvitamin_enhanced_docker`；根目录 `package.json` 的 `name` 为 `perilla-enhanced-docker`，运行时品牌以配置与 UI（`settings.app_name` 等）为准。**不要求**仅为对齐而重命名磁盘目录；若你自行改名，请同步更新脚本、CI、文档中的路径引用。

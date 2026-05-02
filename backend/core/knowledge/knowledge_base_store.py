@@ -25,6 +25,9 @@ from core.knowledge.vector_index_snapshot import get_kb_vector_snapshot_store
 UNIFIED_CHUNKS_TABLE = "embedding_chunks"
 UNIFIED_VEC_TABLE = "kb_chunks_vec"
 
+# 与 MemoryStore / HistoryStore 一致：未携带租户上下文时使用 default
+DEFAULT_KB_TENANT_ID = "default"
+
 # 与旧版 per-KB 向量表名兼容：仅字母数字、点、连字符、下划线；否则用哈希后缀，避免标识符注入。
 _KB_ID_SAFE_FOR_TABLE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 
@@ -109,7 +112,8 @@ class KnowledgeBaseStore:
                         chunk_overlap INTEGER DEFAULT 50,
                         chunk_size_overrides_json TEXT DEFAULT '{}',
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        user_id TEXT DEFAULT 'default'
+                        user_id TEXT DEFAULT 'default',
+                        tenant_id TEXT DEFAULT 'default'
                     );
                 """)
                 
@@ -136,6 +140,15 @@ class KnowledgeBaseStore:
                     conn.execute("ALTER TABLE knowledge_base ADD COLUMN chunk_size_overrides_json TEXT DEFAULT '{}'")
                 except sqlite3.OperationalError:
                     pass
+                try:
+                    conn.execute(
+                        "ALTER TABLE knowledge_base ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+                    )
+                    conn.execute(
+                        "UPDATE knowledge_base SET tenant_id = 'default' WHERE tenant_id IS NULL OR trim(tenant_id) = ''"
+                    )
+                except sqlite3.OperationalError:
+                    pass
 
                 # 2. 创建 document 表
                 conn.execute("""
@@ -153,6 +166,7 @@ class KnowledgeBaseStore:
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         user_id TEXT DEFAULT 'default',
+                        tenant_id TEXT DEFAULT 'default',
                         FOREIGN KEY (knowledge_base_id) REFERENCES knowledge_base(id)
                     );
                 """)
@@ -192,6 +206,15 @@ class KnowledgeBaseStore:
                     conn.execute("ALTER TABLE document ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP")
                 except sqlite3.OperationalError:
                     pass
+                try:
+                    conn.execute(
+                        "ALTER TABLE document ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+                    )
+                    conn.execute(
+                        "UPDATE document SET tenant_id = 'default' WHERE tenant_id IS NULL OR trim(tenant_id) = ''"
+                    )
+                except sqlite3.OperationalError:
+                    pass
                 # 若统一表已存在，尽量补齐 version_id 字段用于按版本检索隔离
                 try:
                     conn.execute(f"ALTER TABLE {UNIFIED_CHUNKS_TABLE} ADD COLUMN version_id TEXT")
@@ -202,6 +225,14 @@ class KnowledgeBaseStore:
                 conn.execute("""
                     CREATE INDEX IF NOT EXISTS idx_document_kb_id 
                     ON document(knowledge_base_id);
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_base_user_tenant
+                    ON knowledge_base(user_id, tenant_id);
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_document_kb_user_tenant
+                    ON document(knowledge_base_id, user_id, tenant_id);
                 """)
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS knowledge_base_version (
@@ -413,6 +444,14 @@ class KnowledgeBaseStore:
     # Knowledge Base CRUD
     # =========================
 
+    def read_knowledge_base_row(self, kb_id: str) -> Optional[Dict[str, Any]]:
+        """按 id 读取知识库行（不做 user/tenant ACL）。供索引、磁盘估算等已在上层完成授权校验的路径使用。"""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM knowledge_base WHERE id = ?", (kb_id,)).fetchone()
+            if row:
+                return dict(row)
+        return None
+
     def create_knowledge_base(
         self,
         name: str,
@@ -423,6 +462,7 @@ class KnowledgeBaseStore:
         chunk_size: int = 500,
         chunk_overlap: int = 50,
         chunk_size_overrides_json: Optional[str] = None,
+        tenant_id: str = DEFAULT_KB_TENANT_ID,
     ) -> str:
         """
         创建知识库
@@ -442,8 +482,8 @@ class KnowledgeBaseStore:
 
         with self._connect() as conn:
             conn.execute("""
-                INSERT INTO knowledge_base (id, name, description, embedding_model_id, status, user_id, chunk_size, chunk_overlap, chunk_size_overrides_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO knowledge_base (id, name, description, embedding_model_id, status, user_id, tenant_id, chunk_size, chunk_overlap, chunk_size_overrides_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 kb_id,
                 name,
@@ -451,57 +491,76 @@ class KnowledgeBaseStore:
                 embedding_model_id,
                 KnowledgeBaseStatus.EMPTY,
                 user_id,
+                tenant_id,
                 int(chunk_size),
                 int(chunk_overlap),
                 chunk_size_overrides_json or getattr(settings, "kb_chunk_size_overrides_json", "{}"),
             ))
             conn.commit()
 
-        logger.info(f"[KnowledgeBaseStore] Created knowledge base: {kb_id} for user: {user_id}")
+        logger.info(f"[KnowledgeBaseStore] Created knowledge base: {kb_id} for user: {user_id} tenant: {tenant_id}")
         return kb_id
 
-    def get_knowledge_base(self, kb_id: str, user_id: str = "default") -> Optional[Dict[str, Any]]:
-        """获取知识库信息（按用户过滤）"""
+    def get_knowledge_base(
+        self,
+        kb_id: str,
+        user_id: str = "default",
+        tenant_id: str = DEFAULT_KB_TENANT_ID,
+    ) -> Optional[Dict[str, Any]]:
+        """获取知识库信息（按用户与租户过滤）"""
         with self._connect() as conn:
-            # 先检查 KB 是否存在
             kb_exists = conn.execute(
-                "SELECT user_id FROM knowledge_base WHERE id = ?",
-                (kb_id,)
+                "SELECT user_id, tenant_id FROM knowledge_base WHERE id = ?",
+                (kb_id,),
             ).fetchone()
-            
+
             if not kb_exists:
                 raise ResourceNotFoundError("KnowledgeBase", kb_id)
-            
-            # 如果存在但不属于当前用户
+
+            raw_tid = kb_exists["tenant_id"] if "tenant_id" in kb_exists.keys() else None
+            eff_tid = (str(raw_tid).strip() if raw_tid else "") or DEFAULT_KB_TENANT_ID
+
             if kb_exists["user_id"] != user_id:
                 raise UserAccessDeniedError("KnowledgeBase", kb_id, user_id)
-            
+            if eff_tid != tenant_id:
+                raise UserAccessDeniedError("KnowledgeBase", kb_id, user_id)
+
             row = conn.execute(
-                "SELECT * FROM knowledge_base WHERE id = ? AND user_id = ?",
-                (kb_id, user_id)
+                """
+                SELECT * FROM knowledge_base WHERE id = ? AND user_id = ?
+                AND coalesce(nullif(trim(tenant_id), ''), ?) = ?
+                """,
+                (kb_id, user_id, DEFAULT_KB_TENANT_ID, tenant_id),
             ).fetchone()
-            
+
             if row:
                 kb_info = dict(row)
-                # 如果状态为空或不存在，计算并更新状态
                 if not kb_info.get("status"):
                     self._update_kb_status_from_documents(kb_id)
-                    # 重新获取
                     row = conn.execute(
-                        "SELECT * FROM knowledge_base WHERE id = ? AND user_id = ?",
-                        (kb_id, user_id)
+                        """
+                        SELECT * FROM knowledge_base WHERE id = ? AND user_id = ?
+                        AND coalesce(nullif(trim(tenant_id), ''), ?) = ?
+                        """,
+                        (kb_id, user_id, DEFAULT_KB_TENANT_ID, tenant_id),
                     ).fetchone()
                     if row:
                         kb_info = dict(row)
                 return kb_info
         return None
 
-    def list_knowledge_bases(self, user_id: str = "default") -> List[Dict[str, Any]]:
-        """列出用户的所有知识库"""
+    def list_knowledge_bases(
+        self, user_id: str = "default", tenant_id: str = DEFAULT_KB_TENANT_ID
+    ) -> List[Dict[str, Any]]:
+        """列出用户的所有知识库（按租户过滤）"""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM knowledge_base WHERE user_id = ? ORDER BY created_at DESC",
-                (user_id,)
+                """
+                SELECT * FROM knowledge_base WHERE user_id = ?
+                AND coalesce(nullif(trim(tenant_id), ''), ?) = ?
+                ORDER BY created_at DESC
+                """,
+                (user_id, DEFAULT_KB_TENANT_ID, tenant_id),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -513,6 +572,8 @@ class KnowledgeBaseStore:
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         chunk_size_overrides_json: Optional[str] = None,
+        user_id: str = "default",
+        tenant_id: str = DEFAULT_KB_TENANT_ID,
     ) -> bool:
         """
         更新知识库信息
@@ -525,8 +586,7 @@ class KnowledgeBaseStore:
         Returns:
             bool: 是否更新成功
         """
-        # 检查知识库是否存在
-        if not self.get_knowledge_base(kb_id):
+        if not self.get_knowledge_base(kb_id, user_id=user_id, tenant_id=tenant_id):
             return False
         
         updates = []
@@ -564,21 +624,29 @@ class KnowledgeBaseStore:
             logger.info(f"[KnowledgeBaseStore] Updated knowledge base: {kb_id}")
             return cursor.rowcount > 0
 
-    def delete_knowledge_base(self, kb_id: str, user_id: str = "default") -> bool:
+    def delete_knowledge_base(
+        self,
+        kb_id: str,
+        user_id: str = "default",
+        tenant_id: str = DEFAULT_KB_TENANT_ID,
+    ) -> bool:
         """删除知识库（级联删除相关文档、chunks 和向量表）。统一表下会清理 embedding_chunks 与 kb_chunks_vec。"""
         # 先检查 KB 是否存在
         with self._connect() as conn:
-            # 检查 KB 是否存在（不限制 user_id）
             kb_exists = conn.execute(
-                "SELECT id, user_id FROM knowledge_base WHERE id = ?",
-                (kb_id,)
+                "SELECT id, user_id, tenant_id FROM knowledge_base WHERE id = ?",
+                (kb_id,),
             ).fetchone()
-            
+
             if not kb_exists:
                 raise ResourceNotFoundError("KnowledgeBase", kb_id)
-            
-            # 如果存在但不属于当前用户，抛出权限错误
+
+            raw_tid = kb_exists["tenant_id"] if "tenant_id" in kb_exists.keys() else None
+            eff_tid = (str(raw_tid).strip() if raw_tid else "") or DEFAULT_KB_TENANT_ID
+
             if kb_exists["user_id"] != user_id:
+                raise UserAccessDeniedError("KnowledgeBase", kb_id, user_id)
+            if eff_tid != tenant_id:
                 raise UserAccessDeniedError("KnowledgeBase", kb_id, user_id)
         
         # 后续删除操作...
@@ -619,8 +687,11 @@ class KnowledgeBaseStore:
                 (kb_id,),
             )
             cursor = conn.execute(
-                "DELETE FROM knowledge_base WHERE id = ? AND user_id = ?",
-                (kb_id, user_id),
+                """
+                DELETE FROM knowledge_base WHERE id = ? AND user_id = ?
+                AND coalesce(nullif(trim(tenant_id), ''), ?) = ?
+                """,
+                (kb_id, user_id, DEFAULT_KB_TENANT_ID, tenant_id),
             )
             conn.commit()
             if cursor.rowcount > 0:
@@ -641,6 +712,7 @@ class KnowledgeBaseStore:
         status: str = "UPLOADED",
         user_id: str = "default",
         content_hash: Optional[str] = None,
+        tenant_id: str = DEFAULT_KB_TENANT_ID,
     ) -> str:
         """
         创建文档记录
@@ -661,10 +733,29 @@ class KnowledgeBaseStore:
             doc_id = f"doc_{uuid.uuid4().hex[:12]}"
 
         with self._connect() as conn:
+            chk = conn.execute(
+                """
+                SELECT id FROM knowledge_base WHERE id = ? AND user_id = ?
+                AND coalesce(nullif(trim(tenant_id), ''), ?) = ?
+                """,
+                (knowledge_base_id, user_id, DEFAULT_KB_TENANT_ID, tenant_id),
+            ).fetchone()
+            if not chk:
+                raise ResourceNotFoundError("KnowledgeBase", knowledge_base_id)
             conn.execute("""
-                INSERT INTO document (id, knowledge_base_id, source, doc_type, status, file_path, user_id, content_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (doc_id, knowledge_base_id, source, doc_type, status, file_path, user_id, content_hash))
+                INSERT INTO document (id, knowledge_base_id, source, doc_type, status, file_path, user_id, tenant_id, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                doc_id,
+                knowledge_base_id,
+                source,
+                doc_type,
+                status,
+                file_path,
+                user_id,
+                tenant_id,
+                content_hash,
+            ))
             conn.commit()
 
         logger.debug(f"[KnowledgeBaseStore] Created document: {doc_id} with status {status}")
@@ -734,7 +825,12 @@ class KnowledgeBaseStore:
         - 如果所有文档都是 INDEXED → READY
         - 如果没有文档 → EMPTY
         """
-        docs = self.list_documents(kb_id)
+        kb_row = self.read_knowledge_base_row(kb_id)
+        if not kb_row:
+            return KnowledgeBaseStatus.EMPTY
+        uid = kb_row.get("user_id") or "default"
+        tid = (str(kb_row.get("tenant_id") or "").strip()) or DEFAULT_KB_TENANT_ID
+        docs = self.list_documents(kb_id, user_id=uid, tenant_id=tid)
         
         if not docs:
             return KnowledgeBaseStatus.EMPTY
@@ -805,31 +901,56 @@ class KnowledgeBaseStore:
                 return dict(row)
         return None
 
-    def list_documents(self, knowledge_base_id: str, user_id: str = "default") -> List[Dict[str, Any]]:
-        """列出知识库下的所有文档（按用户过滤）"""
+    def list_documents(
+        self,
+        knowledge_base_id: str,
+        user_id: str = "default",
+        tenant_id: str = DEFAULT_KB_TENANT_ID,
+    ) -> List[Dict[str, Any]]:
+        """列出知识库下的所有文档（按用户与租户过滤）"""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM document WHERE knowledge_base_id = ? AND user_id = ? ORDER BY created_at DESC",
-                (knowledge_base_id, user_id)
+                """
+                SELECT * FROM document WHERE knowledge_base_id = ? AND user_id = ?
+                AND coalesce(nullif(trim(tenant_id), ''), ?) = ?
+                ORDER BY created_at DESC
+                """,
+                (knowledge_base_id, user_id, DEFAULT_KB_TENANT_ID, tenant_id),
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def delete_document(self, doc_id: str, user_id: str = "default") -> bool:
+    def delete_document(
+        self,
+        doc_id: str,
+        user_id: str = "default",
+        tenant_id: str = DEFAULT_KB_TENANT_ID,
+    ) -> bool:
         """删除文档（不再级联删除 chunks，需要单独调用 delete_document_chunks）"""
         # 先获取文档信息，以便后续更新知识库状态
         doc = self.get_document(doc_id)
-        kb_id = doc.get("knowledge_base_id") if doc else None
-        
-        # 验证用户权限
-        if doc and doc.get("user_id") != user_id:
+        if not doc:
+            return False
+        kb_id = doc.get("knowledge_base_id")
+
+        # 验证用户与租户权限
+        if doc.get("user_id") != user_id:
             logger.warning(f"[KnowledgeBaseStore] Document {doc_id} does not belong to user {user_id}")
+            return False
+        doc_tid = (str(doc.get("tenant_id") or "").strip()) or DEFAULT_KB_TENANT_ID
+        if doc_tid != tenant_id:
+            logger.warning(
+                f"[KnowledgeBaseStore] Document {doc_id} tenant mismatch (expected {tenant_id}, got {doc_tid})"
+            )
             return False
         
         with self._connect() as conn:
             # 删除 document
             cursor = conn.execute(
-                "DELETE FROM document WHERE id = ? AND user_id = ?",
-                (doc_id, user_id)
+                """
+                DELETE FROM document WHERE id = ? AND user_id = ?
+                AND coalesce(nullif(trim(tenant_id), ''), ?) = ?
+                """,
+                (doc_id, user_id, DEFAULT_KB_TENANT_ID, tenant_id),
             )
             conn.commit()
             
@@ -1571,7 +1692,7 @@ class KnowledgeBaseStore:
             else:
                 actual_embedding_dim = self.config.embedding_dim
                 if self._use_unified_chunks_table() or self._vec_available:
-                    kb_info = self.get_knowledge_base(kb_id)
+                    kb_info = self.read_knowledge_base_row(kb_id)
                     if kb_info:
                         try:
                             from core.models.registry import get_model_registry

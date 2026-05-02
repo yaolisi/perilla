@@ -61,6 +61,7 @@ async def test_disconnect_without_resume_calls_disconnect_handler_not_success(mo
         request_id=None,
         conv_manager=MagicMock(),
         persist_success_turn=_never_success,
+        tenant_id="default",
         stream_format="openai",
         use_gzip=False,
     ):

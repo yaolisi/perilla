@@ -46,6 +46,7 @@
 | API Key | API Key | 调用身份凭证 |
 | 租户 | Tenant | 多租户隔离主体 |
 | 租户绑定 | Tenant Binding | API Key 可访问 tenant 列表 |
+| 租户强制路径 | Tenant enforcement prefixes | 须显式 `X-Tenant-Id` 的 URL 前缀集合；见 `middleware/tenant_paths.py` |
 | 租户强制 | Tenant Enforcement | 缺省租户/跨租户拦截策略 |
 | 命名空间 | Namespace | workflow 归属域，通常需与 tenant 对齐 |
 

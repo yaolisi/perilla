@@ -18,19 +18,23 @@ class _FakeHistoryStore:
         self.messages_result: List[Any] = []
         self.session_exists_flag = False
 
-    def list_sessions(self, *, user_id: str, limit: int = 50):
+    def list_sessions(self, *, user_id: str, limit: int = 50, tenant_id: str = "default"):
         return []
 
-    def list_messages(self, *, user_id: str, session_id: str, limit: int = 200):
+    def list_messages(
+        self, *, user_id: str, session_id: str, limit: int = 200, tenant_id: str = "default"
+    ):
         return list(self.messages_result)
 
-    def session_exists(self, *, user_id: str, session_id: str) -> bool:
+    def session_exists(self, *, user_id: str, session_id: str, tenant_id: str = "default") -> bool:
         return self.session_exists_flag
 
-    def rename_session(self, *, user_id: str, session_id: str, title: str) -> bool:
+    def rename_session(
+        self, *, user_id: str, session_id: str, title: str, tenant_id: str = "default"
+    ) -> bool:
         return False
 
-    def delete_session(self, *, user_id: str, session_id: str, hard: bool = True) -> bool:
+    def delete_session(self, *, user_id: str, session_id: str, hard: bool = True, tenant_id: str = "default") -> bool:
         return False
 
 

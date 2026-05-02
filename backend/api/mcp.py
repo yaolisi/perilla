@@ -3,12 +3,14 @@ MCP：探测、Server 配置 CRUD、tools 列表、Skill 导入预览。
 """
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from api.errors import raise_api_error
+from log import log_structured
+from core.utils.tenant_request import resolve_api_tenant_id
 from api.skill_discovery import SkillDefinitionDiscoveryRecord
 from core.mcp.persistence import (
     create_mcp_server,
@@ -26,11 +28,35 @@ from core.mcp.service import (
 )
 from core.security.deps import require_authenticated_platform_admin
 
+MSG_MCP_SERVER_NOT_FOUND = "MCP server not found"
+
 router = APIRouter(
     prefix="/api/mcp",
     tags=["mcp"],
     dependencies=[Depends(require_authenticated_platform_admin)],
 )
+
+
+def _mcp_audit_kwargs(request: Request, tenant_id: str) -> Dict[str, Any]:
+    """控制面审计公共字段（不落敏感配置）。"""
+    return {
+        "tenant_id": tenant_id,
+        "trace_id": getattr(request.state, "trace_id", None),
+        "request_id": getattr(request.state, "request_id", None),
+        "user_id": getattr(request.state, "user_id", None),
+    }
+
+
+def _mcp_failure_log(
+    request: Request,
+    tenant_id: str,
+    event: str,
+    *,
+    level: str = "warning",
+    **extra: Any,
+) -> None:
+    """失败路径审计（message 类字段调用方已截断）。"""
+    log_structured("McpApi", event, level=level, **_mcp_audit_kwargs(request, tenant_id), **extra)
 
 
 class McpJsonMap(BaseModel):
@@ -80,6 +106,7 @@ class McpServerRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    tenant_id: str = "default"
     name: str
     description: str
     transport: Literal["stdio", "http"]
@@ -145,16 +172,20 @@ class ProbeBody(BaseModel):
 
 
 @router.post("/probe")
-async def mcp_probe(body: ProbeBody) -> McpProbeResponse:
+async def mcp_probe(request: Request, body: ProbeBody) -> McpProbeResponse:
     """不依赖数据库：stdio 命令或 Streamable HTTP URL，握手 + tools/list。"""
+    tid = resolve_api_tenant_id(request)
+    u0 = (body.url or "").strip()
+    transport_hint = "http" if u0 else "stdio"
     try:
-        u = (body.url or "").strip()
+        u = u0
         if u:
             raw = await probe_http_url(
                 u,
                 env=_optional_env_dict(body.env),
                 request_timeout=body.request_timeout,
             )
+            transport = "http"
         else:
             raw = await probe_command(
                 list(body.command or []),
@@ -162,8 +193,25 @@ async def mcp_probe(body: ProbeBody) -> McpProbeResponse:
                 env=_optional_env_dict(body.env),
                 request_timeout=body.request_timeout,
             )
+            transport = "stdio"
+        tools_n = len(raw.get("tools") or []) if isinstance(raw, dict) else 0
+        log_structured(
+            "McpApi",
+            "mcp_api_probe_ok",
+            transport=transport,
+            tools_count=tools_n,
+            **_mcp_audit_kwargs(request, tid),
+        )
         return McpProbeResponse.model_validate(raw)
     except Exception as e:
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_probe_failed",
+            transport=transport_hint,
+            error_type=type(e).__name__,
+            error_message=(str(e) or "")[:500],
+        )
         raise_api_error(
             status_code=502,
             code="mcp_probe_failed",
@@ -210,13 +258,25 @@ class ImportToolsBody(BaseModel):
 
 
 @router.get("/servers")
-async def mcp_list_servers(enabled_only: bool = False) -> McpServerListResponse:
-    rows = list_mcp_servers(enabled_only=enabled_only)
+async def mcp_list_servers(
+    request: Request,
+    enabled_only: bool = False,
+) -> McpServerListResponse:
+    tid = resolve_api_tenant_id(request)
+    rows = list_mcp_servers(enabled_only=enabled_only, tenant_id=tid)
+    log_structured(
+        "McpApi",
+        "mcp_api_servers_list",
+        enabled_only=enabled_only,
+        result_count=len(rows),
+        **_mcp_audit_kwargs(request, tid),
+    )
     return McpServerListResponse(data=[McpServerRecord.model_validate(r) for r in rows])
 
 
 @router.post("/servers")
-async def mcp_create_server(body: CreateMcpServerBody) -> McpServerRecord:
+async def mcp_create_server(request: Request, body: CreateMcpServerBody) -> McpServerRecord:
+    tid = resolve_api_tenant_id(request)
     try:
         row = create_mcp_server(
             name=body.name,
@@ -227,22 +287,56 @@ async def mcp_create_server(body: CreateMcpServerBody) -> McpServerRecord:
             cwd=body.cwd,
             env=_optional_env_dict(body.env),
             enabled=body.enabled,
+            tenant_id=tid,
+        )
+        log_structured(
+            "McpApi",
+            "mcp_api_server_create",
+            server_id=row.get("id"),
+            name=row.get("name"),
+            transport=row.get("transport"),
+            enabled=bool(row.get("enabled", True)),
+            **_mcp_audit_kwargs(request, tid),
         )
         return McpServerRecord.model_validate(row)
     except ValueError as e:
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_validation_error",
+            context="create_server",
+            api_code="mcp_invalid_server",
+            error_message=(str(e) or "")[:500],
+        )
         raise_api_error(status_code=400, code="mcp_invalid_server", message=str(e))
 
 
 @router.get("/servers/{server_id}")
-async def mcp_get_server(server_id: str) -> McpServerRecord:
-    row = get_mcp_server(server_id)
+async def mcp_get_server(request: Request, server_id: str) -> McpServerRecord:
+    tid = resolve_api_tenant_id(request)
+    row = get_mcp_server(server_id, tenant_id=tid)
     if not row:
-        raise_api_error(status_code=404, code="mcp_server_not_found", message="MCP server not found")
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_server_not_found",
+            operation="get",
+            server_id=server_id,
+        )
+        raise_api_error(status_code=404, code="mcp_server_not_found", message=MSG_MCP_SERVER_NOT_FOUND)
+    log_structured(
+        "McpApi",
+        "mcp_api_server_get",
+        server_id=server_id,
+        transport=row.get("transport"),
+        **_mcp_audit_kwargs(request, tid),
+    )
     return McpServerRecord.model_validate(row)
 
 
 @router.put("/servers/{server_id}")
-async def mcp_update_server(server_id: str, body: UpdateMcpServerBody) -> McpServerRecord:
+async def mcp_update_server(request: Request, server_id: str, body: UpdateMcpServerBody) -> McpServerRecord:
+    tid = resolve_api_tenant_id(request)
     try:
         row = update_mcp_server(
             server_id,
@@ -254,34 +348,106 @@ async def mcp_update_server(server_id: str, body: UpdateMcpServerBody) -> McpSer
             cwd=body.cwd,
             env=_optional_env_dict(body.env),
             enabled=body.enabled,
+            tenant_id=tid,
         )
     except ValueError as e:
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_validation_error",
+            context="update_server",
+            api_code="mcp_invalid_server",
+            server_id=server_id,
+            error_message=(str(e) or "")[:500],
+        )
         raise_api_error(status_code=400, code="mcp_invalid_server", message=str(e))
     if not row:
-        raise_api_error(status_code=404, code="mcp_server_not_found", message="MCP server not found")
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_server_not_found",
+            operation="update",
+            server_id=server_id,
+        )
+        raise_api_error(status_code=404, code="mcp_server_not_found", message=MSG_MCP_SERVER_NOT_FOUND)
+    log_structured(
+        "McpApi",
+        "mcp_api_server_update",
+        server_id=server_id,
+        transport=row.get("transport"),
+        enabled=bool(row.get("enabled", True)),
+        **_mcp_audit_kwargs(request, tid),
+    )
     return McpServerRecord.model_validate(row)
 
 
 @router.delete("/servers/{server_id}")
-async def mcp_delete_server(server_id: str) -> McpServerDeleteResponse:
-    ok = delete_mcp_server(server_id)
+async def mcp_delete_server(request: Request, server_id: str) -> McpServerDeleteResponse:
+    tid = resolve_api_tenant_id(request)
+    ok = delete_mcp_server(server_id, tenant_id=tid)
     if not ok:
-        raise_api_error(status_code=404, code="mcp_server_not_found", message="MCP server not found")
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_server_not_found",
+            operation="delete",
+            server_id=server_id,
+        )
+        raise_api_error(status_code=404, code="mcp_server_not_found", message=MSG_MCP_SERVER_NOT_FOUND)
+    log_structured(
+        "McpApi",
+        "mcp_api_server_delete",
+        server_id=server_id,
+        **_mcp_audit_kwargs(request, tid),
+    )
     return McpServerDeleteResponse(id=server_id)
 
 
 @router.get("/servers/{server_id}/tools")
-async def mcp_server_tools(server_id: str) -> McpServerToolsResponse:
-    row = get_mcp_server(server_id)
+async def mcp_server_tools(request: Request, server_id: str) -> McpServerToolsResponse:
+    tid = resolve_api_tenant_id(request)
+    row = get_mcp_server(server_id, tenant_id=tid)
     if not row:
-        raise_api_error(status_code=404, code="mcp_server_not_found", message="MCP server not found")
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_server_not_found",
+            operation="tools_list",
+            server_id=server_id,
+        )
+        raise_api_error(status_code=404, code="mcp_server_not_found", message=MSG_MCP_SERVER_NOT_FOUND)
     try:
         tools_raw = await fetch_tools_for_server_config(row)
         tools = [McpToolDescriptor.model_validate(t) for t in tools_raw if isinstance(t, dict)]
+        log_structured(
+            "McpApi",
+            "mcp_api_server_tools_list",
+            server_id=server_id,
+            tools_count=len(tools),
+            **_mcp_audit_kwargs(request, tid),
+        )
         return McpServerToolsResponse(server_id=server_id, tools=tools)
     except ValueError as e:
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_server_tools_failed",
+            api_code="mcp_bad_request",
+            server_id=server_id,
+            error_message=(str(e) or "")[:500],
+        )
         raise_api_error(status_code=400, code="mcp_bad_request", message=str(e))
     except Exception as e:
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_server_tools_failed",
+            level="error",
+            api_code="mcp_tools_list_failed",
+            server_id=server_id,
+            error_type=type(e).__name__,
+            error_message=(str(e) or "")[:500],
+        )
         raise_api_error(
             status_code=502,
             code="mcp_tools_list_failed",
@@ -290,16 +456,49 @@ async def mcp_server_tools(server_id: str) -> McpServerToolsResponse:
 
 
 @router.get("/servers/{server_id}/skill-previews")
-async def mcp_skill_previews(server_id: str) -> McpSkillPreviewsResponse:
+async def mcp_skill_previews(request: Request, server_id: str) -> McpSkillPreviewsResponse:
+    tid = resolve_api_tenant_id(request)
     try:
-        previews_raw = await skill_previews_for_server(server_id)
+        previews_raw = await skill_previews_for_server(server_id, tenant_id=tid)
         previews = [SkillDefinitionDiscoveryRecord.model_validate(p) for p in previews_raw]
+        log_structured(
+            "McpApi",
+            "mcp_api_server_skill_previews",
+            server_id=server_id,
+            previews_count=len(previews),
+            **_mcp_audit_kwargs(request, tid),
+        )
         return McpSkillPreviewsResponse(server_id=server_id, skill_previews=previews)
     except KeyError:
-        raise_api_error(status_code=404, code="mcp_server_not_found", message="MCP server not found")
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_server_not_found",
+            operation="skill_previews",
+            server_id=server_id,
+        )
+        raise_api_error(status_code=404, code="mcp_server_not_found", message=MSG_MCP_SERVER_NOT_FOUND)
     except ValueError as e:
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_skill_previews_failed",
+            api_code="mcp_server_disabled",
+            server_id=server_id,
+            error_message=(str(e) or "")[:500],
+        )
         raise_api_error(status_code=400, code="mcp_server_disabled", message=str(e))
     except Exception as e:
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_skill_previews_failed",
+            level="error",
+            api_code="mcp_skill_preview_failed",
+            server_id=server_id,
+            error_type=type(e).__name__,
+            error_message=(str(e) or "")[:500],
+        )
         raise_api_error(
             status_code=502,
             code="mcp_skill_preview_failed",
@@ -308,15 +507,52 @@ async def mcp_skill_previews(server_id: str) -> McpSkillPreviewsResponse:
 
 
 @router.post("/servers/{server_id}/import-tools")
-async def mcp_import_tools(server_id: str, body: ImportToolsBody) -> McpImportToolsResponse:
+async def mcp_import_tools(request: Request, server_id: str, body: ImportToolsBody) -> McpImportToolsResponse:
+    tid = resolve_api_tenant_id(request)
     try:
-        raw = await import_mcp_tools_as_skills(server_id, tool_names=body.tool_names)
-        return McpImportToolsResponse.model_validate(raw)
+        raw = await import_mcp_tools_as_skills(server_id, tool_names=body.tool_names, tenant_id=tid)
+        resp = McpImportToolsResponse.model_validate(raw)
+        log_structured(
+            "McpApi",
+            "mcp_api_server_import_tools",
+            server_id=server_id,
+            imported_count=len(resp.imported),
+            skipped_count=len(resp.skipped_existing),
+            errors_count=len(resp.errors),
+            filter_tool_names=bool(body.tool_names),
+            **_mcp_audit_kwargs(request, tid),
+        )
+        return resp
     except KeyError:
-        raise_api_error(status_code=404, code="mcp_server_not_found", message="MCP server not found")
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_server_not_found",
+            operation="import_tools",
+            server_id=server_id,
+        )
+        raise_api_error(status_code=404, code="mcp_server_not_found", message=MSG_MCP_SERVER_NOT_FOUND)
     except ValueError as e:
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_import_tools_failed",
+            api_code="mcp_import_invalid",
+            server_id=server_id,
+            error_message=(str(e) or "")[:500],
+        )
         raise_api_error(status_code=400, code="mcp_import_invalid", message=str(e))
     except Exception as e:
+        _mcp_failure_log(
+            request,
+            tid,
+            "mcp_api_import_tools_failed",
+            level="error",
+            api_code="mcp_import_failed",
+            server_id=server_id,
+            error_type=type(e).__name__,
+            error_message=(str(e) or "")[:500],
+        )
         raise_api_error(
             status_code=502,
             code="mcp_import_failed",

@@ -33,7 +33,9 @@ def knowledge_version_client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClien
     class _FakeKBStore:
         config = type("Cfg", (), {"embedding_dim": 4})()
 
-        def get_knowledge_base(self, kb_id: str, user_id: str = "default"):
+        def get_knowledge_base(
+            self, kb_id: str, user_id: str = "default", tenant_id: str = "default"
+        ):
             return {"id": kb_id, "embedding_model_id": "embedding:test"}
 
         def resolve_kb_version_id(self, kb_id: str, version_id=None, version_label=None):

@@ -19,6 +19,20 @@ from core.agent_runtime.definition import agent_model_params_as_dict
 logger = logging.getLogger(__name__)
 
 
+def _skill_execution_tenant_id(context: Dict[str, Any]) -> Optional[str]:
+    raw = context.get("tenant_id")
+    if raw is not None and str(raw).strip():
+        return str(raw).strip()
+    gc = context.get("_graph_context")
+    if gc is not None:
+        gd = getattr(gc, "global_data", None)
+        if isinstance(gd, dict):
+            t = gd.get("tenant_id")
+            if t is not None and str(t).strip():
+                return str(t).strip()
+    return None
+
+
 class NodeExecutor(ABC):
     """
     节点执行器基类
@@ -457,6 +471,7 @@ class SkillExecutor(NodeExecutor):
                 input=inputs,
                 trace_id=context.get("trace_id", ""),
                 caller_id=context.get("agent_id", ""),
+                tenant_id=_skill_execution_tenant_id(context),
                 metadata={
                     "workspace": context.get("workspace", "."),
                     "permissions": context.get("permissions", {}),

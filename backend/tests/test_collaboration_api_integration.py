@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi.testclient import TestClient
 
 from api import collaboration as collaboration_api
@@ -13,17 +15,36 @@ class _FakeStore:
     def __init__(self, session: AgentSession):
         self._session = session
 
-    def get_session(self, session_id: str):
-        if session_id == self._session.session_id:
-            return self._session
-        return None
+    def get_session(
+        self,
+        session_id: str,
+        *,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ):
+        if session_id != self._session.session_id:
+            return None
+        if user_id is not None and self._session.user_id != user_id:
+            return None
+        stid = getattr(self._session, "tenant_id", None) or "default"
+        if tenant_id is not None and stid != tenant_id:
+            return None
+        return self._session
 
     def save_session(self, session: AgentSession) -> bool:
         self._session = session
         return True
 
-    def list_sessions(self, user_id: str = "default", limit: int = 50, agent_id: str | None = None):
+    def list_sessions(
+        self,
+        user_id: str = "default",
+        limit: int = 50,
+        agent_id: str | None = None,
+        tenant_id: str = "default",
+    ):
         if self._session.user_id != user_id:
+            return []
+        if (getattr(self._session, "tenant_id", None) or "default") != tenant_id:
             return []
         return [self._session]
 

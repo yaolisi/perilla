@@ -158,9 +158,10 @@ def test_openapi_agent_sessions_json_named_schemas() -> None:
     ]["$ref"]
     assert patch == "#/components/schemas/AgentSession"
 
-    trace = paths["/api/agent-sessions/{session_id}/trace"]["get"]["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"]["$ref"]
+    trace_op = paths["/api/agent-sessions/{session_id}/trace"]["get"]
+    trace_resp = trace_op["responses"]
+    assert trace_resp["404"]["content"]["application/json"]["schema"]["$ref"] == env_ref
+    trace = trace_resp["200"]["content"]["application/json"]["schema"]["$ref"]
     assert trace == "#/components/schemas/AgentTraceEventsListEnvelope"
 
     del_msg = paths["/api/agent-sessions/{session_id}/messages/{message_index}"]["delete"]["responses"]["200"][

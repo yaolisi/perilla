@@ -16,7 +16,7 @@ import jsonschema  # type: ignore[import-untyped]
 from jsonschema import ValidationError as JSONSchemaValidationError  # type: ignore[import-untyped]
 from jinja2 import Template, UndefinedError
 
-from log import logger
+from log import logger, log_structured
 from core.skills.contract import (
     ExecutionMetrics,
     SkillExecutionRequest,
@@ -392,11 +392,20 @@ class DefaultSkillExecutor(BaseSkillExecutor):
     ) -> Dict[str, Any]:
         """MCP stdio Server：tools/call（definition.kind=mcp_stdio）。"""
         from core.mcp.client import MCPStdioClient
-        from core.mcp.persistence import get_mcp_server
+        from core.mcp.persistence import get_mcp_server, normalize_mcp_tenant_id
 
         server_id = (definition.definition.get("server_config_id") or "").strip()
         mcp_tool = (definition.definition.get("tool_name") or "").strip()
         if not server_id or not mcp_tool:
+            log_structured(
+                "Skills",
+                "mcp_skill_invoke_blocked",
+                level="warning",
+                reason="missing_server_or_tool_name",
+                skill_id=definition.id,
+                trace_id=request.trace_id or "",
+                caller_id=request.caller_id or "",
+            )
             return {
                 "type": "tool",
                 "output": None,
@@ -404,8 +413,23 @@ class DefaultSkillExecutor(BaseSkillExecutor):
                 "skill_id": definition.id,
                 "version": definition.version,
             }
-        server = get_mcp_server(server_id)
+        request_had_tenant = bool((str(request.tenant_id).strip() if request.tenant_id else ""))
+        eff_tid = normalize_mcp_tenant_id(request.tenant_id)
+        server = get_mcp_server(server_id, tenant_id=eff_tid)
         if not server:
+            log_structured(
+                "Skills",
+                "mcp_skill_invoke_blocked",
+                level="warning",
+                reason="mcp_server_not_found",
+                tenant_id=eff_tid,
+                tenant_scoped=request_had_tenant,
+                server_config_id=server_id,
+                mcp_tool=mcp_tool,
+                skill_id=definition.id,
+                trace_id=request.trace_id or "",
+                caller_id=request.caller_id or "",
+            )
             return {
                 "type": "tool",
                 "output": None,
@@ -414,6 +438,18 @@ class DefaultSkillExecutor(BaseSkillExecutor):
                 "version": definition.version,
             }
         if not server.get("enabled", True):
+            log_structured(
+                "Skills",
+                "mcp_skill_invoke_blocked",
+                level="warning",
+                reason="mcp_server_disabled",
+                tenant_id=eff_tid,
+                tenant_scoped=request_had_tenant,
+                server_config_id=server_id,
+                skill_id=definition.id,
+                trace_id=request.trace_id or "",
+                caller_id=request.caller_id or "",
+            )
             return {
                 "type": "tool",
                 "output": None,
@@ -430,6 +466,18 @@ class DefaultSkillExecutor(BaseSkillExecutor):
 
             base_url = (server.get("base_url") or "").strip()
             if not base_url:
+                log_structured(
+                    "Skills",
+                    "mcp_skill_invoke_blocked",
+                    level="warning",
+                    reason="mcp_http_missing_base_url",
+                    tenant_id=eff_tid,
+                    tenant_scoped=request_had_tenant,
+                    server_config_id=server_id,
+                    skill_id=definition.id,
+                    trace_id=request.trace_id or "",
+                    caller_id=request.caller_id or "",
+                )
                 return {
                     "type": "tool",
                     "output": None,
@@ -447,6 +495,18 @@ class DefaultSkillExecutor(BaseSkillExecutor):
         else:
             command = server.get("command") or []
             if not command:
+                log_structured(
+                    "Skills",
+                    "mcp_skill_invoke_blocked",
+                    level="warning",
+                    reason="mcp_stdio_command_empty",
+                    tenant_id=eff_tid,
+                    tenant_scoped=request_had_tenant,
+                    server_config_id=server_id,
+                    skill_id=definition.id,
+                    trace_id=request.trace_id or "",
+                    caller_id=request.caller_id or "",
+                )
                 return {
                     "type": "tool",
                     "output": None,
@@ -462,10 +522,36 @@ class DefaultSkillExecutor(BaseSkillExecutor):
                 request_timeout=120.0,
             )
             kind = "mcp_stdio"
+        log_structured(
+            "Skills",
+            "mcp_skill_invoke_start",
+            tenant_id=eff_tid,
+            tenant_scoped=request_had_tenant,
+            server_config_id=server_id,
+            mcp_tool=mcp_tool,
+            skill_id=definition.id,
+            trace_id=request.trace_id or "",
+            caller_id=request.caller_id or "",
+            transport=transport,
+            kind=kind,
+        )
         try:
             if transport != "http":
                 await client.connect()
             raw = await client.call_tool(mcp_tool, args)
+            log_structured(
+                "Skills",
+                "mcp_skill_invoke_success",
+                tenant_id=eff_tid,
+                tenant_scoped=request_had_tenant,
+                server_config_id=server_id,
+                mcp_tool=mcp_tool,
+                skill_id=definition.id,
+                trace_id=request.trace_id or "",
+                caller_id=request.caller_id or "",
+                transport=transport,
+                kind=kind,
+            )
             return {
                 "type": "tool",
                 "output": raw,
@@ -476,6 +562,22 @@ class DefaultSkillExecutor(BaseSkillExecutor):
             }
         except Exception as e:
             logger.exception("[DefaultSkillExecutor] MCP tool execution failed: %s", e)
+            log_structured(
+                "Skills",
+                "mcp_skill_invoke_exception",
+                level="error",
+                tenant_id=eff_tid,
+                tenant_scoped=request_had_tenant,
+                server_config_id=server_id,
+                mcp_tool=mcp_tool,
+                skill_id=definition.id,
+                trace_id=request.trace_id or "",
+                caller_id=request.caller_id or "",
+                transport=transport,
+                kind=kind,
+                error_type=type(e).__name__,
+                error_message=str(e)[:500],
+            )
             return {
                 "type": "tool",
                 "output": None,
@@ -521,11 +623,13 @@ class DefaultSkillExecutor(BaseSkillExecutor):
 
         # 构建 ToolContext
         from core.tools.context import ToolContext
+        _tc_tid = (str(request.tenant_id).strip() if request.tenant_id else "") or None
         tool_ctx = ToolContext(
             agent_id=request.caller_id,
             trace_id=request.trace_id,
             workspace=request.metadata.get("workspace", "."),
             permissions=request.metadata.get("permissions", {}),
+            tenant_id=_tc_tid,
         )
 
         tool_input = self._build_tool_inputs_from_definition(definition, request)
@@ -737,11 +841,14 @@ class LegacySkillExecutor:
             definition = skill
         
         # 构建 v2 请求
+        _tc_tid = getattr(tool_context, "tenant_id", None)
+        _tid = (str(_tc_tid).strip() if _tc_tid else "") or None
         request = SkillExecutionRequest(
             skill_id=definition.id,
             input=inputs,
             trace_id=getattr(tool_context, 'trace_id', 'legacy_trace'),
             caller_id=getattr(tool_context, 'agent_id', 'legacy_agent'),
+            tenant_id=_tid,
             metadata={
                 'workspace': getattr(tool_context, 'workspace', '.'),
                 'permissions': getattr(tool_context, 'permissions', {}),

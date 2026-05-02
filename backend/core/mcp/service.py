@@ -8,7 +8,7 @@ from log import logger
 from core.mcp.adapter import mcp_tool_dict_to_skill_definition
 from core.mcp.client import MCPStdioClient
 from core.mcp.http_client import create_mcp_http_client
-from core.mcp.persistence import get_mcp_server
+from core.mcp.persistence import get_mcp_server, normalize_mcp_tenant_id
 from core.mcp.server_manager import probe_http_server, probe_stdio_server
 from core.mcp.tools_cache import get_cached_tools, set_cached_tools
 from core.system.runtime_settings import get_mcp_http_emit_server_push_events
@@ -42,7 +42,7 @@ async def fetch_tools_for_server_config(server: Dict[str, Any]) -> List[Dict[str
             tools = result.get("tools") if isinstance(result, dict) else []
             if not isinstance(tools, list):
                 tools = []
-            set_cached_tools(sid, tools)
+            set_cached_tools(sid, tools, tenant_id=cache_tid)
             return tools
         finally:
             await client.close()
@@ -62,15 +62,15 @@ async def fetch_tools_for_server_config(server: Dict[str, Any]) -> List[Dict[str
         tools = result.get("tools") if isinstance(result, dict) else []
         if not isinstance(tools, list):
             tools = []
-        set_cached_tools(sid, tools)
+        set_cached_tools(sid, tools, tenant_id=cache_tid)
         return tools
     finally:
         await client.close()
 
 
-async def skill_previews_for_server(server_id: str) -> List[Dict[str, Any]]:
+async def skill_previews_for_server(server_id: str, *, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """SkillDefinition.to_dict() 列表（不落库）。"""
-    row = get_mcp_server(server_id)
+    row = get_mcp_server(server_id, tenant_id=tenant_id)
     if not row:
         raise KeyError("server not found")
     if not row.get("enabled", True):
@@ -92,13 +92,14 @@ async def import_mcp_tools_as_skills(
     server_id: str,
     *,
     tool_names: Optional[List[str]] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     将 tools/list 中的工具注册为平台 Skill（ORM + SkillRegistry），跳过已存在 id。
 
     返回 { "imported": [...], "skipped_existing": [...], "errors": [...] }
     """
-    row = get_mcp_server(server_id)
+    row = get_mcp_server(server_id, tenant_id=tenant_id)
     if not row:
         raise KeyError("server not found")
     tools = await fetch_tools_for_server_config(row)

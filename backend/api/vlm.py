@@ -26,6 +26,7 @@ from core.runtime.manager.runtime_metrics import get_runtime_metrics
 from core.inference.stats.tracker import record_inference, estimate_tokens
 from core.system.runtime_settings import get_auto_unload_local_model_on_switch
 from log import log_structured
+from core.utils.tenant_request import get_effective_tenant_id
 
 router = APIRouter()
 
@@ -49,21 +50,34 @@ def _get_user_id(req: Request) -> str:
     return uid or "default"
 
 
-def _get_or_create_session_id(*, store: HistoryStore, req: Request, user_id: str, title_hint: str, model_id: str) -> str:
+def _get_or_create_session_id(
+    *,
+    store: HistoryStore,
+    req: Request,
+    user_id: str,
+    title_hint: str,
+    model_id: str,
+    tenant_id: str,
+) -> str:
     sid = (req.headers.get("X-Session-Id") or "").strip()
-    if sid and store.session_exists(user_id=user_id, session_id=sid):
+    if sid and store.session_exists(user_id=user_id, session_id=sid, tenant_id=tenant_id):
         return sid
     title = (title_hint or "").strip()
     if not title:
         title = "New Chat"
     else:
         title = title[:50]
-    return cast(str, store.create_session(user_id=user_id, title=title, last_model=model_id))
+    return cast(
+        str,
+        store.create_session(user_id=user_id, title=title, last_model=model_id, tenant_id=tenant_id),
+    )
 
 
-async def _maybe_unload_previous_model(*, store: HistoryStore, user_id: str, session_id: str, current_model_id: str) -> None:
+async def _maybe_unload_previous_model(
+    *, store: HistoryStore, user_id: str, session_id: str, current_model_id: str, tenant_id: str
+) -> None:
     try:
-        session = store.get_session(user_id=user_id, session_id=session_id)
+        session = store.get_session(user_id=user_id, session_id=session_id, tenant_id=tenant_id)
         last_model = (session or {}).get("last_model")
         if not last_model or last_model == current_model_id:
             return
@@ -260,6 +274,7 @@ async def vlm_generate(
     )
 
     user_id = _get_user_id(request)
+    tenant_id = get_effective_tenant_id(request)
     try:
         model_descriptor = _resolve_vlm_model_descriptor(
             request, user_id, req_obj.model, req_obj.prompt
@@ -324,6 +339,7 @@ async def vlm_generate(
             user_id=user_id,
             title_hint=req_obj.prompt,
             model_id=model_id,
+            tenant_id=tenant_id,
         )
         if isinstance(response, Response):
             response.headers["X-Session-Id"] = session_id
@@ -333,6 +349,7 @@ async def vlm_generate(
                 user_id=user_id,
                 session_id=session_id,
                 current_model_id=model_id,
+                tenant_id=tenant_id,
             )
     except Exception as e:
         logger.warning(f"[VLM API] Failed to get/create session: {e}")
@@ -355,8 +372,11 @@ async def vlm_generate(
                 role="user",
                 content=req_obj.prompt,
                 meta=umeta,
+                tenant_id=tenant_id,
             )
-            store.touch_session(user_id=user_id, session_id=session_id, last_model=model_id)
+            store.touch_session(
+                user_id=user_id, session_id=session_id, last_model=model_id, tenant_id=tenant_id
+            )
         except Exception as e:
             logger.warning(f"[VLM API] Failed to persist user message: {e}")
 
@@ -447,8 +467,11 @@ async def vlm_generate(
                 content=result_text,
                 model=model_id,
                 meta=ameta,
+                tenant_id=tenant_id,
             )
-            store.touch_session(user_id=user_id, session_id=session_id, last_model=model_id)
+            store.touch_session(
+                user_id=user_id, session_id=session_id, last_model=model_id, tenant_id=tenant_id
+            )
         except Exception as e:
             logger.warning(f"[VLM API] Failed to persist assistant message: {e}")
     

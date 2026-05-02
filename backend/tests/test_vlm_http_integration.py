@@ -34,10 +34,12 @@ class _MockHistoryStore:
         self._known: set[str] = set()
         self.appended: list[dict[str, Any]] = []
 
-    def session_exists(self, *, user_id: str, session_id: str) -> bool:
+    def session_exists(self, *, user_id: str, session_id: str, tenant_id: str = "default") -> bool:
         return session_id in self._known
 
-    def create_session(self, *, user_id: str, title: str, last_model: str | None = None) -> str:
+    def create_session(
+        self, *, user_id: str, title: str, last_model: str | None = None, tenant_id: str = "default"
+    ) -> str:
         self._n += 1
         sid = f"mock-sess-{self._n}"
         self._known.add(sid)
@@ -49,7 +51,7 @@ class _MockHistoryStore:
     def touch_session(self, **kwargs: Any) -> None:
         return None
 
-    def get_session(self, *, user_id: str, session_id: str) -> dict | None:
+    def get_session(self, *, user_id: str, session_id: str, tenant_id: str = "default") -> dict | None:
         return None
 
 

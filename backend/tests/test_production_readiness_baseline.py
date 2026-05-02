@@ -88,6 +88,15 @@ def test_unified_queue_summary_shape():
     assert out["workflow"]["running"] == 2
     assert out["image_generation"]["pending"] == 3
     assert out["total_load"] == 6
+    assert out["tenant_scope"] is False
+    assert out["tenant_id"] is None
+
+
+def test_unified_queue_summary_tenant_scoped_metadata():
+    out = build_unified_queue_summary(1, 1, 0, 2, tenant_scope=True, tenant_id="acme")
+    assert out["tenant_scope"] is True
+    assert out["tenant_id"] == "acme"
+    assert out["total_load"] == 2
 
 
 def test_feature_flags_store_roundtrip(monkeypatch):

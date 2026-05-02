@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from core.data.base import db_session
 from core.data.models.trace import AgentTrace as AgentTraceORM
+from core.agent_runtime.session import DEFAULT_AGENT_SESSION_TENANT_ID
 from log import logger
 
 
@@ -18,6 +19,7 @@ class AgentTraceEvent(BaseModel):
     trace_id: Optional[str] = None  # session-level trace id
     event_id: str
     session_id: str
+    tenant_id: str = DEFAULT_AGENT_SESSION_TENANT_ID
     step: int
     event_type: str  # "llm_request", "tool_call", "error", "final_answer"
 
@@ -46,6 +48,7 @@ class AgentTraceStore:
                     id=event.event_id,
                     trace_id=event.trace_id,
                     session_id=event.session_id,
+                    tenant_id=event.tenant_id,
                     step=event.step,
                     event_type=event.event_type,
                     agent_id=event.agent_id,
@@ -62,14 +65,16 @@ class AgentTraceStore:
             logger.error(f"[AgentTraceStore] record_event failed: {e}")
             return ""
 
-    def get_session_traces(self, session_id: str) -> List[AgentTraceEvent]:
-        """获取会话的所有轨迹"""
+    def get_session_traces(self, session_id: str, tenant_id: Optional[str] = None) -> List[AgentTraceEvent]:
+        """获取会话的所有轨迹；若提供 tenant_id 则按租户过滤。"""
         traces = []
         try:
             with db_session() as db:
-                rows = db.query(AgentTraceORM).filter(
-                    AgentTraceORM.session_id == session_id
-                ).order_by(AgentTraceORM.step.asc(), AgentTraceORM.created_at.asc()).all()
+                q = db.query(AgentTraceORM).filter(AgentTraceORM.session_id == session_id)
+                if tenant_id is not None:
+                    tid = (str(tenant_id).strip() if tenant_id else "") or DEFAULT_AGENT_SESSION_TENANT_ID
+                    q = q.filter(AgentTraceORM.tenant_id == tid)
+                rows = q.order_by(AgentTraceORM.step.asc(), AgentTraceORM.created_at.asc()).all()
                 for row in rows:
                     traces.append(self._orm_to_event(row))
         except Exception as e:
@@ -78,10 +83,13 @@ class AgentTraceStore:
 
     def _orm_to_event(self, trace_orm: AgentTraceORM) -> AgentTraceEvent:
         """ORM 对象转 AgentTraceEvent"""
+        orm_tid = getattr(trace_orm, "tenant_id", None)
+        eff_tid = (str(orm_tid).strip() if orm_tid else "") or DEFAULT_AGENT_SESSION_TENANT_ID
         return AgentTraceEvent(
             trace_id=trace_orm.trace_id,
             event_id=trace_orm.id,
             session_id=trace_orm.session_id,
+            tenant_id=eff_tid,
             step=trace_orm.step,
             event_type=trace_orm.event_type,
             agent_id=trace_orm.agent_id,

@@ -98,7 +98,11 @@ class WorkflowExecution(BaseModel):
         ...,
         description="执行的版本 ID"
     )
-    
+    tenant_id: str = Field(
+        default="default",
+        description="租户 ID，与所属 Workflow.namespace 一致",
+    )
+
     # 与 execution_kernel 的关联
     graph_instance_id: Optional[str] = Field(
         default=None,

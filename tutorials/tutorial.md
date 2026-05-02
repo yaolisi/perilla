@@ -31,7 +31,7 @@
 
 当前仓库默认已包含以下生产化能力：
 
-- 多租户隔离（入口 + 存储层双保险）
+- 多租户隔离（入口强制、API Key–租户绑定、Workflow/会话/知识库/记忆/聊天/VLM/Agent 会话等数据面 **tenant_id** 过滤；MCP 与 Skills 等控制面按中间件租户解析）
 - RBAC 鉴权
 - API Key 与租户绑定
 - 审计与请求追踪
@@ -306,7 +306,7 @@ npm run dev
 
 1. **RBAC 角色**：admin/operator/viewer  
 2. **API Key-租户绑定**：一个 key 可以访问哪些 tenant  
-3. **资源租户隔离**：Workflow 存储层 tenant-aware 查询
+3. **资源租户隔离**：Workflow、会话、知识库、长短期记忆、治理审计等存储/查询层 **tenant-aware**（具体模块以代码为准）
 
 ### 10.2 为什么会出现“看得见创建，看不见查询”
 
@@ -323,6 +323,19 @@ npm run dev
 2. 看 `TENANT_API_KEY_TENANTS_JSON` 是否绑定
 3. 看 resource namespace 是否一致
 
+### 10.4 租户强制路径（须显式 `X-Tenant-Id`）
+
+当 **`TENANT_ENFORCEMENT_ENABLED`** 与 **`TENANT_API_KEY_BINDING_ENABLED`** 开启时，命中下列 **URL 前缀**之一即视为受保护路径：请求必须携带 **`TENANT_HEADER_NAME`**（默认 `X-Tenant-Id`），否则可能返回 **400**（如 `tenant id required for protected path`）。**单一事实来源**为后端：
+
+`backend/middleware/tenant_paths.py` → `is_tenant_enforcement_protected_path`
+
+当前前缀包括：`/api/v1/workflows`、`/api/v1/audit`、`/api/system`、`/v1/chat`、`/api/sessions`、`/api/memory`、`/api/knowledge-bases`、`/api/agent-sessions`、`/v1/vlm`（若升级版本后行为变化，以该文件为准）。
+
+### 10.5 租户解析：`resolve_api_tenant_id` 与 `get_effective_tenant_id`
+
+部分路由使用 **`resolve_api_tenant_id`**：仅采用中间件写入的 `request.state.tenant_id`（及默认租户），**不**用请求头覆盖 state，避免头注入绕过。  
+另有一些场景使用 **`get_effective_tenant_id`**：在 state 未设置时可回落读取租户头，再回落默认租户（见 `backend/core/utils/tenant_request.py`）。集成第三方客户端时，不要假设「任意路径都可仅靠改头换租户」：须与 Key 绑定及中间件行为一致。
+
 ---
 
 ## 11. 系统配置接口怎么安全使用
@@ -338,7 +351,7 @@ npm run dev
 
 - 这些写接口已要求管理员权限
 - 如果你是 operator/viewer，请求会被拒绝（403）
-- 受保护路径必须显式带 `X-Tenant-Id`，不带会返回 400
+- **凡命中租户强制前缀**（见 **§10.4**）须显式带 `X-Tenant-Id`，不仅是 `/api/system/*`；未携带可能返回 400
 
 ---
 
@@ -688,13 +701,15 @@ PYTHONPATH=backend python3 backend/scripts/test_execution_kernel_integration.py
 2. 检查内容是否被 DOMPurify 合法过滤（脚本/危险属性会被去掉）
 3. 对需要保留的展示能力，走白名单扩展，不要临时禁用净化
 
-### 17.8 `/api/system/*` 返回 400：tenant id required for protected path
+### 17.8 返回 400：`tenant id required for protected path`
+
+适用于所有 **租户强制路径**（见 **§10.4**，含 `/api/system/*`、`/v1/chat`、`/api/sessions` 等），不单是 system 接口。
 
 处理顺序：
 
-1. 确认请求头里显式带了 `X-Tenant-Id`
+1. 确认请求头里显式带了 `X-Tenant-Id`（名称与 `TENANT_HEADER_NAME` 一致）
 2. 确认 key 与 tenant 绑定关系允许该租户
-3. 确认前端 Security Context 中 tenant 已保存
+3. 确认前端 Security Context / `localStorage` 中租户已保存并与请求一致
 
 ### 17.9 Agent 上传报错 413 / 429
 

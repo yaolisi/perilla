@@ -129,6 +129,7 @@ GitHub Actions：`tenant-security-regression`、`security-regression`。
 | 现象 | 处理 |
 |------|------|
 | `403 CSRF token validation failed` | 先 `GET /api/health` 拿 cookie 与 header，再发写请求 |
+| **400** `tenant id required for protected path` | 路径是否命中租户强制前缀（**`backend/middleware/tenant_paths.py`**）；curl/脚本须显式 `X-Tenant-Id`，见 **tutorial.md §10.4** |
 | Workflow **403/404** | 核对 `X-Tenant-Id`、namespace、Key 与租户绑定 |
 | **429** | 降低频率或调整限流配置 |
 | **409**（Idempotency） | 同 Key 须配同请求体；体变则换 Key |

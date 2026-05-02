@@ -129,7 +129,7 @@ def test_create_and_get_execution_status_flow(tmp_path, monkeypatch, fallback_pr
         store[execution.execution_id] = execution
         return execution
 
-    def _fake_get_execution(self, execution_id):
+    def _fake_get_execution(self, execution_id, tenant_id=None):  # noqa: ARG002
         return store.get(execution_id)
 
     monkeypatch.setattr(workflows_api.WorkflowExecutionService, "create_execution", _fake_create_execution)
@@ -576,7 +576,11 @@ def test_failure_report_endpoint_returns_audit_and_hash_fields(tmp_path, monkeyp
         node_states=[],
     )
 
-    monkeypatch.setattr(workflows_api.WorkflowExecutionService, "get_execution", lambda self, _eid: execution)
+    monkeypatch.setattr(
+        workflows_api.WorkflowExecutionService,
+        "get_execution",
+        lambda self, _eid, **kwargs: execution,
+    )
 
     async def _fake_hydrate(ex):
         return ex
@@ -620,7 +624,11 @@ def test_failure_report_archive_endpoint_returns_headers_and_zip_payload(tmp_pat
         global_context={},
         node_states=[],
     )
-    monkeypatch.setattr(workflows_api.WorkflowExecutionService, "get_execution", lambda self, _eid: execution)
+    monkeypatch.setattr(
+        workflows_api.WorkflowExecutionService,
+        "get_execution",
+        lambda self, _eid, **kwargs: execution,
+    )
 
     async def _fake_hydrate(ex):
         return ex

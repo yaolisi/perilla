@@ -9,13 +9,24 @@ from typing import List, Dict, Any, Optional
 from log import logger, log_structured
 from core.types import Message, ChatCompletionRequest
 from .definition import AgentDefinition, agent_model_params_as_dict
-from .session import AgentSession, AgentSessionStateJsonMap, agent_session_state_as_dict, get_agent_session_store
+from .session import (
+    AgentSession,
+    AgentSessionStateJsonMap,
+    DEFAULT_AGENT_SESSION_TENANT_ID,
+    agent_session_state_as_dict,
+    get_agent_session_store,
+)
 from .parser import parse_llm_output, AgentAction
 from .context import build_prompt
 from .trace import AgentTraceEvent, get_agent_trace_store
 from .executor import AgentExecutor
 from .rag import get_rag_retrieval
 from core.skills.registry import SkillRegistry
+
+
+def _agent_trace_tenant_id(session: AgentSession) -> str:
+    raw = getattr(session, "tenant_id", None)
+    return (str(raw).strip() if raw else "") or DEFAULT_AGENT_SESSION_TENANT_ID
 
 
 class AgentLoop:
@@ -424,6 +435,7 @@ class AgentLoop:
                 trace_id=f"{session.trace_id}:{session.step}:{skill_id}",
                 workspace=workspace,
                 permissions={"file.read": True},
+                tenant_id=_agent_trace_tenant_id(session),
             )
             tool_result = result.get("output")
             if result.get("error") and tool_result is None:
@@ -458,6 +470,7 @@ class AgentLoop:
                 trace_id=session.trace_id,
                 event_id=f"atev_{uuid.uuid4().hex[:16]}",
                 session_id=session.session_id,
+                tenant_id=_agent_trace_tenant_id(session),
                 step=session.step,
                 event_type="skill_call",
                 agent_id=agent.agent_id,
@@ -731,6 +744,11 @@ class AgentLoop:
                                     multi_hop_relax_relevance=mh_relax,
                                     multi_hop_feedback_chars=mh_fb,
                                     fallback_messages=fb_msgs,
+                                    user_id=session.user_id,
+                                    tenant_id=str(
+                                        getattr(session, "tenant_id", None) or "default"
+                                    ).strip()
+                                    or "default",
                                 )
                                 if rag_context:
                                     # 缓存检索结果
@@ -790,6 +808,7 @@ class AgentLoop:
                     trace_id=session.trace_id,
                     event_id=f"atev_{uuid.uuid4().hex[:16]}",
                     session_id=session.session_id,
+                    tenant_id=_agent_trace_tenant_id(session),
                     step=session.step,
                     event_type="llm_request",
                     agent_id=agent.agent_id,
@@ -824,6 +843,7 @@ class AgentLoop:
                                 trace_id=session.trace_id,
                                 event_id=f"atev_{uuid.uuid4().hex[:16]}",
                                 session_id=session.session_id,
+                                tenant_id=_agent_trace_tenant_id(session),
                                 step=session.step,
                                 event_type="error",
                                 agent_id=agent.agent_id,
@@ -947,6 +967,7 @@ class AgentLoop:
                                     trace_id=session.trace_id,
                                     event_id=f"atev_{uuid.uuid4().hex[:16]}",
                                     session_id=session.session_id,
+                                    tenant_id=_agent_trace_tenant_id(session),
                                     step=session.step,
                                     event_type="final_answer",
                                     agent_id=agent.agent_id,
@@ -965,6 +986,7 @@ class AgentLoop:
                                 trace_id=session.trace_id,
                                 event_id=f"atev_{uuid.uuid4().hex[:16]}",
                                 session_id=session.session_id,
+                                tenant_id=_agent_trace_tenant_id(session),
                                 step=session.step,
                                 event_type="final_answer",
                                 agent_id=agent.agent_id,
@@ -999,6 +1021,7 @@ class AgentLoop:
                             trace_id=session.trace_id,
                             event_id=f"atev_{uuid.uuid4().hex[:16]}",
                             session_id=session.session_id,
+                            tenant_id=_agent_trace_tenant_id(session),
                             step=session.step,
                             event_type="error",
                             agent_id=agent.agent_id,
@@ -1083,6 +1106,7 @@ class AgentLoop:
                                             trace_id=session.trace_id,
                                             event_id=f"atev_{uuid.uuid4().hex[:16]}",
                                             session_id=session.session_id,
+                                            tenant_id=_agent_trace_tenant_id(session),
                                             step=session.step,
                                             event_type="final_answer",
                                             agent_id=agent.agent_id,
@@ -1111,6 +1135,7 @@ class AgentLoop:
                             trace_id=f"{session.trace_id}:{session.step}:{skill_id}",
                             workspace=workspace,
                             permissions=permissions,
+                            tenant_id=_agent_trace_tenant_id(session),
                         )
                         tool_result = result.get("output")
                         if result.get("error") and tool_result is None:
@@ -1177,6 +1202,7 @@ class AgentLoop:
                             trace_id=session.trace_id,
                             event_id=f"atev_{uuid.uuid4().hex[:16]}",
                             session_id=session.session_id,
+                            tenant_id=_agent_trace_tenant_id(session),
                             step=session.step,
                             event_type="skill_call",
                             agent_id=agent.agent_id,
@@ -1202,6 +1228,7 @@ class AgentLoop:
                                     trace_id=session.trace_id,
                                     event_id=f"atev_{uuid.uuid4().hex[:16]}",
                                     session_id=session.session_id,
+                                    tenant_id=_agent_trace_tenant_id(session),
                                     step=session.step,
                                     event_type="final_answer",
                                     agent_id=agent.agent_id,
@@ -1223,6 +1250,7 @@ class AgentLoop:
                                         trace_id=session.trace_id,
                                         event_id=f"atev_{uuid.uuid4().hex[:16]}",
                                         session_id=session.session_id,
+                                        tenant_id=_agent_trace_tenant_id(session),
                                         step=session.step,
                                         event_type="final_answer",
                                         agent_id=agent.agent_id,
@@ -1240,6 +1268,7 @@ class AgentLoop:
                             trace_id=session.trace_id,
                             event_id=f"atev_{uuid.uuid4().hex[:16]}",
                             session_id=session.session_id,
+                            tenant_id=_agent_trace_tenant_id(session),
                             step=session.step,
                             event_type="error",
                             agent_id=agent.agent_id,

@@ -100,7 +100,18 @@
 
 | 主题 | 路径 |
 |------|------|
-| 租户头强制路径前缀（HTTP 层，与工作流/审计/系统控制面对齐） | `backend/middleware/tenant_paths.py`：`is_tenant_enforcement_protected_path` |
+| 租户头强制路径前缀（HTTP 层；含 chat / sessions / VLM） | `backend/middleware/tenant_paths.py`：`is_tenant_enforcement_protected_path` |
+| 聊天会话 SQLite 租户列（存储层隔离） | `backend/core/conversation/history_store.py`：`sessions.tenant_id` |
+| 长期记忆 SQLite 租户列（存储层隔离） | `backend/core/memory/memory_store.py`：`memory_items.tenant_id` |
+| 知识库 SQLite 租户列（存储层隔离） | `backend/core/knowledge/knowledge_base_store.py`：`knowledge_base.tenant_id`、`document.tenant_id` |
+| Agent 运行会话 ORM 租户列（存储层隔离） | `backend/core/data/models/session.py`：`agent_sessions.tenant_id`；`core/agent_runtime/session.py` |
+| Agent 轨迹 ORM 租户列（存储层隔离） | `backend/core/data/models/trace.py`：`agent_traces.tenant_id`；`core/agent_runtime/trace.py`；`/api/agent-sessions/{id}/trace` 与会话一致校验 |
+| 幂等记录 ORM 租户列（与 Idempotency-Key 联合唯一） | `backend/core/data/models/idempotency.py`：`idempotency_records.tenant_id`；唯一约束 `(tenant_id, scope, owner_id, idempotency_key)`；`IdempotencyService.claim(..., tenant_id=)`；工作流创建 / Agent 运行 / DLQ replay 等调用传入 `resolve_tenant_id` |
+| 插件安装 ORM 租户列 | `backend/core/data/models/plugin_market.py`：`plugin_installations.tenant_id`；唯一 `(tenant_id, package_id)`；`/api/system/plugins/market/install|installations|toggle` 使用 `resolve_tenant_id`（包目录仍为全局清单） |
+| 图片生成任务 / Warmup ORM 租户列 | `backend/core/data/models/image_generation.py`：`image_generation_jobs.tenant_id`、`image_generation_warmups.tenant_id`；`/api/v1/images/generate|jobs|warmup` 等与 `_api_tenant(request)` 对齐 |
+| 队列摘要按租户（可选） | `GET /api/system/queue-summary?scoped=true`：在 **`WorkflowExecutionORM.tenant_id`** 与 **`ImageGenerationJobORM.tenant_id`** 上与 **`resolve_tenant_id`** 对齐；默认 **`scoped=false`** 仍为全库聚合（运维大盘兼容） |
+| MCP Server 配置 ORM 租户列 | `backend/core/data/models/mcp_server.py`：`mcp_servers.tenant_id`；**`/api/mcp/servers*`** CRUD / tools / import 使用 **`resolve_tenant_id`**；推理执行路径 **`get_mcp_server(id)`** 仍可按 id 解析（Skill→MCP；若要租户级联需在会话上下文收紧） |
+| 工作流执行/队列/审批/治理审计 ORM 租户列（与 namespace 一致） | `backend/core/data/models/workflow.py`：`workflow_executions`、`workflow_execution_queue`、`workflow_approval_tasks`、`workflow_governance_audits` 的 `tenant_id`；执行记录据 `Workflow.namespace` 写入；读路径按 `tenant_id` 过滤（含 API `resolve_tenant_id`） |
 | 生产门禁与默认值 | `backend/config/settings.py`：`validate_production_security_guardrails`、`apply_production_security_defaults` |
 | 启动顺序 | `backend/main.py`：`_apply_security_baseline`、`_log_production_operational_warnings` |
 | Helm | `deploy/helm/perilla-backend/`（Chart **`values.yaml`**、`templates/deployment.yaml`） |

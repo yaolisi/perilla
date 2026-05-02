@@ -87,7 +87,15 @@ class AgentExecutor:
         
         return response.text
 
-    async def execute_tool(self, tool_id: str, input_data: Dict[str, Any], session_id: str, agent_id: str = None) -> Any:
+    async def execute_tool(
+        self,
+        tool_id: str,
+        input_data: Dict[str, Any],
+        session_id: str,
+        agent_id: str = None,
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> Any:
         """
         执行工具 (优先通过 ToolRegistry, 兜底 PluginExecutor)
         """
@@ -95,11 +103,13 @@ class AgentExecutor:
         tool = ToolRegistry.get(tool_id)
         if tool:
             logger.info(f"[AgentExecutor] Executing core tool: {tool_id}")
+            tid = (str(tenant_id).strip() if tenant_id else "") or None
             context = ToolContext(
                 agent_id=agent_id,
                 trace_id=f"tool_{session_id}_{int(time.time())}", # 简单 trace_id
                 workspace=".", # TODO: 从配置获取
-                permissions={}
+                permissions={},
+                tenant_id=tid,
             )
             # 权限校验：当 ctx.permissions 非空时才强制校验（兼容旧调用方）
             required_perms = getattr(tool, "required_permissions", []) or []
@@ -154,6 +164,7 @@ class AgentExecutor:
         trace_id: Optional[str] = None,
         workspace: str = ".",
         permissions: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         执行 Skill（供 Agent Runtime 使用）。返回 { type, output?, error?, prompt? }。
@@ -164,12 +175,13 @@ class AgentExecutor:
         if not skill:
             return {"type": "error", "output": None, "error": f"Skill not found: {skill_id}"}
         
-        # 构建执行请求
+        tid = (str(tenant_id).strip() if tenant_id else "") or None
         request = SkillExecutionRequest(
             skill_id=skill_id,
             input=inputs,
             trace_id=trace_id or f"skill_{skill_id}",
             caller_id=agent_id or "agent_runtime",
+            tenant_id=tid,
             metadata={
                 "workspace": workspace,
                 "permissions": permissions or {},

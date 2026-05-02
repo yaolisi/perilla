@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Annotated, Any, Awaitable, Callable, Dict, Optional, cast
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.engine import Engine
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from log import logger
 from api.errors import APIException, raise_api_error
 from config.settings import settings
+from core.utils.tenant_request import resolve_api_tenant_id
 from core.data.base import get_db, get_engine, sessionmaker_for_engine
 from core.data.models.image_generation import ImageGenerationJobORM, ImageGenerationWarmupORM
 from core.models.descriptor import ModelDescriptor
@@ -47,6 +48,19 @@ router = APIRouter()
 DEFAULT_IMAGE_MIME = "image/png"
 JOB_CANCELLED_MSG = "Image generation job cancelled"
 JOB_CANCELLED_BEFORE_START_MSG = "Image generation job cancelled before start"
+
+
+async def _require_image_job_tenant(job_id: str, tid: str, db: Session) -> None:
+    j = await _get_job(job_id)
+    if j is not None:
+        if (str(j.tenant_id).strip() or "default") != tid:
+            _raise_job_not_found(job_id)
+        return
+    row = db.get(ImageGenerationJobORM, job_id)
+    if row is None:
+        return
+    if (str(getattr(row, "tenant_id", None) or "").strip() or "default") != tid:
+        _raise_job_not_found(job_id)
 
 
 class ImageGenerateRequest(BaseModel):
@@ -77,6 +91,7 @@ class _ImageGenerationJob:
     request: ImageGenerateRequest
     status: ImageGenerationJobStatus
     created_at: datetime
+    tenant_id: str = "default"
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     phase: Optional[str] = None
@@ -157,6 +172,7 @@ def _db_upsert_job(job: _ImageGenerationJob) -> None:
         row = db.get(ImageGenerationJobORM, job.job_id)
         payload = {
             "job_id": job.job_id,
+            "tenant_id": (str(getattr(job, "tenant_id", None) or "").strip() or "default"),
             "model": job.request.model,
             "prompt": job.request.prompt,
             "status": job.status.value if hasattr(job.status, "value") else str(job.status),
@@ -196,10 +212,12 @@ def _db_delete_job(job_id: str) -> None:
         db.close()
 
 
-def _db_mark_warmups_not_latest(model: str) -> None:
+def _db_mark_warmups_not_latest(model: str, *, tenant_id: str = "default") -> None:
+    tid = (str(tenant_id).strip() or "default")
     db: Session = _open_image_db_session()
     try:
         db.query(ImageGenerationWarmupORM).filter(
+            ImageGenerationWarmupORM.tenant_id == tid,
             ImageGenerationWarmupORM.model == model,
             ImageGenerationWarmupORM.latest.is_(True),
         ).update({"latest": False}, synchronize_session=False)
@@ -223,15 +241,19 @@ def _db_create_warmup(
     result_json: Optional[dict],
     status: str = "succeeded",
     error: Optional[str] = None,
+    tenant_id: str = "default",
 ) -> None:
+    tid = (str(tenant_id).strip() or "default")
     db: Session = _open_image_db_session()
     try:
         db.query(ImageGenerationWarmupORM).filter(
+            ImageGenerationWarmupORM.tenant_id == tid,
             ImageGenerationWarmupORM.model == model,
             ImageGenerationWarmupORM.latest.is_(True),
         ).update({"latest": False}, synchronize_session=False)
         row = ImageGenerationWarmupORM(
             warmup_id=warmup_id,
+            tenant_id=tid,
             model=model,
             prompt=prompt,
             status=status,
@@ -253,10 +275,11 @@ def _db_create_warmup(
         db.close()
 
 
-def _db_get_latest_warmup(model: Optional[str] = None) -> Optional[ImageGenerationWarmupORM]:
+def _db_get_latest_warmup(model: Optional[str] = None, *, tenant_id: str = "default") -> Optional[ImageGenerationWarmupORM]:
+    tid = (str(tenant_id).strip() or "default")
     db: Session = _open_image_db_session()
     try:
-        query = db.query(ImageGenerationWarmupORM)
+        query = db.query(ImageGenerationWarmupORM).filter(ImageGenerationWarmupORM.tenant_id == tid)
         if model:
             query = query.filter(ImageGenerationWarmupORM.model == model)
         row = query.order_by(ImageGenerationWarmupORM.created_at.desc()).first()
@@ -426,29 +449,39 @@ def _job_to_response(job: _ImageGenerationJob, *, include_base64: bool = True) -
     )
 
 
-async def _get_pending_count_for_model(model_id: str) -> int:
+async def _get_pending_count_for_model(model_id: str, *, tenant_id: str = "default") -> int:
+    tid = (str(tenant_id).strip() or "default")
     async with _IMAGE_JOBS_LOCK:
         return sum(
             1
             for job in _IMAGE_JOBS.values()
-            if job.request.model == model_id and job.status in {ImageGenerationJobStatus.QUEUED, ImageGenerationJobStatus.RUNNING}
+            if job.tenant_id == tid
+            and job.request.model == model_id
+            and job.status in {ImageGenerationJobStatus.QUEUED, ImageGenerationJobStatus.RUNNING}
         )
 
 
-async def _get_queued_count_for_model(model_id: str) -> int:
+async def _get_queued_count_for_model(model_id: str, *, tenant_id: str = "default") -> int:
+    tid = (str(tenant_id).strip() or "default")
     async with _IMAGE_JOBS_LOCK:
         return sum(
             1
             for job in _IMAGE_JOBS.values()
-            if job.request.model == model_id and job.status == ImageGenerationJobStatus.QUEUED
+            if job.tenant_id == tid
+            and job.request.model == model_id
+            and job.status == ImageGenerationJobStatus.QUEUED
         )
 
 
-async def _recompute_queue_positions(model_id: str) -> None:
+async def _recompute_queue_positions(model_id: str, tenant_id: str = "default") -> None:
+    tid = (str(tenant_id).strip() or "default")
     async with _IMAGE_JOBS_LOCK:
         queued = [
-            job for job in _IMAGE_JOBS.values()
-            if job.request.model == model_id and job.status == ImageGenerationJobStatus.QUEUED
+            job
+            for job in _IMAGE_JOBS.values()
+            if job.tenant_id == tid
+            and job.request.model == model_id
+            and job.status == ImageGenerationJobStatus.QUEUED
         ]
         queued.sort(key=lambda item: item.created_at)
         updates = []
@@ -686,13 +719,15 @@ async def _run_generation(
     descriptor: ModelDescriptor,
     *,
     job_id: Optional[str] = None,
+    tenant_id: str = "default",
 ) -> ImageGenerationResponse:
+    tid = (str(tenant_id).strip() or "default")
     factory = get_runtime_factory()
     queue = get_inference_queue_manager().get_queue(descriptor.id, descriptor.runtime)
 
     if job_id:
         await _patch_job(job_id, status=ImageGenerationJobStatus.QUEUED, phase="queued")
-        await _recompute_queue_positions(descriptor.id)
+        await _recompute_queue_positions(descriptor.id, tid)
 
     await factory.auto_release_unused_local_runtimes(
         keep_model_ids={descriptor.id},
@@ -736,7 +771,7 @@ async def _run_generation(
                     started_at=_utcnow(),
                     queue_position=None,
                 )
-                await _recompute_queue_positions(descriptor.id)
+                await _recompute_queue_positions(descriptor.id, tid)
             if job_id:
                 await _patch_job(job_id, phase="loading_runtime")
             response = await _generate_with_oom_retry(
@@ -779,7 +814,9 @@ async def _run_generation_job(job_id: str) -> None:
                 error=JOB_CANCELLED_BEFORE_START_MSG,
             )
             return
-        response = await _run_generation(job.request, descriptor, job_id=job_id)
+        response = await _run_generation(
+            job.request, descriptor, job_id=job_id, tenant_id=job.tenant_id
+        )
         job = await _get_job(job_id)
         if job and job.cancelled:
             await _patch_job(
@@ -850,7 +887,9 @@ async def _run_generation_job(job_id: str) -> None:
             error=str(e),
         )
     finally:
-        await _recompute_queue_positions(descriptor.id)
+        j2 = await _get_job(job_id)
+        ftid = (str(j2.tenant_id).strip() or "default") if j2 else "default"
+        await _recompute_queue_positions(descriptor.id, ftid)
 
 
 @router.post(
@@ -858,18 +897,20 @@ async def _run_generation_job(job_id: str) -> None:
     response_model=ImageGenerationResponse | ImageGenerationJobResponse,
 )
 async def generate_image(
-    request: ImageGenerateRequest,
+    payload: ImageGenerateRequest,
     wait: Annotated[bool, Query(description="true=同步等待结果；false=创建异步任务并返回 job")] = True,
     *,
+    http_request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> ImageGenerationResponse | ImageGenerationJobResponse:
-    descriptor = _validate_descriptor(request)
+    descriptor = _validate_descriptor(payload)
+    tid = resolve_api_tenant_id(http_request)
 
     if wait:
         token = _image_store_bind.set(db.get_bind())
         try:
             try:
-                return await _run_generation(request, descriptor)
+                return await _run_generation(payload, descriptor, tenant_id=tid)
             except APIException:
                 raise
             except Exception as e:
@@ -884,7 +925,7 @@ async def generate_image(
             _image_store_bind.reset(token)
 
     pending_limit = max(1, int(getattr(settings, "image_generation_max_pending_jobs_per_model", 4)))
-    pending_count = await _get_pending_count_for_model(descriptor.id)
+    pending_count = await _get_pending_count_for_model(descriptor.id, tenant_id=tid)
     if pending_count >= pending_limit:
         raise_api_error(
             status_code=429,
@@ -901,12 +942,13 @@ async def generate_image(
         )
 
     job_id = str(uuid4())
-    queued_count = await _get_queued_count_for_model(descriptor.id)
+    queued_count = await _get_queued_count_for_model(descriptor.id, tenant_id=tid)
     job = _ImageGenerationJob(
         job_id=job_id,
-        request=_clone_request(request),
+        request=_clone_request(payload),
         status=ImageGenerationJobStatus.QUEUED,
         created_at=_utcnow(),
+        tenant_id=tid,
         phase="queued",
         queue_position=queued_count + 1,
     )
@@ -933,13 +975,30 @@ async def generate_image(
 @router.get("/api/v1/images/jobs/{job_id}", response_model=ImageGenerationJobResponse)
 async def get_image_generation_job(
     job_id: str,
+    http_request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> ImageGenerationJobResponse:
+    tid = resolve_api_tenant_id(http_request)
     job = await _get_job(job_id)
     if job:
+        if (str(job.tenant_id).strip() or "default") != tid:
+            raise_api_error(
+                status_code=404,
+                code="image_generation_job_not_found",
+                message=f"Image generation job not found: {job_id}",
+                details={"job_id": job_id},
+            )
         return _job_to_response(job, include_base64=False)
     row = db.get(ImageGenerationJobORM, job_id)
     if not row:
+        raise_api_error(
+            status_code=404,
+            code="image_generation_job_not_found",
+            message=f"Image generation job not found: {job_id}",
+            details={"job_id": job_id},
+        )
+    row_tid = (str(getattr(row, "tenant_id", None) or "").strip() or "default")
+    if row_tid != tid:
         raise_api_error(
             status_code=404,
             code="image_generation_job_not_found",
@@ -951,6 +1010,7 @@ async def get_image_generation_job(
 
 @router.get("/api/v1/images/jobs", response_model=ImageGenerationJobListResponse)
 async def list_image_generation_jobs(
+    http_request: Request,
     db: Annotated[Session, Depends(get_db)],
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -964,7 +1024,8 @@ async def list_image_generation_jobs(
     normalized_model = (model or "").strip()
     normalized_q = (q or "").strip()
     normalized_sort = (sort or "created_at_desc").strip().lower()
-    query = db.query(ImageGenerationJobORM)
+    tid = resolve_api_tenant_id(http_request)
+    query = db.query(ImageGenerationJobORM).filter(ImageGenerationJobORM.tenant_id == tid)
     if normalized_status:
         query = query.filter(ImageGenerationJobORM.status == normalized_status)
     if normalized_model:
@@ -990,19 +1051,28 @@ async def list_image_generation_jobs(
 @router.delete("/api/v1/images/jobs/{job_id}", response_model=ImageGenerationJobDeleteResponse)
 async def delete_image_generation_job(
     job_id: str,
+    http_request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> ImageGenerationJobDeleteResponse:
+    tid = resolve_api_tenant_id(http_request)
+    row = db.get(ImageGenerationJobORM, job_id)
     async with _IMAGE_JOBS_LOCK:
         job = _IMAGE_JOBS.get(job_id)
+        if job and (str(job.tenant_id).strip() or "default") != tid:
+            job = None
         model_id = job.request.model if job else None
         if job and job.status in {ImageGenerationJobStatus.QUEUED, ImageGenerationJobStatus.RUNNING}:
             _raise_job_delete_conflict(job_id)
-        removed = _IMAGE_JOBS.pop(job_id, None)
+        removed = _IMAGE_JOBS.pop(job_id, None) if job else None
 
-    row: Optional[ImageGenerationJobORM] = None
-    row = db.get(ImageGenerationJobORM, job_id)
     if removed is None and row is None:
         _raise_job_not_found(job_id)
+    if row is not None:
+        row_tid = (str(getattr(row, "tenant_id", None) or "").strip() or "default")
+        if row_tid != tid:
+            _raise_job_not_found(job_id)
+    if model_id is None and row is not None:
+        model_id = cast(str, row.model)
     if row is not None and _is_running_job_status(cast(str, row.status)):
         _raise_job_delete_conflict(job_id)
 
@@ -1017,7 +1087,7 @@ async def delete_image_generation_job(
     try:
         await asyncio.to_thread(_db_delete_job, job_id)
         if model_id:
-            await _recompute_queue_positions(model_id)
+            await _recompute_queue_positions(model_id, tid)
     finally:
         _image_store_bind.reset(token)
     logger.info("[ImageGenerateAPI] job_deleted job_id=%s", job_id)
@@ -1027,9 +1097,11 @@ async def delete_image_generation_job(
 @router.post("/api/v1/images/jobs/{job_id}/cancel", response_model=ImageGenerationJobResponse)
 async def cancel_image_generation_job(
     job_id: str,
+    http_request: Request,
     *,
     db: Annotated[Session, Depends(get_db)],
 ) -> ImageGenerationJobResponse:
+    tid = resolve_api_tenant_id(http_request)
     job = await _get_job(job_id)
     if not job:
         raise_api_error(
@@ -1040,6 +1112,14 @@ async def cancel_image_generation_job(
         )
         raise AssertionError("unreachable")
     assert job is not None
+    if (str(job.tenant_id).strip() or "default") != tid:
+        raise_api_error(
+            status_code=404,
+            code="image_generation_job_not_found",
+            message=f"Image generation job not found: {job_id}",
+            details={"job_id": job_id},
+        )
+        raise AssertionError("unreachable")
     if job.status in {ImageGenerationJobStatus.SUCCEEDED, ImageGenerationJobStatus.FAILED, ImageGenerationJobStatus.CANCELLED}:
         return _job_to_response(job)
 
@@ -1055,7 +1135,7 @@ async def cancel_image_generation_job(
         await _patch_job(job_id, cancelled=True, phase="cancel_requested")
         if job.status == ImageGenerationJobStatus.QUEUED and job.task and not job.task.done():
             job.task.cancel()
-            await _recompute_queue_positions(descriptor.id)
+            await _recompute_queue_positions(descriptor.id, tid)
 
         logger.info(
             "[ImageGenerateAPI] job_cancel_requested job_id=%s model=%s runtime_cancelled=%s",
@@ -1080,8 +1160,10 @@ async def cancel_image_generation_job(
 @router.get("/api/v1/images/jobs/{job_id}/file")
 async def download_image_generation_job_file(
     job_id: str,
+    http_request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> FileResponse:
+    await _require_image_job_tenant(job_id, resolve_api_tenant_id(http_request), db)
     job = await _get_job(job_id)
     output_path_str = job.result.output_path if job and job.result else None
     mime_type = job.result.mime_type if job and job.result else None
@@ -1121,8 +1203,10 @@ async def download_image_generation_job_file(
 @router.get("/api/v1/images/jobs/{job_id}/thumbnail")
 async def download_image_generation_job_thumbnail(
     job_id: str,
+    http_request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> FileResponse:
+    await _require_image_job_tenant(job_id, resolve_api_tenant_id(http_request), db)
     job = await _get_job(job_id)
     thumb_path = job.result.thumbnail_path if job and job.result else None
     mime_type = job.result.mime_type if job and job.result else None
@@ -1160,13 +1244,17 @@ async def download_image_generation_job_thumbnail(
 
 @router.get("/api/v1/images/warmup/latest", response_model=ImageGenerationWarmupResponse)
 async def get_latest_image_generation_warmup(
+    http_request: Request,
     model: Annotated[str | None, Query()] = None,
     *,
     db: Annotated[Session, Depends(get_db)],
 ) -> ImageGenerationWarmupResponse:
+    tid = resolve_api_tenant_id(http_request)
     token = _image_store_bind.set(db.get_bind())
     try:
-        row = await asyncio.to_thread(_db_get_latest_warmup, model.strip() if model else None)
+        row = await asyncio.to_thread(
+            _db_get_latest_warmup, model.strip() if model else None, tenant_id=tid
+        )
         if row is None:
             raise_api_error(
                 status_code=404,
@@ -1182,18 +1270,20 @@ async def get_latest_image_generation_warmup(
 
 @router.post("/api/v1/images/warmup", response_model=ImageGenerationWarmupCompletedResponse)
 async def warmup_image_generation_runtime(
-    request: ImageWarmupRequest,
+    body: ImageWarmupRequest,
+    http_request: Request,
     *,
     db: Annotated[Session, Depends(get_db)],
 ) -> ImageGenerationWarmupCompletedResponse:
+    tid = resolve_api_tenant_id(http_request)
     image_request = ImageGenerateRequest(
-        model=request.model,
-        prompt=request.prompt,
-        width=request.width,
-        height=request.height,
-        num_inference_steps=request.num_inference_steps,
-        guidance_scale=request.guidance_scale,
-        seed=request.seed,
+        model=body.model,
+        prompt=body.prompt,
+        width=body.width,
+        height=body.height,
+        num_inference_steps=body.num_inference_steps,
+        guidance_scale=body.guidance_scale,
+        seed=body.seed,
         image_format="PNG",
     )
     descriptor = _validate_descriptor(image_request)
@@ -1202,15 +1292,15 @@ async def warmup_image_generation_runtime(
     token = _image_store_bind.set(db.get_bind())
     try:
         try:
-            response = await _run_generation(image_request, descriptor, job_id=None)
+            response = await _run_generation(image_request, descriptor, job_id=None, tenant_id=tid)
             elapsed_ms = int((_utcnow() - time_started).total_seconds() * 1000)
             finished_at = _utcnow()
             await asyncio.to_thread(
                 _db_create_warmup,
                 warmup_id=warmup_id,
                 model=descriptor.id,
-                prompt=request.prompt,
-                request_json=request.model_dump(mode="json"),
+                prompt=body.prompt,
+                request_json=body.model_dump(mode="json"),
                 started_at=started_at,
                 finished_at=finished_at,
                 elapsed_ms=elapsed_ms,
@@ -1218,6 +1308,7 @@ async def warmup_image_generation_runtime(
                 width=response.width,
                 height=response.height,
                 result_json=response.model_dump(mode="json"),
+                tenant_id=tid,
             )
         except Exception as e:
             finished_at = _utcnow()
@@ -1226,17 +1317,18 @@ async def warmup_image_generation_runtime(
                 _db_create_warmup,
                 warmup_id=warmup_id,
                 model=descriptor.id,
-                prompt=request.prompt,
-                request_json=request.model_dump(mode="json"),
+                prompt=body.prompt,
+                request_json=body.model_dump(mode="json"),
                 started_at=started_at,
                 finished_at=finished_at,
                 elapsed_ms=elapsed_ms,
                 output_path=None,
-                width=request.width,
-                height=request.height,
+                width=body.width,
+                height=body.height,
                 result_json=None,
                 status="failed",
                 error=str(e),
+                tenant_id=tid,
             )
             raise
         logger.info(

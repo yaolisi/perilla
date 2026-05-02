@@ -6,7 +6,7 @@ from typing import Any, Iterable, List, Optional, Tuple
 
 from core.agents.router import get_router
 from log import logger
-from core.memory.memory_store import MemoryStore
+from core.memory.memory_store import DEFAULT_MEMORY_TENANT_ID, MemoryStore
 from core.memory.memory_item import MemoryCandidate, MemoryType
 from core.memory.key_schema import allowed_keys_markdown
 from core.types import ChatCompletionRequest, Message
@@ -68,6 +68,7 @@ class MemoryExtractor:
         user_text: str,
         assistant_text: str,
         meta: Optional[dict[str, Any]] = None,
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
     ) -> int:
         if not self.config.enabled:
             return 0
@@ -76,7 +77,13 @@ class MemoryExtractor:
             candidates = await self.extract(model_id=model_id, user_text=user_text, assistant_text=assistant_text)
             if not candidates:
                 return 0
-            created = self.store.add_candidates(candidates, user_id=user_id, source="memory_extractor", meta=meta)
+            created = self.store.add_candidates(
+                candidates,
+                user_id=user_id,
+                source="memory_extractor",
+                meta=meta,
+                tenant_id=tenant_id,
+            )
             logger.info(f"[MemoryExtractor] stored {len(created)} memories")
             return len(created)
         except Exception as e:

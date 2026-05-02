@@ -57,6 +57,7 @@ JUNIT_XML_PATH=test-reports/tenant-security-regression.xml backend/scripts/test_
 - [ ] `GET /api/health/ready` 正常
 - [ ] 用合法 API Key + tenant 访问 workflow 成功
 - [ ] 用合法 API Key + 错误 tenant 访问 workflow 返回 `404/403`（符合策略）
+- [ ] 对一两条租户强制路径（如 `GET /api/sessions` 或 `GET /api/memory/...`）在**缺少** `X-Tenant-Id` 时应得到 **400**（与 `tenant_paths` 策略一致）
 - [ ] `POST /api/system/config` 非 admin 被拒绝（`403`）
 
 ---

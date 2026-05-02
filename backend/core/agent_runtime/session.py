@@ -23,6 +23,9 @@ from log import logger
 from core.types import Message
 from core.events import get_event_bus
 
+# 与 settings.tenant_default_id / X-Tenant-Id 回落一致
+DEFAULT_AGENT_SESSION_TENANT_ID = "default"
+
 
 class AgentSessionStateJsonMap(BaseModel):
     """AgentSession.state：会话结构化状态（协作块、工具观测等）；OpenAPI 具名 object。"""
@@ -45,6 +48,7 @@ class AgentSession(BaseModel):
     session_id: str
     agent_id: str
     user_id: str = "default"
+    tenant_id: str = DEFAULT_AGENT_SESSION_TENANT_ID
     trace_id: str = Field(default_factory=lambda: f"atrace_{uuid.uuid4().hex[:16]}")
 
     messages: List[Message] = Field(default_factory=list)
@@ -71,6 +75,7 @@ class AgentSessionStore:
         """保存会话（UPSERT，优化并发写入）"""
         try:
             now = datetime.now(timezone.utc)
+            tid = (getattr(session, "tenant_id", None) or DEFAULT_AGENT_SESSION_TENANT_ID).strip() or DEFAULT_AGENT_SESSION_TENANT_ID
             messages_json = json.dumps([m.model_dump() for m in session.messages])
             state_json = json.dumps(agent_session_state_as_dict(session.state), ensure_ascii=False)
             workspace_dir = getattr(session, "workspace_dir", None) or None
@@ -82,10 +87,25 @@ class AgentSessionStore:
 
             # 使用优化的 db_session（自动重试）
             with db_session(retry_count=3, retry_delay=0.1) as db:
+                existing = (
+                    db.query(AgentSessionORM)
+                    .filter(AgentSessionORM.session_id == session.session_id)
+                    .first()
+                )
+                if existing is not None:
+                    ex_tid = (getattr(existing, "tenant_id", None) or DEFAULT_AGENT_SESSION_TENANT_ID).strip() or DEFAULT_AGENT_SESSION_TENANT_ID
+                    if existing.user_id != session.user_id or ex_tid != tid:
+                        logger.warning(
+                            "[AgentSessionStore] Refusing save: session_id=%s owned by other user/tenant",
+                            session.session_id,
+                        )
+                        return False
+
                 stmt = insert(AgentSessionORM).values(
                     session_id=session.session_id,
                     agent_id=session.agent_id,
                     user_id=session.user_id,
+                    tenant_id=tid,
                     trace_id=session.trace_id,
                     status=session.status,
                     step=session.step,
@@ -123,6 +143,7 @@ class AgentSessionStore:
             "session_id": session.session_id,
             "agent_id": session.agent_id,
             "user_id": session.user_id,
+            "tenant_id": getattr(session, "tenant_id", None) or DEFAULT_AGENT_SESSION_TENANT_ID,
             "trace_id": session.trace_id,
             "status": session.status,
             "step": session.step,
@@ -147,14 +168,35 @@ class AgentSessionStore:
             except Exception as exc:
                 logger.warning("[AgentSessionStore] asyncio.run publish agent.status.changed failed: %s", exc)
 
-    def get_session(self, session_id: str) -> Optional[AgentSession]:
-        """获取会话（优化查询性能）"""
+    def get_session_principal(self, session_id: str) -> Optional[tuple[str, str]]:
+        """若会话存在则返回 (user_id, tenant_id)，否则 None。用于检测 session_id 是否被其他租户占用。"""
+        try:
+            with db_session(retry_count=2, retry_delay=0.05) as db:
+                row = db.query(AgentSessionORM).filter(AgentSessionORM.session_id == session_id).first()
+                if row:
+                    tid = (getattr(row, "tenant_id", None) or DEFAULT_AGENT_SESSION_TENANT_ID).strip() or DEFAULT_AGENT_SESSION_TENANT_ID
+                    return (row.user_id, tid)
+        except Exception as e:
+            logger.error(f"[AgentSessionStore] get_session_principal failed: {e}")
+        return None
+
+    def get_session(
+        self,
+        session_id: str,
+        *,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[AgentSession]:
+        """获取会话；若提供 user_id/tenant_id 则一并过滤（租户隔离）。"""
         try:
             # 使用只读事务，减少锁竞争
             with db_session(retry_count=2, retry_delay=0.05) as db:
-                session_orm = db.query(AgentSessionORM).filter(
-                    AgentSessionORM.session_id == session_id
-                ).first()
+                q = db.query(AgentSessionORM).filter(AgentSessionORM.session_id == session_id)
+                if user_id is not None:
+                    q = q.filter(AgentSessionORM.user_id == user_id)
+                if tenant_id is not None:
+                    q = q.filter(AgentSessionORM.tenant_id == tenant_id)
+                session_orm = q.first()
                 if session_orm:
                     return self._orm_to_session(session_orm)
         except Exception as e:
@@ -174,10 +216,14 @@ class AgentSessionStore:
             state_raw = {}
         state = AgentSessionStateJsonMap.model_validate(state_raw)
 
+        orm_tid = getattr(session_orm, "tenant_id", None)
+        eff_tid = (str(orm_tid).strip() if orm_tid else "") or DEFAULT_AGENT_SESSION_TENANT_ID
+
         return AgentSession(
             session_id=session_orm.session_id,
             agent_id=session_orm.agent_id,
             user_id=session_orm.user_id,
+            tenant_id=eff_tid,
             trace_id=session_orm.trace_id or f"atrace_{session_orm.session_id}",
             status=session_orm.status,
             step=session_orm.step,
@@ -190,10 +236,17 @@ class AgentSessionStore:
             updated_at=session_orm.updated_at.isoformat() if session_orm.updated_at else datetime.now(timezone.utc).isoformat(),
         )
 
-    def delete_message(self, session_id: str, message_index: int) -> bool:
+    def delete_message(
+        self,
+        session_id: str,
+        message_index: int,
+        *,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> bool:
         """删除会话中的一条消息"""
         try:
-            session = self.get_session(session_id)
+            session = self.get_session(session_id, user_id=user_id, tenant_id=tenant_id)
             if not session:
                 return False
 
@@ -206,15 +259,22 @@ class AgentSessionStore:
             logger.error(f"[AgentSessionStore] delete_message failed: {e}")
             return False
 
-    def delete_session(self, session_id: str, user_id: str = "default") -> bool:
+    def delete_session(
+        self,
+        session_id: str,
+        user_id: str = "default",
+        tenant_id: str = DEFAULT_AGENT_SESSION_TENANT_ID,
+    ) -> bool:
         """删除会话（原子操作）"""
         try:
+            tid = (tenant_id or DEFAULT_AGENT_SESSION_TENANT_ID).strip() or DEFAULT_AGENT_SESSION_TENANT_ID
             with db_session(retry_count=3, retry_delay=0.1) as db:
                 # 使用 DELETE 语句直接删除，避免先查后删的竞态
                 result = db.execute(
                     delete(AgentSessionORM).where(
                         AgentSessionORM.session_id == session_id,
                         AgentSessionORM.user_id == user_id,
+                        AgentSessionORM.tenant_id == tid,
                     )
                 )
                 # 检查是否删除了记录
@@ -234,13 +294,18 @@ class AgentSessionStore:
         user_id: str = "default",
         limit: int = 50,
         agent_id: Optional[str] = None,
+        tenant_id: str = DEFAULT_AGENT_SESSION_TENANT_ID,
     ) -> List[AgentSession]:
-        """列出会话（分页查询优化）"""
+        """列出会话（分页查询优化，按租户过滤）"""
         sessions = []
         try:
+            tid = (tenant_id or DEFAULT_AGENT_SESSION_TENANT_ID).strip() or DEFAULT_AGENT_SESSION_TENANT_ID
             # 使用只读模式，减少锁竞争
             with db_session(retry_count=2, retry_delay=0.05) as db:
-                query = db.query(AgentSessionORM).filter(AgentSessionORM.user_id == user_id)
+                query = db.query(AgentSessionORM).filter(
+                    AgentSessionORM.user_id == user_id,
+                    AgentSessionORM.tenant_id == tid,
+                )
                 if agent_id:
                     query = query.filter(AgentSessionORM.agent_id == agent_id)
                 # 使用索引排序（updated_at DESC）

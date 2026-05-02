@@ -51,8 +51,28 @@ class _MemSessionStore:
     def __init__(self) -> None:
         self._sessions: Dict[str, AgentSession] = {}
 
-    def get_session(self, session_id: str) -> Optional[AgentSession]:
-        return self._sessions.get(session_id)
+    def get_session_principal(self, session_id: str):
+        s = self._sessions.get(session_id)
+        if not s:
+            return None
+        return (s.user_id, getattr(s, "tenant_id", None) or "default")
+
+    def get_session(
+        self,
+        session_id: str,
+        *,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[AgentSession]:
+        s = self._sessions.get(session_id)
+        if not s:
+            return None
+        if user_id is not None and s.user_id != user_id:
+            return None
+        stid = getattr(s, "tenant_id", None) or "default"
+        if tenant_id is not None and stid != tenant_id:
+            return None
+        return s
 
     def save_session(self, session: AgentSession) -> bool:
         self._sessions[session.session_id] = session
@@ -63,8 +83,13 @@ class _MemSessionStore:
         user_id: str = "default",
         limit: int = 50,
         agent_id: Optional[str] = None,
+        tenant_id: str = "default",
     ):
-        out = [s for s in self._sessions.values() if s.user_id == user_id]
+        out = [
+            s
+            for s in self._sessions.values()
+            if s.user_id == user_id and (getattr(s, "tenant_id", None) or "default") == tenant_id
+        ]
         if agent_id:
             out = [s for s in out if s.agent_id == agent_id]
         return out[:limit]

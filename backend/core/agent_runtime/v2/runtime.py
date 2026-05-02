@@ -290,14 +290,17 @@ class AgentRuntime:
         
         # 获取 user_id
         user_id = getattr(session, "user_id", None) or "default"
-        
+        tenant_id = str(getattr(session, "tenant_id", None) or "default").strip() or "default"
+
         # 2. 生成执行计划（若 plan 中有步骤写入 session.state.project_info，会注入到 context）
         planner_messages = list(session.messages)
         try:
             injector, _ = self._get_memory_runtime()
             if injector:
                 raw_messages = [{"role": m.role, "content": m.content} for m in planner_messages]
-                injected = injector.inject(raw_messages, user_id=user_id)
+                injected = injector.inject(
+                    raw_messages, user_id=user_id, tenant_id=tenant_id
+                )
                 planner_messages = [Message(role=m.get("role", "user"), content=m.get("content", "")) for m in injected]
         except Exception as e:
             logger.warning(f"[AgentRuntime] memory inject skipped: {e}")
@@ -426,8 +429,10 @@ class AgentRuntime:
             
             # 7. 保存 trace 到 trace store
             try:
+                from core.agent_runtime.session import DEFAULT_AGENT_SESSION_TENANT_ID
                 from core.agent_runtime.trace import get_agent_trace_store, AgentTraceEvent
                 trace_store = get_agent_trace_store()
+                _trace_tid = (str(getattr(session, "tenant_id", None) or "").strip()) or DEFAULT_AGENT_SESSION_TENANT_ID
                 
                 # Phase A: 展开层级 trace，包括 subgraph_traces
                 # 使用 get_all_logs_with_hierarchy() 获取所有层级的 logs
@@ -454,6 +459,7 @@ class AgentRuntime:
                         event = AgentTraceEvent(
                             event_id=f"evt_{trace.plan_id}_{i}",  # 生成唯一 event_id
                             session_id=session.session_id,
+                            tenant_id=_trace_tid,
                             agent_id=agent.agent_id,
                             trace_id=trace.plan_id,
                             step=i,  # 使用索引作为 step 数字
@@ -499,6 +505,7 @@ class AgentRuntime:
                                 "session_id": session.session_id,
                                 "execution_engine": metrics.execution_engine,
                             },
+                            tenant_id=tenant_id,
                         )
             except Exception as e:
                 logger.warning(f"[AgentRuntime] memory extraction skipped: {e}")

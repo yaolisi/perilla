@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
+import pytest
+
 from core.workflows.tenant_guard import resolve_tenant_id, namespace_matches_tenant
+
+pytestmark = pytest.mark.tenant_isolation
 
 
 def test_resolve_tenant_id_from_request_state():

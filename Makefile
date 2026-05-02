@@ -1,4 +1,4 @@
-.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend helm-chart-check helm-deploy-contract-check merge-gate-contract-tests check-nvmrc-align test-frontend-unit test-frontend-unit-coverage build-frontend pr-check pr-check-fast ci ci-fast quick-check dependency-policy dependency-scan test-no-fallback test-workflow-control-flow roadmap-acceptance-unit roadmap-acceptance-smoke roadmap-acceptance-all roadmap-acceptance-validate-schema-version roadmap-acceptance-validate-output roadmap-acceptance-run-validated roadmap-release-gate smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
+.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend helm-chart-check helm-deploy-contract-check merge-gate-contract-tests check-nvmrc-align test-frontend-unit test-frontend-unit-coverage build-frontend pr-check pr-check-fast ci ci-fast quick-check dependency-policy dependency-scan test-no-fallback test-workflow-control-flow test-tenant-isolation roadmap-acceptance-unit roadmap-acceptance-smoke roadmap-acceptance-all roadmap-acceptance-validate-schema-version roadmap-acceptance-validate-output roadmap-acceptance-run-validated roadmap-release-gate smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
 
 CB_BASE_URL ?= http://127.0.0.1:8000
 CB_MODEL ?= ollama:deepseek-r1:32b
@@ -214,6 +214,8 @@ help:
 	@echo "                   - Treat warnings as failures"
 	@echo "  make test-workflow-control-flow"
 	@echo "                   - Run workflow control-flow regression suite"
+	@echo "  make test-tenant-isolation"
+	@echo "                   - Run pytest -m tenant_isolation (MCP / store / middleware tenant suite)"
 	@echo "  make roadmap-acceptance-unit"
 	@echo "                   - Run roadmap-focused pytest suite"
 	@echo "  make roadmap-acceptance-smoke ROADMAP_BASE_URL=http://127.0.0.1:8000 [ROADMAP_API_KEY=...]"
@@ -567,7 +569,7 @@ test-frontend-unit-coverage: check-nvmrc-align
 build-frontend: check-nvmrc-align
 	@cd frontend && npm run build
 
-pr-check: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback helm-deploy-contract-check test-frontend-unit build-frontend
+pr-check: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-tenant-isolation helm-deploy-contract-check test-frontend-unit build-frontend
 	@if [ "$(SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
 		echo "pr-check: skip roadmap-acceptance-unit (SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1)"; \
 	else \
@@ -575,7 +577,7 @@ pr-check: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback he
 	fi
 	@echo "pr-check: OK"
 
-pr-check-fast: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback helm-deploy-contract-check test-frontend-unit
+pr-check-fast: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-tenant-isolation helm-deploy-contract-check test-frontend-unit
 	@if [ "$(SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
 		echo "pr-check-fast: skip roadmap-acceptance-unit (SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1)"; \
 	else \
@@ -601,6 +603,9 @@ test-no-fallback:
 
 test-workflow-control-flow:
 	@bash backend/scripts/test_workflow_control_flow_regression.sh
+
+test-tenant-isolation:
+	@PYTHONPATH=backend pytest -m tenant_isolation -q $(TEST_ARGS)
 
 roadmap-acceptance-unit:
 	@echo "$(ROADMAP_GATE_LOG_PREFIX) roadmap acceptance unit start"

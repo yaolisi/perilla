@@ -42,6 +42,7 @@ from execution_kernel.optimization.scheduler.policy_base import SchedulerPolicy
 
 from core.agent_runtime.definition import agent_model_params_as_dict
 from core.agent_runtime.collaboration import get_collaboration_persist_dict
+from core.agent_runtime.session import DEFAULT_AGENT_SESSION_TENANT_ID
 from core.agent_runtime.v2.models import Plan, AgentState, ExecutionTrace, StepLog, StepStatus
 from core.agent_runtime.v2.agent_graph_adapter import AgentGraphAdapter
 from core.execution.adapters.plan_compiler import compile_plan
@@ -54,6 +55,12 @@ logger = logging.getLogger(__name__)
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _session_tenant_id(session: Any) -> str:
+    """与 AgentSession 默认租户对齐，供 Kernel 内 Skill/MCP 与 global_context 使用。"""
+    raw = getattr(session, "tenant_id", None)
+    return (str(raw).strip() if raw else "") or DEFAULT_AGENT_SESSION_TENANT_ID
 
 
 def _get_db_url() -> str:
@@ -382,6 +389,7 @@ class ExecutionKernelAdapter:
         
         # 2. 创建执行上下文（供 Node Executors 使用，内存态可含复杂对象）
         # Phase B: 延迟创建 runtime_context，以便注入 kernel_instance_id 和 scheduler
+        tid_ctx = _session_tenant_id(session)
         runtime_context_base = {
             "agent": agent,
             "session": session,
@@ -392,6 +400,7 @@ class ExecutionKernelAdapter:
             "permissions": permissions or {},
             "trace_id": getattr(session, "trace_id", ""),
             "agent_id": agent.agent_id if hasattr(agent, "agent_id") else "",
+            "tenant_id": tid_ctx,
         }
         # 持久化到 Kernel DB 的 global_context 必须可 JSON 序列化，避免对象入库失败
         persisted_context = {
@@ -401,6 +410,7 @@ class ExecutionKernelAdapter:
             "workspace": workspace,
             "permissions": permissions or {},
             "user_id": getattr(session, "user_id", "default") or "default",
+            "tenant_id": tid_ctx,
         }
         collab = get_collaboration_persist_dict(session)
         if collab:

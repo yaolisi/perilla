@@ -36,7 +36,8 @@ The product defaults to **local-first / trusted-network** deployments. If you ex
 
 ### 3.1 Tenancy and `X-Tenant-Id`
 
-- Tenant id is client-supplied; isolation depends on enforcement, API-key binding, and **tenant-scoped data access**. Continue IDOR reviews per API surface.
+- Tenant context combines middleware-injected `request.state` and headers; isolation depends on enforcement (prefix list in **`backend/middleware/tenant_paths.py`**), API-key binding, and **tenant-scoped data access**.  
+- Control-plane code often uses **`resolve_api_tenant_id`** (middleware state only); some paths use **`get_effective_tenant_id`** when state is unset—see **`backend/core/utils/tenant_request.py`**. Continue IDOR reviews for sessions, knowledge, memory, MCP, and workflow surfaces.
 
 ### 3.2 CSRF vs non-browser clients
 

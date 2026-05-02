@@ -27,5 +27,7 @@ def test_saas_public_launch_gate_doc_exists_and_has_gate_anchors() -> None:
         "docker-compose.prod.yml",
         "deploy/helm/perilla-backend",
         "middleware/tenant_paths.py",
+        "sessions.tenant_id",
+        "memory_items.tenant_id",
     ):
         assert needle in text, f"{_DOC} must contain {needle!r}"

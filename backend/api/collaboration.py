@@ -9,6 +9,8 @@ from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.errors import raise_api_error
+from core.utils.user_context import get_user_id
+from core.utils.tenant_request import get_effective_tenant_id
 from core.agent_runtime.collaboration import (
     STATE_KEY_COLLABORATION,
     STATE_KEY_COLLABORATION_MESSAGES,
@@ -105,11 +107,6 @@ class CollaborationMessageUpsertResponse(BaseModel):
     message: CollaborationMessageRecord
 
 
-def _get_user_id(request: Request) -> str:
-    uid = (request.headers.get("X-User-Id") or "").strip()
-    return uid or "default"
-
-
 def _match_collaboration_sessions(
     rows: Sequence[Any],
     *,
@@ -203,9 +200,12 @@ async def get_sessions_by_correlation(
     cid = (correlation_id or "").strip()
     orch_filter = (orchestrator_agent_id or "").strip() or None
     store = get_agent_session_store()
-    user_id = _get_user_id(request)
+    user_id = get_user_id(request)
+    tenant_id = get_effective_tenant_id(request)
     cap = max(1, min(limit, 500))
-    rows = store.list_sessions(user_id=user_id, limit=cap, agent_id=None)
+    rows = store.list_sessions(
+        user_id=user_id, limit=cap, agent_id=None, tenant_id=tenant_id
+    )
     out = _match_collaboration_sessions(rows, correlation_id=cid, orch_filter=orch_filter)
     return CorrelationSummaryResponse(correlation_id=cid, sessions=out)
 
@@ -216,9 +216,10 @@ async def upsert_collaboration_message(
     request: Request,
 ) -> CollaborationMessageUpsertResponse:
     store = get_agent_session_store()
-    user_id = _get_user_id(request)
-    session = store.get_session(body.session_id)
-    if session is None or session.user_id != user_id:
+    user_id = get_user_id(request)
+    tenant_id = get_effective_tenant_id(request)
+    session = store.get_session(body.session_id, user_id=user_id, tenant_id=tenant_id)
+    if session is None:
         raise_api_error(status_code=404, code="collaboration_session_not_found", message="session not found")
 
     state = agent_session_state_as_dict(session.state)
@@ -253,9 +254,12 @@ async def list_collaboration_messages(
     task_id: Optional[str] = None,
 ) -> CollaborationMessageListResponse:
     store = get_agent_session_store()
-    user_id = _get_user_id(request)
+    user_id = get_user_id(request)
+    tenant_id = get_effective_tenant_id(request)
     session_cap = max(1, min(limit_sessions, 500))
-    rows = store.list_sessions(user_id=user_id, limit=session_cap, agent_id=None)
+    rows = store.list_sessions(
+        user_id=user_id, limit=session_cap, agent_id=None, tenant_id=tenant_id
+    )
     messages = _extract_messages_from_rows(
         rows,
         correlation_id=correlation_id,

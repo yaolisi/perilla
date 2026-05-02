@@ -12,6 +12,7 @@ class AgentTrace(Base):
     id = Column(String, primary_key=True)
     trace_id = Column(String)
     session_id = Column(String, nullable=False)
+    tenant_id = Column(String, nullable=False, default="default")
     step = Column(Integer, nullable=False)
     event_type = Column(String, nullable=False)
     agent_id = Column(String)
@@ -24,5 +25,5 @@ class AgentTrace(Base):
     
     # 索引
     __table_args__ = (
-        Index('idx_agent_traces_session_id', 'session_id'),
+        Index("idx_agent_traces_session_tenant", "session_id", "tenant_id"),
     )

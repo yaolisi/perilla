@@ -49,7 +49,8 @@ from core.workflows.debug_runtime import (
     kernel_debug_snapshot as _kernel_debug_snapshot_helper,
     recent_events_debug as _recent_events_debug_helper,
 )
-from core.workflows.tenant_guard import resolve_tenant_id, namespace_matches_tenant
+from core.workflows.tenant_guard import namespace_matches_tenant
+from core.utils.tenant_request import resolve_api_tenant_id
 from core.workflows.runtime.graph_runtime_adapter import GraphRuntimeAdapter
 from config.settings import settings
 from middleware.user_context import get_current_user
@@ -542,7 +543,7 @@ async def create_workflow(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowResponse:
     """创建工作流"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     if request.namespace and request.namespace != tenant_id:
         raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -572,7 +573,7 @@ async def get_workflow(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowResponse:
     """获取工作流"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     service = WorkflowService(db)
     workflow = service.get_workflow(workflow_id, tenant_id=tenant_id)
     
@@ -609,7 +610,7 @@ async def list_workflows(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowListEnvelope:
     """列出工作流"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     if namespace and namespace != tenant_id:
         raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -651,7 +652,7 @@ async def update_workflow(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowResponse:
     """更新工作流"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     service = WorkflowService(db)
     existing = service.get_workflow(workflow_id, tenant_id=tenant_id)
     if existing:
@@ -696,7 +697,7 @@ async def delete_workflow(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> None:
     """删除工作流"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     service = WorkflowService(db)
     existing = service.get_workflow(workflow_id, tenant_id=tenant_id)
     if existing:
@@ -730,7 +731,7 @@ async def publish_workflow(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowResponse:
     """发布工作流"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     service = WorkflowService(db)
     existing = service.get_workflow(workflow_id, tenant_id=tenant_id)
     if existing:
@@ -779,7 +780,7 @@ async def create_version(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowVersionResponse:
     """创建工作流版本"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     # 检查权限
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -849,7 +850,7 @@ async def list_versions(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowVersionListEnvelope:
     """列出工作流版本"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     # 检查权限
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -903,7 +904,7 @@ async def get_workflow_impact(
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowSubworkflowImpactResponse:
     """分析该 workflow（子工作流）被哪些父工作流版本引用。"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -954,7 +955,7 @@ async def diff_versions(
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowVersionsCompareResponse:
     """比较两个版本的 DAG 差异"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -1057,7 +1058,7 @@ async def get_version(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowVersionDetailResponse:
     """获取版本详情（包含 DAG）"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     # 检查权限
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -1106,7 +1107,7 @@ async def publish_version(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowVersionResponse:
     """发布版本"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     # 检查权限
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -1160,7 +1161,7 @@ async def rollback_version(
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowVersionResponse:
     """基于历史版本创建回滚版本（可选自动发布）"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -1319,9 +1320,10 @@ async def _resolve_idempotent_execution_hit(
     claim: Any,
     execution_service: WorkflowExecutionService,
     workflow_id: str,
+    tenant_id: str,
 ) -> WorkflowExecutionResponse:
     if claim.record.response_ref:
-        ex = execution_service.get_execution(claim.record.response_ref)
+        ex = execution_service.get_execution(claim.record.response_ref, tenant_id=tenant_id)
         if ex:
             logger.info(
                 f"[WorkflowAPI] Idempotent create hit: workflow_id={workflow_id} "
@@ -1349,7 +1351,7 @@ def _validate_execution_create_access(
     request: WorkflowExecutionCreateRequest,
     current_user: str,
 ) -> None:
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     if request.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1393,6 +1395,7 @@ async def _prepare_execution_create_idempotency(
     if not idem_key:
         return idem_key, idem_service, idem_record, hit_response
 
+    tenant_id = resolve_api_tenant_id(http_request)
     req_hash = _stable_request_hash(
         {
             "workflow_id": workflow_id,
@@ -1407,6 +1410,7 @@ async def _prepare_execution_create_idempotency(
         owner_id=str(current_user or "default"),
         key=idem_key,
         request_hash=req_hash,
+        tenant_id=tenant_id,
     )
     if claim.conflict:
         raise_api_error(
@@ -1421,6 +1425,7 @@ async def _prepare_execution_create_idempotency(
             claim=claim,
             execution_service=execution_service,
             workflow_id=workflow_id,
+            tenant_id=tenant_id,
         )
     return idem_key, idem_service, idem_record, hit_response
 
@@ -1547,7 +1552,7 @@ async def list_executions(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowExecutionListEnvelope:
     """列出执行记录"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     # 检查权限
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -1572,11 +1577,13 @@ async def list_executions(
         workflow_id=workflow_id,
         state=state,
         limit=limit,
-        offset=offset
+        offset=offset,
+        tenant_id=tenant_id,
     )
     total = execution_service.count_executions(
         workflow_id=workflow_id,
         state=state,
+        tenant_id=tenant_id,
     )
 
     if live and executions:
@@ -1613,7 +1620,7 @@ async def get_execution(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowExecutionResponse:
     """获取执行详情"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     # 检查权限
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -1634,7 +1641,7 @@ async def get_execution(
         )
     
     execution_service = WorkflowExecutionService(db)
-    execution = execution_service.get_execution(execution_id)
+    execution = execution_service.get_execution(execution_id, tenant_id=tenant_id)
     
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
@@ -1670,7 +1677,7 @@ async def list_execution_errors(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowExecutionErrorLogsListEnvelope:
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -1688,7 +1695,7 @@ async def list_execution_errors(
             message=MSG_ACCESS_DENIED,
             details={"workflow_id": workflow_id, "action": "read"},
         )
-    execution = WorkflowExecutionService(db).get_execution(execution_id)
+    execution = WorkflowExecutionService(db).get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1752,7 +1759,7 @@ async def get_execution_failure_report(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowExecutionFailureReportResponse:
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -1770,7 +1777,7 @@ async def get_execution_failure_report(
             message=MSG_ACCESS_DENIED,
             details={"workflow_id": workflow_id, "action": "read"},
         )
-    execution = WorkflowExecutionService(db).get_execution(execution_id)
+    execution = WorkflowExecutionService(db).get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1916,7 +1923,7 @@ async def get_execution_call_chain(
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowExecutionCallChainResponse:
     """查询执行调用链（父子工作流）。"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -1937,7 +1944,7 @@ async def get_execution_call_chain(
         )
 
     execution_service = WorkflowExecutionService(db)
-    root_execution = execution_service.get_execution(execution_id)
+    root_execution = execution_service.get_execution(execution_id, tenant_id=tenant_id)
     if not root_execution or root_execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1952,6 +1959,7 @@ async def get_execution_call_chain(
         state=None,
         limit=limit,
         offset=0,
+        tenant_id=tenant_id,
     )
     correlation_id, chain_items = _build_execution_call_chain(root_execution, candidate_executions)
     return WorkflowExecutionCallChainResponse(
@@ -2012,7 +2020,7 @@ async def get_execution_debug(
     工作流调试视图：聚合 hydrated 执行详情、内核快照与 execution_kernel 近期事件。
     需对工作流具有 read 权限。
     """
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2032,7 +2040,7 @@ async def get_execution_debug(
         )
 
     execution_service = WorkflowExecutionService(db)
-    execution = execution_service.get_execution(execution_id)
+    execution = execution_service.get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2077,7 +2085,7 @@ async def delete_execution(
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> Response:
     """删除单个执行历史（仅允许终态）"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2097,7 +2105,7 @@ async def delete_execution(
         )
 
     execution_service = WorkflowExecutionService(db)
-    execution = execution_service.get_execution(execution_id)
+    execution = execution_service.get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2107,7 +2115,7 @@ async def delete_execution(
         )
         raise AssertionError("unreachable")
     try:
-        deleted = execution_service.delete_execution(execution_id)
+        deleted = execution_service.delete_execution(execution_id, tenant_id=tenant_id)
     except ValueError as e:
         raise_api_error(
             status_code=status.HTTP_409_CONFLICT,
@@ -2134,7 +2142,7 @@ async def get_execution_status(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowExecutionStatusResponse:
     """获取轻量执行状态（用于运行页高频轮询）"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2154,7 +2162,7 @@ async def get_execution_status(
         )
 
     execution_service = WorkflowExecutionService(db)
-    execution = execution_service.get_execution(execution_id)
+    execution = execution_service.get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2198,8 +2206,9 @@ async def _load_execution_status_payload(
     execution_id: str,
     workflow_id: str,
     loop_exec_svc: WorkflowExecutionService,
+    tenant_id: str,
 ) -> tuple[Optional[Dict[str, Any]], Optional[bool], Optional[str]]:
-    current = loop_exec_svc.get_execution(execution_id)
+    current = loop_exec_svc.get_execution(execution_id, tenant_id=tenant_id)
     if not current or current.workflow_id != workflow_id:
         return None, None, MSG_EXECUTION_NOT_FOUND
 
@@ -2247,7 +2256,7 @@ def _validate_stream_access(
     execution_id: str,
     current_user: str,
 ) -> None:
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(init_db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2267,7 +2276,7 @@ def _validate_stream_access(
         )
 
     execution_service = WorkflowExecutionService(init_db)
-    execution = execution_service.get_execution(execution_id)
+    execution = execution_service.get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2282,6 +2291,7 @@ async def _stream_status_tick(
     db: Session,
     workflow_id: str,
     execution_id: str,
+    tenant_id: str,
     last_hash: Optional[str],
     heartbeat_at: datetime,
     heartbeat_every: int,
@@ -2296,6 +2306,7 @@ async def _stream_status_tick(
             execution_id=execution_id,
             workflow_id=workflow_id,
             loop_exec_svc=loop_exec_svc,
+            tenant_id=tenant_id,
         )
         if error_message:
             msg_out = error_message
@@ -2374,6 +2385,7 @@ async def stream_execution_status(
 ) -> StreamingResponse:
     """SSE 推送执行状态（节点级），前端可替代高频轮询；轮询仍可作为降级路径。"""
     accept_sse = resolve_accept_language_for_sse(http_request, lang)
+    stream_tenant_id = resolve_api_tenant_id(http_request)
     _validate_stream_access(
         init_db=db,
         http_request=http_request,
@@ -2394,6 +2406,7 @@ async def stream_execution_status(
                     db=db,
                     workflow_id=workflow_id,
                     execution_id=execution_id,
+                    tenant_id=stream_tenant_id,
                     last_hash=last_hash,
                     heartbeat_at=heartbeat_at,
                     heartbeat_every=heartbeat_every,
@@ -2441,7 +2454,7 @@ async def cancel_execution(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowExecutionResponse:
     """取消执行"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     # 检查权限
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -2462,7 +2475,7 @@ async def cancel_execution(
         )
     
     execution_service = WorkflowExecutionService(db)
-    execution = execution_service.get_execution(execution_id)
+    execution = execution_service.get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2492,7 +2505,7 @@ async def cancel_execution(
                 details={"workflow_id": workflow_id, "execution_id": execution_id},
             )
             raise AssertionError("unreachable")
-        execution = execution_service.get_execution(execution_id)
+        execution = execution_service.get_execution(execution_id, tenant_id=tenant_id)
         if not execution or execution.workflow_id != workflow_id:
             raise_api_error(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -2521,7 +2534,7 @@ async def reconcile_execution(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowExecutionResponse:
     """手动触发终态对账，用于异常场景恢复（如节点已终态但 execution 仍显示 running）。"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2541,7 +2554,7 @@ async def reconcile_execution(
         )
 
     execution_service = WorkflowExecutionService(db)
-    execution = execution_service.get_execution(execution_id)
+    execution = execution_service.get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2573,7 +2586,7 @@ async def list_execution_approvals(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> Any:
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2592,7 +2605,7 @@ async def list_execution_approvals(
             details={"workflow_id": workflow_id, "action": "read"},
         )
 
-    execution = WorkflowExecutionService(db).get_execution(execution_id)
+    execution = WorkflowExecutionService(db).get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2601,7 +2614,7 @@ async def list_execution_approvals(
             details={"workflow_id": workflow_id, "execution_id": execution_id},
         )
     service = WorkflowApprovalService(db)
-    items = [_approval_task_to_response(x) for x in service.list_for_execution(execution_id)]
+    items = [_approval_task_to_response(x) for x in service.list_for_execution(execution_id, tenant_id=tenant_id)]
     if legacy:
         if response is not None:
             response.headers["X-API-Deprecated"] = str(
@@ -2630,7 +2643,7 @@ async def approve_execution_approval(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowApprovalTaskResponse:
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2649,7 +2662,7 @@ async def approve_execution_approval(
             details={"workflow_id": workflow_id, "action": "execute"},
         )
 
-    execution = WorkflowExecutionService(db).get_execution(execution_id)
+    execution = WorkflowExecutionService(db).get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2658,7 +2671,9 @@ async def approve_execution_approval(
             details={"workflow_id": workflow_id, "execution_id": execution_id},
         )
     service = WorkflowApprovalService(db)
-    decision = service.approve(execution_id=execution_id, task_id=task_id, decided_by=current_user)
+    decision = service.approve(
+        execution_id=execution_id, task_id=task_id, decided_by=current_user, tenant_id=tenant_id
+    )
     if not decision.task:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2673,7 +2688,7 @@ async def approve_execution_approval(
             message="Approval task expired",
             details={"task_id": task_id, "execution_id": execution_id},
         )
-    execution_after = WorkflowExecutionService(db).get_execution(execution_id)
+    execution_after = WorkflowExecutionService(db).get_execution(execution_id, tenant_id=tenant_id)
     execution_state = execution_after.state.value if execution_after else None
     return _approval_task_to_response(decision.task, execution_state_after_decision=execution_state)
 
@@ -2690,7 +2705,7 @@ async def reject_execution_approval(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowApprovalTaskResponse:
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2709,7 +2724,7 @@ async def reject_execution_approval(
             details={"workflow_id": workflow_id, "action": "execute"},
         )
 
-    execution = WorkflowExecutionService(db).get_execution(execution_id)
+    execution = WorkflowExecutionService(db).get_execution(execution_id, tenant_id=tenant_id)
     if not execution or execution.workflow_id != workflow_id:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2718,7 +2733,9 @@ async def reject_execution_approval(
             details={"workflow_id": workflow_id, "execution_id": execution_id},
         )
     service = WorkflowApprovalService(db)
-    decision = service.reject(execution_id=execution_id, task_id=task_id, decided_by=current_user)
+    decision = service.reject(
+        execution_id=execution_id, task_id=task_id, decided_by=current_user, tenant_id=tenant_id
+    )
     if not decision.task:
         raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2733,7 +2750,7 @@ async def reject_execution_approval(
             message="Approval task expired",
             details={"task_id": task_id, "execution_id": execution_id},
         )
-    execution_after = WorkflowExecutionService(db).get_execution(execution_id)
+    execution_after = WorkflowExecutionService(db).get_execution(execution_id, tenant_id=tenant_id)
     execution_state = execution_after.state.value if execution_after else None
     return _approval_task_to_response(decision.task, execution_state_after_decision=execution_state)
 
@@ -2748,7 +2765,7 @@ async def get_quota_status(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowGovernanceStatusResponse:
     """获取配额状态"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     # 检查权限
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -2781,7 +2798,7 @@ async def set_quota(
     current_user: Annotated[str, Depends(get_current_user)]
 ) -> WorkflowGovernanceStatusResponse:
     """设置配额"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     # 检查权限
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
@@ -2815,7 +2832,7 @@ async def get_governance_config(
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowGovernanceStatusResponse:
     """获取 workflow 执行治理参数与状态（队列/背压/并发）"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2846,7 +2863,7 @@ async def set_governance_config(
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowGovernanceStatusResponse:
     """设置 workflow 执行治理参数（队列/背压）"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2894,6 +2911,7 @@ async def set_governance_config(
             "max_queue_size": new_queue_cfg.get("max_queue_size"),
             "backpressure_strategy": new_queue_cfg.get("backpressure_strategy"),
         },
+        tenant_id=tenant_id,
     )
     return WorkflowGovernanceStatusResponse.model_validate(new_status)
 
@@ -2909,7 +2927,7 @@ async def list_governance_audits(
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> WorkflowGovernanceAuditListEnvelope:
     """获取 workflow 治理配置变更审计记录"""
-    tenant_id = resolve_tenant_id(http_request, default_tenant=getattr(settings, "tenant_default_id", "default"))
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2929,8 +2947,8 @@ async def list_governance_audits(
         )
 
     audit_repo = WorkflowGovernanceAuditRepository(db)
-    raw_items = audit_repo.list_audits(workflow_id, limit=limit, offset=offset)
-    total = audit_repo.count_audits(workflow_id)
+    raw_items = audit_repo.list_audits(workflow_id, limit=limit, offset=offset, tenant_id=tenant_id)
+    total = audit_repo.count_audits(workflow_id, tenant_id=tenant_id)
     items = [WorkflowGovernanceAuditEntry.model_validate(x) for x in raw_items]
     return WorkflowGovernanceAuditListEnvelope(items=items, total=total, limit=limit, offset=offset)
 
@@ -2948,9 +2966,7 @@ async def record_tool_composition_usage(
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> ToolCompositionUsageRecordedResponse:
     """记录工具组合使用行为（用于推荐学习）"""
-    tenant_id = resolve_tenant_id(
-        http_request, default_tenant=getattr(settings, "tenant_default_id", "default")
-    )
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -2993,9 +3009,7 @@ async def recommend_tool_composition_templates(
     current_user: Annotated[str, Depends(get_current_user)],
 ) -> ToolCompositionRecommendResponse:
     """返回工具组合模板推荐"""
-    tenant_id = resolve_tenant_id(
-        http_request, default_tenant=getattr(settings, "tenant_default_id", "default")
-    )
+    tenant_id = resolve_api_tenant_id(http_request)
     workflow_service = WorkflowService(db)
     workflow = workflow_service.get_workflow(workflow_id, tenant_id=tenant_id)
     if not workflow:
@@ -4011,19 +4025,23 @@ def _maybe_persist_terminal_reconcile(
         return live_execution
     try:
         # 先收敛主状态，确保前端尽快从 running 进入终态；重数据字段做 best-effort。
+        _recon_tid = str(getattr(live_execution, "tenant_id", None) or "default").strip() or "default"
         persisted = execution_service.repository.update_state(
             live_execution.execution_id,
             terminal_state,
+            tenant_id=_recon_tid,
         )
         try:
             execution_service.repository.update_node_states(
                 live_execution.execution_id,
                 live_execution.node_states or [],
+                tenant_id=_recon_tid,
             )
             if isinstance(live_execution.output_data, dict):
                 execution_service.repository.update_output(
                     live_execution.execution_id,
                     live_execution.output_data,
+                    tenant_id=_recon_tid,
                 )
         except OperationalError as oe:
             if "database is locked" in str(oe).lower():

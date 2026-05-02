@@ -42,8 +42,9 @@
 
 ### 3.1 多租户与 `X-Tenant-Id`
 
-- 租户标识由请求头注入；**真正隔离**依赖租户强制、API Key–租户绑定及存储/查询层的 **tenant 过滤**。  
-- Workflow 等路径已显式做了 namespace/tenant 对齐；其它数据面需按模块继续防 **跨租户 IDOR**（定期做面向接口的鉴权审查）。
+- 租户标识由请求头（及中间件注入的 `request.state`）共同完成；**真正隔离**依赖租户强制、API Key–租户绑定及存储/查询层的 **tenant 过滤**。强制前缀清单见 **`backend/middleware/tenant_paths.py`**。  
+- 控制面常用 **`resolve_api_tenant_id`**（仅用中间件 state，避免任意头覆盖）；部分场景用 **`get_effective_tenant_id`**（state 未设时可读头），见 `backend/core/utils/tenant_request.py`。  
+- Workflow 等路径已显式做了 namespace/tenant 对齐；会话、知识库、记忆、MCP 等模块需在评审中核对 **跨租户 IDOR**（定期做面向接口的鉴权审查）。
 
 ### 3.2 CSRF 与「非浏览器客户端」
 

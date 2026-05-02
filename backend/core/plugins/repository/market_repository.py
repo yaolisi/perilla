@@ -8,6 +8,12 @@ from core.data.models.plugin_market import PluginInstallationORM, PluginPackageO
 
 
 class PluginMarketRepository:
+    @staticmethod
+    def _eff_tid(tenant_id: Optional[str]) -> str:
+        if tenant_id is None:
+            return "default"
+        return (str(tenant_id).strip() or "default")
+
     def upsert_package(self, payload: Dict[str, Any]) -> PluginPackageORM:
         package_id = str(payload["id"])
         with db_session() as db:
@@ -68,41 +74,55 @@ class PluginMarketRepository:
         manifest_path: str,
         enabled: bool,
         installed_by: Optional[str],
+        tenant_id: Optional[str] = None,
     ) -> PluginInstallationORM:
+        tid = self._eff_tid(tenant_id)
         with db_session() as db:
             row = (
                 db.query(PluginInstallationORM)
                 .filter(PluginInstallationORM.package_id == package_id)
+                .filter(PluginInstallationORM.tenant_id == tid)
                 .first()
             )
             if row is None:
-                row = PluginInstallationORM(package_id=package_id)
+                row = PluginInstallationORM(package_id=package_id, tenant_id=tid)
                 db.add(row)
             row.name = name
             row.version = version
             row.manifest_path = manifest_path
             row.enabled = 1 if enabled else 0
             row.installed_by = installed_by
+            row.tenant_id = tid
             db.flush()
             return row
 
-    def get_installation(self, package_id: str) -> Optional[PluginInstallationORM]:
+    def get_installation(self, package_id: str, tenant_id: Optional[str] = None) -> Optional[PluginInstallationORM]:
+        tid = self._eff_tid(tenant_id)
         with db_session() as db:
             return (
                 db.query(PluginInstallationORM)
                 .filter(PluginInstallationORM.package_id == package_id)
+                .filter(PluginInstallationORM.tenant_id == tid)
                 .first()
             )
 
-    def list_installations(self) -> List[PluginInstallationORM]:
+    def list_installations(self, tenant_id: Optional[str] = None) -> List[PluginInstallationORM]:
+        tid = self._eff_tid(tenant_id)
         with db_session() as db:
-            return db.query(PluginInstallationORM).order_by(PluginInstallationORM.updated_at.desc()).all()
+            return (
+                db.query(PluginInstallationORM)
+                .filter(PluginInstallationORM.tenant_id == tid)
+                .order_by(PluginInstallationORM.updated_at.desc())
+                .all()
+            )
 
-    def set_installation_enabled(self, package_id: str, enabled: bool) -> bool:
+    def set_installation_enabled(self, package_id: str, enabled: bool, tenant_id: Optional[str] = None) -> bool:
+        tid = self._eff_tid(tenant_id)
         with db_session() as db:
             row = (
                 db.query(PluginInstallationORM)
                 .filter(PluginInstallationORM.package_id == package_id)
+                .filter(PluginInstallationORM.tenant_id == tid)
                 .first()
             )
             if row is None:

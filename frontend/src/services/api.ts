@@ -2055,6 +2055,8 @@ export async function generateAgentFromNl(body: {
 
 export interface McpServerRecord {
   id: string
+  /** 后端租户命名空间（与请求上下文一致） */
+  tenant_id?: string
   name: string
   description: string
   transport?: 'stdio' | 'http'

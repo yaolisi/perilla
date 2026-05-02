@@ -7,6 +7,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from core.plugins.base import Plugin
 from core.rag.runtime_multi_hop import run_multi_hop_retrieval
 from core.plugins.context import PluginContext
+from core.knowledge.knowledge_base_store import DEFAULT_KB_TENANT_ID
+from core.utils.user_context import ResourceNotFoundError, UserAccessDeniedError
 from core.types import Message
 from log import logger
 
@@ -243,10 +245,19 @@ class RAGPlugin(Plugin):
         embedding_model_ids = set()
         kb_infos = {}
         for kb_id in kb_ids:
-            kb_info = context.knowledge_base_store.get_knowledge_base(kb_id)
+            uid = context.user_id or "default"
+            tid = (context.tenant_id or DEFAULT_KB_TENANT_ID).strip() or DEFAULT_KB_TENANT_ID
+            try:
+                kb_info = context.knowledge_base_store.get_knowledge_base(
+                    kb_id, user_id=uid, tenant_id=tid
+                )
+            except (ResourceNotFoundError, UserAccessDeniedError):
+                kb_info = None
             if not kb_info:
                 if context.logger:
-                    context.logger.warning(f"[RAGPlugin] Knowledge base '{kb_id}' not found, skipping")
+                    context.logger.warning(
+                        f"[RAGPlugin] Knowledge base '{kb_id}' not found or access denied, skipping"
+                    )
                 continue
             kb_infos[kb_id] = kb_info
             embedding_model_ids.add(kb_info["embedding_model_id"])

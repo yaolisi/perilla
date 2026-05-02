@@ -13,6 +13,7 @@ class AgentSession(Base):
     session_id = Column(String, primary_key=True)
     agent_id = Column(String, nullable=False)
     user_id = Column(String, nullable=False)
+    tenant_id = Column(String(128), nullable=False, default="default", server_default="default")
     trace_id = Column(String)
     status = Column(String, nullable=False)
     step = Column(Integer, default=0, nullable=False)
@@ -38,4 +39,5 @@ class AgentSession(Base):
         Index('idx_agent_sessions_user_created', 'user_id', 'created_at'),
         Index('idx_agent_sessions_user_updated', 'user_id', 'updated_at'),
         Index('idx_agent_sessions_user_agent_updated', 'user_id', 'agent_id', 'updated_at'),
+        Index('idx_agent_sessions_user_tenant_updated', 'user_id', 'tenant_id', 'updated_at'),
     )

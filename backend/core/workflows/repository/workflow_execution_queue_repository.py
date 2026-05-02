@@ -18,7 +18,17 @@ class WorkflowExecutionQueueRepository:
         for key, value in fields.items():
             setattr(row, key, value)
 
-    def enqueue(self, *, execution_id: str, workflow_id: str, version_id: str, priority: int, queue_order: int) -> None:
+    def enqueue(
+        self,
+        *,
+        execution_id: str,
+        workflow_id: str,
+        version_id: str,
+        tenant_id: str = "default",
+        priority: int,
+        queue_order: int,
+    ) -> None:
+        tid = (str(tenant_id).strip() or "default")
         row = (
             self.db.query(WorkflowExecutionQueueORM)
             .filter(WorkflowExecutionQueueORM.execution_id == execution_id)
@@ -28,6 +38,7 @@ class WorkflowExecutionQueueRepository:
         if row:
             self._set_row_fields(
                 row,
+                tenant_id=tid,
                 workflow_id=workflow_id,
                 version_id=version_id,
                 priority=int(priority),
@@ -40,6 +51,7 @@ class WorkflowExecutionQueueRepository:
         else:
             row = WorkflowExecutionQueueORM(
                 id=str(uuid.uuid4()),
+                tenant_id=tid,
                 execution_id=execution_id,
                 workflow_id=workflow_id,
                 version_id=version_id,

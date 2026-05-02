@@ -15,6 +15,7 @@ from log import logger, log_structured
 from pydantic import BaseModel, Field
 
 from api.errors import raise_api_error
+from core.utils.user_context import ResourceNotFoundError, UserAccessDeniedError
 from api.stream_resume_store import get_stream_resume_store, iter_resume_chunks
 from api.streaming_gzip import gzip_async_str_iterator
 from config.settings import settings
@@ -130,6 +131,7 @@ def _schedule_memory_extraction(
     assistant_text: str,
     completion_id: str,
     stream: bool,
+    tenant_id: str,
 ) -> None:
     task = asyncio.create_task(
         _memory_extractor.extract_and_store(
@@ -138,6 +140,7 @@ def _schedule_memory_extraction(
             user_text=user_text,
             assistant_text=assistant_text,
             meta={"completion_id": completion_id, "model": model_id, "stream": stream},
+            tenant_id=tenant_id,
         )
     )
     _background_tasks.add(task)
@@ -227,14 +230,9 @@ def _get_user_id(request: Request) -> str:
 
 def _tenant_id(request: Request) -> str:
     """与 TenantContextMiddleware 对齐；异步任务 detached Request 无 state 时回落读 Header。"""
-    tid = getattr(request.state, "tenant_id", None)
-    if isinstance(tid, str) and tid.strip():
-        return tid.strip()
-    hdr = getattr(settings, "tenant_header_name", "X-Tenant-Id")
-    from_hdr = (request.headers.get(hdr) or "").strip()
-    if from_hdr:
-        return from_hdr
-    return str(getattr(settings, "tenant_default_id", "default") or "default").strip() or "default"
+    from core.utils.tenant_request import get_effective_tenant_id
+
+    return get_effective_tenant_id(request)
 
 
 def _normalized_persistence_mode() -> str:
@@ -470,7 +468,13 @@ def _resolve_model_for_request(req: ChatCompletionRequest, request: Request, use
     return actual_model_id
 
 
-def _collect_kb_infos(req: ChatCompletionRequest, temp_kb_store: Any) -> dict[str, dict]:
+def _collect_kb_infos(
+    req: ChatCompletionRequest,
+    temp_kb_store: Any,
+    *,
+    user_id: str,
+    tenant_id: str,
+) -> dict[str, dict]:
     kb_ids: list[str] = []
     if req.rag and req.rag.knowledge_base_ids:
         kb_ids.extend(req.rag.knowledge_base_ids)
@@ -481,9 +485,14 @@ def _collect_kb_infos(req: ChatCompletionRequest, temp_kb_store: Any) -> dict[st
 
     kb_infos: dict[str, dict] = {}
     for kb_id in kb_ids:
-        kb_info = temp_kb_store.get_knowledge_base(kb_id)
+        try:
+            kb_info = temp_kb_store.get_knowledge_base(
+                kb_id, user_id=user_id, tenant_id=tenant_id
+            )
+        except (ResourceNotFoundError, UserAccessDeniedError):
+            kb_info = None
         if not kb_info:
-            logger.warning(f"[RAG] Knowledge base '{kb_id}' not found, skipping")
+            logger.warning(f"[RAG] Knowledge base '{kb_id}' not found or access denied, skipping")
             continue
         kb_infos[kb_id] = kb_info
     if not kb_infos:
@@ -541,6 +550,7 @@ def _build_rag_plugin_context(
     *,
     session_id: Optional[str],
     user_id: str,
+    tenant_id: str,
     message_id: str,
     model_registry: Any,
     kb_store: Any,
@@ -552,6 +562,7 @@ def _build_rag_plugin_context(
     return PluginContext(
         session_id=session_id,
         user_id=user_id,
+        tenant_id=tenant_id,
         message_id=message_id,
         logger=logger,
         memory=memory_store,
@@ -567,6 +578,7 @@ async def _apply_rag_plugin_if_needed(
     *,
     session_id: Optional[str],
     user_id: str,
+    tenant_id: str,
     message_id: str,
 ) -> tuple[Optional[str], int, Optional[dict[str, Any]]]:
     if not req.rag:
@@ -579,11 +591,14 @@ async def _apply_rag_plugin_if_needed(
         temp_kb_store = KnowledgeBaseStore(
             KnowledgeBaseConfig(db_path=_db_path, embedding_dim=settings.memory_embedding_dim)
         )
-        kb_infos = _collect_kb_infos(req, temp_kb_store)
+        kb_infos = _collect_kb_infos(
+            req, temp_kb_store, user_id=user_id, tenant_id=tenant_id
+        )
         kb_store = _build_kb_store(model_registry, kb_infos)
         plugin_context = _build_rag_plugin_context(
             session_id=session_id,
             user_id=user_id,
+            tenant_id=tenant_id,
             message_id=message_id,
             model_registry=model_registry,
             kb_store=kb_store,
@@ -847,6 +862,7 @@ async def _stream_on_success(
     full_text: str,
     stream_start: float,
     persist_success_turn: Callable[[str, bool], Optional[Any]],
+    tenant_id: str,
 ) -> None:
     model_id = cast(str, req.model)
     duration_ms = round((time.perf_counter() - stream_start) * 1000, 2)
@@ -875,6 +891,7 @@ async def _stream_on_success(
                     assistant_text=final_text,
                     completion_id=completion_id,
                     stream=True,
+                    tenant_id=tenant_id,
                 )
             else:
                 logger.info(f"Client disconnected for {completion_id}, skipping memory extraction")
@@ -1292,6 +1309,7 @@ async def _stream_event_generator(
                 full_text=full_text,
                 stream_start=stream_start,
                 persist_success_turn=persist_success_turn,
+                tenant_id=tenant_id,
             )
             routing_meta = getattr(request.state, "chat_routing_metadata", None)
             final_metadata: dict[str, Any] = {}
@@ -1407,6 +1425,7 @@ async def _handle_nonstream_chat(
     user_text: str,
     user_id: str,
     persist_success_turn: Callable[[str, bool], Optional[Any]],
+    tenant_id: str,
 ) -> ChatCompletionResponse:
     model_id = cast(str, req.model)
     log_structured("Chat", "chat_llm_start", model_id=model_id, session_id=session_id or "", stream=False, completion_id=completion_id)
@@ -1451,6 +1470,7 @@ async def _handle_nonstream_chat(
             assistant_text=content,
             completion_id=completion_id,
             stream=False,
+            tenant_id=tenant_id,
         )
 
     if session_id:
@@ -1526,6 +1546,7 @@ async def _prepare_chat_runtime_context(
         req,
         session_id=session_id,
         user_id=user_id,
+        tenant_id=tenant_id,
         message_id=message_id,
     )
 
@@ -1810,6 +1831,7 @@ async def chat_completions(
         user_text=user_text,
         user_id=user_id,
         persist_success_turn=_persist_success_turn,
+        tenant_id=tenant_id,
     )
 
 
@@ -1916,6 +1938,7 @@ async def chat_completions_async_submit(req: ChatCompletionRequest, request: Req
     # 复制最小请求上下文，避免背景任务依赖已结束的连接对象。
     headers = dict(request.headers)
     state_obj = type("State", (), {})()
+    state_obj.tenant_id = _tenant_id(request)
 
     class _DetachedRequest:
         def __init__(self, detached_headers: dict[str, str], detached_state: Any):

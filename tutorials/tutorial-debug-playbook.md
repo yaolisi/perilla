@@ -30,6 +30,8 @@
 curl -i -s -c /tmp/ov_cookie.txt http://127.0.0.1:8000/api/health | tee /tmp/ov_headers.txt
 ```
 
+若返回 **400** 且文案含 **`tenant id required for protected path`**：说明路径落在租户强制前缀内（清单见 **`backend/middleware/tenant_paths.py`**），必须在请求中加 **`-H "X-Tenant-Id: <tenant>"`**，并与 API Key 的租户绑定一致；详解 **tutorial.md §10.4**。
+
 ---
 
 ## 2.2 `404`（资源查不到）

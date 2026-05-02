@@ -1,7 +1,7 @@
 """
 插件市场 ORM 模型。
 """
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Column, DateTime, Integer, String, Text, UniqueConstraint, Index
 from sqlalchemy.sql import func
 
 from core.data.base import Base
@@ -31,8 +31,13 @@ class PluginPackageORM(Base):
 
 class PluginInstallationORM(Base):
     __tablename__ = "plugin_installations"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "package_id", name="uq_plugin_installations_tenant_package"),
+        Index("idx_plugin_installations_tenant_updated", "tenant_id", "updated_at"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(128), nullable=False, default="default", index=True)
     package_id = Column(String(128), nullable=False, index=True)
     name = Column(String(256), nullable=False, index=True)
     version = Column(String(64), nullable=False, index=True)

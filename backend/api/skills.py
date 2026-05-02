@@ -201,12 +201,14 @@ async def api_delete_skill(skill_id: str) -> SkillDeleteApiResponse:
 
 @router.post("/{skill_id}/execute")
 async def api_execute_skill(
-    request: Request, skill_id: str, body: ExecuteSkillBody
+    http_request: Request, skill_id: str, body: ExecuteSkillBody
 ) -> SkillExecuteApiResponse:
     """执行 Skill（供 Agent Runtime 使用）。返回 type + output（及可选的 error / prompt）。"""
     from core.skills.contract import SkillExecutionRequest
+    from core.utils.tenant_request import resolve_api_tenant_id
 
-    user_id = get_user_id(request)
+    user_id = get_user_id(http_request)
+    tenant_id = resolve_api_tenant_id(http_request)
     
     skill = get_skill(skill_id)
     if not skill:
@@ -226,17 +228,17 @@ async def api_execute_skill(
             details={"skill_id": skill_id, "blocked_skill": blocked[0]},
         )
     
-    # 构建执行请求
-    request = SkillExecutionRequest(
+    exec_req = SkillExecutionRequest(
         skill_id=skill_id,
         input=body.inputs.model_dump(mode="json"),
         trace_id=f"api_{skill_id}",
         caller_id="api",
+        tenant_id=tenant_id,
         metadata={"user_id": user_id} if user_id else {},
     )
     
     # 使用 SkillExecutor 统一入口执行
-    response = await SkillExecutor.execute(request)
+    response = await SkillExecutor.execute(exec_req)
     
     # 转换响应格式
     if response.status == "success":

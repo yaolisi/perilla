@@ -31,6 +31,14 @@ class WorkflowExecutionRepository:
         self.db = db
 
     @staticmethod
+    def _filter_tenant(q, tenant_id: Optional[str]):
+        """tenant_id 为 None 时不追加过滤（兼容内部路径）；否则按租户过滤存储行。"""
+        if tenant_id is None:
+            return q
+        tid = (str(tenant_id).strip() or "default")
+        return q.filter(WorkflowExecutionORM.tenant_id == tid)
+
+    @staticmethod
     def _set_row_fields(row: WorkflowExecutionORM, **fields: object) -> None:
         for key, value in fields.items():
             setattr(row, key, value)
@@ -99,8 +107,11 @@ class WorkflowExecutionRepository:
         except Exception:
             node_states = []
 
+        orm_tid = getattr(row_any, "tenant_id", None)
+        eff_tid = (str(orm_tid).strip() if orm_tid else "") or "default"
         return WorkflowExecution(
             execution_id=cast(str, row_any.execution_id),
+            tenant_id=eff_tid,
             workflow_id=cast(str, row_any.workflow_id),
             version_id=cast(str, row_any.version_id),
             graph_instance_id=cast(Optional[str], row_any.graph_instance_id),
@@ -129,6 +140,7 @@ class WorkflowExecutionRepository:
         def _write() -> None:
             orm = WorkflowExecutionORM(
                 execution_id=execution.execution_id,
+                tenant_id=(str(execution.tenant_id).strip() or "default"),
                 workflow_id=execution.workflow_id,
                 version_id=execution.version_id,
                 graph_instance_id=execution.graph_instance_id,
@@ -157,12 +169,10 @@ class WorkflowExecutionRepository:
         logger.info(f"[WorkflowExecutionRepository] Created execution: {execution.execution_id}")
         return execution
 
-    def get_by_id(self, execution_id: str) -> Optional[WorkflowExecution]:
-        row = (
-            self.db.query(WorkflowExecutionORM)
-            .filter(WorkflowExecutionORM.execution_id == execution_id)
-            .first()
-        )
+    def get_by_id(self, execution_id: str, tenant_id: Optional[str] = None) -> Optional[WorkflowExecution]:
+        q = self.db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.execution_id == execution_id)
+        q = self._filter_tenant(q, tenant_id)
+        row = q.first()
         return self._deserialize_from_orm(row) if row else None
 
     def list_executions(
@@ -171,10 +181,12 @@ class WorkflowExecutionRepository:
         version_id: Optional[str] = None,
         state: Optional[WorkflowExecutionState] = None,
         trigger_type: Optional[str] = None,
+        tenant_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[WorkflowExecution]:
         q = self.db.query(WorkflowExecutionORM)
+        q = self._filter_tenant(q, tenant_id)
         if workflow_id:
             q = q.filter(WorkflowExecutionORM.workflow_id == workflow_id)
         if version_id:
@@ -197,8 +209,10 @@ class WorkflowExecutionRepository:
         version_id: Optional[str] = None,
         state: Optional[WorkflowExecutionState] = None,
         trigger_type: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> int:
         q = self.db.query(WorkflowExecutionORM)
+        q = self._filter_tenant(q, tenant_id)
         if workflow_id:
             q = q.filter(WorkflowExecutionORM.workflow_id == workflow_id)
         if version_id:
@@ -215,13 +229,14 @@ class WorkflowExecutionRepository:
         state: WorkflowExecutionState,
         error_message: Optional[str] = None,
         error_details: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Optional[WorkflowExecution]:
         def _write() -> None:
-            row = (
-                self.db.query(WorkflowExecutionORM)
-                .filter(WorkflowExecutionORM.execution_id == execution_id)
-                .first()
+            q = self.db.query(WorkflowExecutionORM).filter(
+                WorkflowExecutionORM.execution_id == execution_id
             )
+            q = self._filter_tenant(q, tenant_id)
+            row = q.first()
             if not row:
                 return
 
@@ -255,30 +270,31 @@ class WorkflowExecutionRepository:
 
             self.db.commit()
 
-        existing = self.get_by_id(execution_id)
+        existing = self.get_by_id(execution_id, tenant_id)
         if not existing:
             return None
         self._run_write_with_retry("update_state", _write)
         logger.info(f"[WorkflowExecutionRepository] Updated execution state: {execution_id} -> {state.value}")
-        return self.get_by_id(execution_id)
+        return self.get_by_id(execution_id, tenant_id)
 
     def update_node_states(
         self,
         execution_id: str,
         node_states: List[WorkflowExecutionNode],
+        tenant_id: Optional[str] = None,
     ) -> Optional[WorkflowExecution]:
         import json
 
-        existing = self.get_by_id(execution_id)
+        existing = self.get_by_id(execution_id, tenant_id)
         if not existing:
             return None
 
         def _write() -> None:
-            row = (
-                self.db.query(WorkflowExecutionORM)
-                .filter(WorkflowExecutionORM.execution_id == execution_id)
-                .first()
+            q = self.db.query(WorkflowExecutionORM).filter(
+                WorkflowExecutionORM.execution_id == execution_id
             )
+            q = self._filter_tenant(q, tenant_id)
+            row = q.first()
             if not row:
                 return
             # use JSON mode to convert datetime/enum into serializable primitives
@@ -289,45 +305,45 @@ class WorkflowExecutionRepository:
             self.db.commit()
 
         self._run_write_with_retry("update_node_states", _write)
-        return self.get_by_id(execution_id)
+        return self.get_by_id(execution_id, tenant_id)
 
-    def update_output(self, execution_id: str, output_data: Dict[str, Any]) -> Optional[WorkflowExecution]:
-        existing = self.get_by_id(execution_id)
+    def update_output(self, execution_id: str, output_data: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[WorkflowExecution]:
+        existing = self.get_by_id(execution_id, tenant_id)
         if not existing:
             return None
 
         def _write() -> None:
-            row = (
-                self.db.query(WorkflowExecutionORM)
-                .filter(WorkflowExecutionORM.execution_id == execution_id)
-                .first()
+            q = self.db.query(WorkflowExecutionORM).filter(
+                WorkflowExecutionORM.execution_id == execution_id
             )
+            q = self._filter_tenant(q, tenant_id)
+            row = q.first()
             if not row:
                 return
             self._set_row_fields(row, output_data=output_data)
             self.db.commit()
 
         self._run_write_with_retry("update_output", _write)
-        return self.get_by_id(execution_id)
+        return self.get_by_id(execution_id, tenant_id)
 
-    def update_global_context(self, execution_id: str, global_context: Dict[str, Any]) -> Optional[WorkflowExecution]:
-        existing = self.get_by_id(execution_id)
+    def update_global_context(self, execution_id: str, global_context: Dict[str, Any], tenant_id: Optional[str] = None) -> Optional[WorkflowExecution]:
+        existing = self.get_by_id(execution_id, tenant_id)
         if not existing:
             return None
 
         def _write() -> None:
-            row = (
-                self.db.query(WorkflowExecutionORM)
-                .filter(WorkflowExecutionORM.execution_id == execution_id)
-                .first()
+            q = self.db.query(WorkflowExecutionORM).filter(
+                WorkflowExecutionORM.execution_id == execution_id
             )
+            q = self._filter_tenant(q, tenant_id)
+            row = q.first()
             if not row:
                 return
             self._set_row_fields(row, global_context=global_context or {})
             self.db.commit()
 
         self._run_write_with_retry("update_global_context", _write)
-        return self.get_by_id(execution_id)
+        return self.get_by_id(execution_id, tenant_id)
 
     def update_queue_metrics(
         self,
@@ -336,17 +352,18 @@ class WorkflowExecutionRepository:
         queue_position: Optional[int] = None,
         queued_at: Optional[datetime] = None,
         wait_duration_ms: Optional[int] = None,
+        tenant_id: Optional[str] = None,
     ) -> Optional[WorkflowExecution]:
-        existing = self.get_by_id(execution_id)
+        existing = self.get_by_id(execution_id, tenant_id)
         if not existing:
             return None
 
         def _write() -> None:
-            row = (
-                self.db.query(WorkflowExecutionORM)
-                .filter(WorkflowExecutionORM.execution_id == execution_id)
-                .first()
+            q = self.db.query(WorkflowExecutionORM).filter(
+                WorkflowExecutionORM.execution_id == execution_id
             )
+            q = self._filter_tenant(q, tenant_id)
+            row = q.first()
             if not row:
                 return
             if queue_position is not None:
@@ -358,51 +375,55 @@ class WorkflowExecutionRepository:
             self.db.commit()
 
         self._run_write_with_retry("update_queue_metrics", _write)
-        return self.get_by_id(execution_id)
+        return self.get_by_id(execution_id, tenant_id)
 
-    def update_graph_instance_id(self, execution_id: str, graph_instance_id: str) -> Optional[WorkflowExecution]:
-        existing = self.get_by_id(execution_id)
+    def update_graph_instance_id(self, execution_id: str, graph_instance_id: str, tenant_id: Optional[str] = None) -> Optional[WorkflowExecution]:
+        existing = self.get_by_id(execution_id, tenant_id)
         if not existing:
             return None
 
         def _write() -> None:
-            row = (
-                self.db.query(WorkflowExecutionORM)
-                .filter(WorkflowExecutionORM.execution_id == execution_id)
-                .first()
+            q = self.db.query(WorkflowExecutionORM).filter(
+                WorkflowExecutionORM.execution_id == execution_id
             )
+            q = self._filter_tenant(q, tenant_id)
+            row = q.first()
             if not row:
                 return
             self._set_row_fields(row, graph_instance_id=graph_instance_id)
             self.db.commit()
 
         self._run_write_with_retry("update_graph_instance_id", _write)
-        return self.get_by_id(execution_id)
+        return self.get_by_id(execution_id, tenant_id)
 
-    def get_running_executions(self, workflow_id: Optional[str] = None) -> List[WorkflowExecution]:
+    def get_running_executions(
+        self, workflow_id: Optional[str] = None, tenant_id: Optional[str] = None
+    ) -> List[WorkflowExecution]:
         q = self.db.query(WorkflowExecutionORM).filter(
             WorkflowExecutionORM.state == WorkflowExecutionState.RUNNING.value
         )
+        q = self._filter_tenant(q, tenant_id)
         if workflow_id:
             q = q.filter(WorkflowExecutionORM.workflow_id == workflow_id)
         rows = q.order_by(WorkflowExecutionORM.started_at.desc()).all()
         return [self._deserialize_from_orm(r) for r in rows]
 
-    def count_by_state(self, workflow_id: str, state: Optional[WorkflowExecutionState] = None) -> int:
+    def count_by_state(
+        self, workflow_id: str, state: Optional[WorkflowExecutionState] = None, tenant_id: Optional[str] = None
+    ) -> int:
         q = self.db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.workflow_id == workflow_id)
+        q = self._filter_tenant(q, tenant_id)
         if state:
             q = q.filter(WorkflowExecutionORM.state == state.value)
         return cast(int, q.count())
 
-    def delete_old_executions(self, workflow_id: str, keep_count: int = 100) -> int:
+    def delete_old_executions(self, workflow_id: str, keep_count: int = 100, tenant_id: Optional[str] = None) -> int:
         # keep newest N by created_at
-        rows = (
-            self.db.query(WorkflowExecutionORM.execution_id)
-            .filter(WorkflowExecutionORM.workflow_id == workflow_id)
-            .order_by(WorkflowExecutionORM.created_at.desc())
-            .offset(keep_count)
-            .all()
+        q = self.db.query(WorkflowExecutionORM.execution_id).filter(
+            WorkflowExecutionORM.workflow_id == workflow_id
         )
+        q = self._filter_tenant(q, tenant_id)
+        rows = q.order_by(WorkflowExecutionORM.created_at.desc()).offset(keep_count).all()
         ids = [r[0] for r in rows]
         if not ids:
             return 0
@@ -410,19 +431,17 @@ class WorkflowExecutionRepository:
 
         def _write() -> None:
             nonlocal deleted
-            deleted = (
-                self.db.query(WorkflowExecutionORM)
-                .filter(WorkflowExecutionORM.execution_id.in_(ids))
-                .delete(synchronize_session=False)
-            )
+            dq = self.db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.execution_id.in_(ids))
+            dq = self._filter_tenant(dq, tenant_id)
+            deleted = dq.delete(synchronize_session=False)
             self.db.commit()
 
         self._run_write_with_retry("delete_old_executions", _write)
         logger.info(f"[WorkflowExecutionRepository] Deleted {deleted} old executions for workflow: {workflow_id}")
         return int(deleted or 0)
 
-    def delete_by_id(self, execution_id: str) -> bool:
-        existing = self.get_by_id(execution_id)
+    def delete_by_id(self, execution_id: str, tenant_id: Optional[str] = None) -> bool:
+        existing = self.get_by_id(execution_id, tenant_id)
         if not existing:
             return False
 
@@ -430,11 +449,9 @@ class WorkflowExecutionRepository:
 
         def _write() -> None:
             nonlocal deleted
-            deleted = (
-                self.db.query(WorkflowExecutionORM)
-                .filter(WorkflowExecutionORM.execution_id == execution_id)
-                .delete(synchronize_session=False)
-            )
+            q = self.db.query(WorkflowExecutionORM).filter(WorkflowExecutionORM.execution_id == execution_id)
+            q = self._filter_tenant(q, tenant_id)
+            deleted = q.delete(synchronize_session=False)
             self.db.commit()
 
         self._run_write_with_retry("delete_by_id", _write)

@@ -27,7 +27,7 @@
 | **404**（资源刚创建却查不到） | [tutorial.md](tutorial.md) → **多租户**；核对 `X-Tenant-Id` |
 | **429** | 限流与 Agent 上传并发；见主教程对应小节 |
 | **409**（幂等冲突） | 主教程「Idempotency-Key」 |
-| **400** `tenant id required` | 主教程 **system 写接口与租户头** |
+| **400** `tenant id required` | 主教程 **§10.4 租户强制路径**（含 chat/sessions/memory 等，不单 system） |
 | Workflow 停在 **PAUSED** | `approval` 节点与审批 API；见主教程 |
 | 知识库文档多、列表卡 | 文档数大于阈值时分页；见主教程 |
 | Workflow 节点多、画布卡 | 大图渲染优化说明；见主教程 |

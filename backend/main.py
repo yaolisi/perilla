@@ -406,6 +406,7 @@ def _initialize_database_tables() -> None:
             PluginInstallationORM,
         )
         from core.data.models.audit import AuditLogORM  # noqa: F401
+        from core.data.models.idempotency import IdempotencyRecordORM  # noqa: F401
         from core.data.models.workflow import WorkflowExecutionQueueORM  # noqa: F401
         from sqlalchemy import text
 
@@ -423,6 +424,61 @@ def _initialize_database_tables() -> None:
                     conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN queued_at TIMESTAMP"))
                 if "wait_duration_ms" not in cols:
                     conn.execute(text("ALTER TABLE workflow_executions ADD COLUMN wait_duration_ms INTEGER"))
+                if "tenant_id" not in cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE workflow_executions ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                        )
+                    )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_workflow_executions_tenant_workflow "
+                        "ON workflow_executions (tenant_id, workflow_id)"
+                    )
+                )
+            if "workflow_execution_queue" in insp.get_table_names():
+                q_cols = {c["name"] for c in insp.get_columns("workflow_execution_queue")}
+                if "tenant_id" not in q_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE workflow_execution_queue ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                        )
+                    )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_workflow_execution_queue_tenant "
+                        "ON workflow_execution_queue (tenant_id)"
+                    )
+                )
+            if "workflow_approval_tasks" in insp.get_table_names():
+                ap_cols = {c["name"] for c in insp.get_columns("workflow_approval_tasks")}
+                if "tenant_id" not in ap_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE workflow_approval_tasks ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                        )
+                    )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_workflow_approval_tasks_tenant_execution "
+                        "ON workflow_approval_tasks (tenant_id, execution_id)"
+                    )
+                )
+            if "workflow_governance_audits" in insp.get_table_names():
+                ga_cols = {c["name"] for c in insp.get_columns("workflow_governance_audits")}
+                if "tenant_id" not in ga_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE workflow_governance_audits "
+                            "ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                        )
+                    )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_workflow_governance_audits_tenant_workflow "
+                        "ON workflow_governance_audits (tenant_id, workflow_id)"
+                    )
+                )
             if "audit_logs" in insp.get_table_names():
                 audit_cols = {c["name"] for c in insp.get_columns("audit_logs")}
                 if audit_cols and "tenant_id" not in audit_cols:
@@ -435,6 +491,200 @@ def _initialize_database_tables() -> None:
                     conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN transport VARCHAR(32) DEFAULT 'stdio'"))
                 if "base_url" not in mcp_cols:
                     conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN base_url TEXT"))
+                if "tenant_id" not in mcp_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE mcp_servers ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                        )
+                    )
+                conn.execute(
+                    text("CREATE INDEX IF NOT EXISTS ix_mcp_servers_tenant_id ON mcp_servers (tenant_id)")
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_mcp_servers_tenant_updated "
+                        "ON mcp_servers (tenant_id, updated_at)"
+                    )
+                )
+            if "agent_sessions" in insp.get_table_names():
+                as_cols = {c["name"] for c in insp.get_columns("agent_sessions")}
+                if "tenant_id" not in as_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE agent_sessions ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                        )
+                    )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_tenant_updated "
+                        "ON agent_sessions (user_id, tenant_id, updated_at)"
+                    )
+                )
+            if "agent_traces" in insp.get_table_names():
+                at_cols = {c["name"] for c in insp.get_columns("agent_traces")}
+                if "tenant_id" not in at_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE agent_traces ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                        )
+                    )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_agent_traces_session_tenant "
+                        "ON agent_traces (session_id, tenant_id)"
+                    )
+                )
+            if "idempotency_records" in insp.get_table_names():
+                idem_cols = {c["name"] for c in insp.get_columns("idempotency_records")}
+                if "tenant_id" not in idem_cols:
+                    dialect = conn.engine.dialect.name
+                    if dialect == "sqlite":
+                        conn.execute(
+                            text(
+                                """
+CREATE TABLE idempotency_records__new (
+    id VARCHAR(36) NOT NULL,
+    tenant_id VARCHAR(128) NOT NULL DEFAULT 'default',
+    scope VARCHAR(64) NOT NULL,
+    owner_id VARCHAR(128) NOT NULL,
+    idempotency_key VARCHAR(256) NOT NULL,
+    request_hash VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    response_ref VARCHAR(128),
+    error_message TEXT,
+    expire_at DATETIME,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT uq_idem_tenant_scope_owner_key UNIQUE (tenant_id, scope, owner_id, idempotency_key)
+)
+"""
+                            )
+                        )
+                        conn.execute(
+                            text(
+                                """
+INSERT INTO idempotency_records__new (
+    id, tenant_id, scope, owner_id, idempotency_key, request_hash, status,
+    response_ref, error_message, expire_at, created_at, updated_at
+)
+SELECT
+    id, 'default', scope, owner_id, idempotency_key, request_hash, status,
+    response_ref, error_message, expire_at, created_at, updated_at
+FROM idempotency_records
+"""
+                            )
+                        )
+                        conn.execute(text("DROP TABLE idempotency_records"))
+                        conn.execute(text("ALTER TABLE idempotency_records__new RENAME TO idempotency_records"))
+                        for ix_sql in (
+                            "CREATE INDEX IF NOT EXISTS ix_idempotency_records_tenant_id ON idempotency_records (tenant_id)",
+                            "CREATE INDEX IF NOT EXISTS ix_idempotency_records_scope ON idempotency_records (scope)",
+                            "CREATE INDEX IF NOT EXISTS ix_idempotency_records_owner_id ON idempotency_records (owner_id)",
+                            "CREATE INDEX IF NOT EXISTS ix_idempotency_records_status ON idempotency_records (status)",
+                            "CREATE INDEX IF NOT EXISTS ix_idempotency_records_response_ref ON idempotency_records (response_ref)",
+                            "CREATE INDEX IF NOT EXISTS ix_idempotency_records_expire_at ON idempotency_records (expire_at)",
+                            "CREATE INDEX IF NOT EXISTS ix_idempotency_records_created_at ON idempotency_records (created_at)",
+                        ):
+                            conn.execute(text(ix_sql))
+                    elif dialect == "postgresql":
+                        conn.execute(
+                            text(
+                                "ALTER TABLE idempotency_records "
+                                "ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                            )
+                        )
+                        conn.execute(text("ALTER TABLE idempotency_records DROP CONSTRAINT IF EXISTS uq_idem_scope_owner_key"))
+                        conn.execute(
+                            text(
+                                "ALTER TABLE idempotency_records ADD CONSTRAINT "
+                                "uq_idem_tenant_scope_owner_key UNIQUE (tenant_id, scope, owner_id, idempotency_key)"
+                            )
+                        )
+                        conn.execute(
+                            text(
+                                "CREATE INDEX IF NOT EXISTS ix_idempotency_records_tenant_id "
+                                "ON idempotency_records (tenant_id)"
+                            )
+                        )
+                    elif dialect in ("mysql", "mariadb"):
+                        conn.execute(
+                            text(
+                                "ALTER TABLE idempotency_records "
+                                "ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                            )
+                        )
+                        conn.execute(text("ALTER TABLE idempotency_records DROP INDEX uq_idem_scope_owner_key"))
+                        conn.execute(
+                            text(
+                                "ALTER TABLE idempotency_records ADD CONSTRAINT "
+                                "uq_idem_tenant_scope_owner_key UNIQUE (tenant_id, scope, owner_id, idempotency_key)"
+                            )
+                        )
+                        conn.execute(
+                            text(
+                                "CREATE INDEX IF NOT EXISTS ix_idempotency_records_tenant_id "
+                                "ON idempotency_records (tenant_id)"
+                            )
+                        )
+            if "plugin_installations" in insp.get_table_names():
+                pi_cols = {c["name"] for c in insp.get_columns("plugin_installations")}
+                if "tenant_id" not in pi_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE plugin_installations ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                        )
+                    )
+                conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS uq_plugin_installations_tenant_package "
+                        "ON plugin_installations (tenant_id, package_id)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_plugin_installations_tenant_updated "
+                        "ON plugin_installations (tenant_id, updated_at)"
+                    )
+                )
+            if "image_generation_jobs" in insp.get_table_names():
+                ig_cols = {c["name"] for c in insp.get_columns("image_generation_jobs")}
+                if "tenant_id" not in ig_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE image_generation_jobs ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                        )
+                    )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_image_generation_jobs_tenant_id ON image_generation_jobs (tenant_id)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_image_generation_jobs_tenant_created "
+                        "ON image_generation_jobs (tenant_id, created_at)"
+                    )
+                )
+            if "image_generation_warmups" in insp.get_table_names():
+                iw_cols = {c["name"] for c in insp.get_columns("image_generation_warmups")}
+                if "tenant_id" not in iw_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE image_generation_warmups ADD COLUMN tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'"
+                        )
+                    )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_image_generation_warmups_tenant_id ON image_generation_warmups (tenant_id)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_image_generation_warmups_tenant_model_latest "
+                        "ON image_generation_warmups (tenant_id, model, latest)"
+                    )
+                )
             conn.commit()
         logger.info("Database tables initialized")
     except Exception as e:

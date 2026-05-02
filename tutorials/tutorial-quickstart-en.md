@@ -128,6 +128,7 @@ Input: `slow_threshold_seconds` (positive integer).
 | Symptom | Action |
 |---------|--------|
 | `403 CSRF token validation failed` | `GET /api/health` first; resend with cookie + `X-CSRF-Token` |
+| **400** `tenant id required for protected path` | Path under tenant enforcement prefixes (**`backend/middleware/tenant_paths.py`**); send `-H "X-Tenant-Id: ..."` — see **tutorial.md §10.4** |
 | Workflow **403/404** | Check `X-Tenant-Id`, namespace, key–tenant binding |
 | **429** | Lower request rate or tune rate limits |
 | **409** idempotency | Same key requires same body; change key if body changes |

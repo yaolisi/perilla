@@ -1,10 +1,13 @@
 from datetime import UTC, datetime
 
+import pytest
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from core.workflows.tenant_guard import resolve_tenant_id, namespace_matches_tenant
 from tests.helpers import make_fastapi_app_router_only
+
+pytestmark = pytest.mark.tenant_isolation
 
 
 def _ensure_workflow_tenant(workflow: dict, tenant_id: str) -> None:

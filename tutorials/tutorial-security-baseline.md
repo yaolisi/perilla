@@ -73,11 +73,11 @@
 
 ### 3.3 Tenant 规范
 
-- 请求必须包含 `X-Tenant-Id`
+- 请求必须包含 `X-Tenant-Id`（对租户强制路径而言；前缀集合见 `backend/middleware/tenant_paths.py`）
 - API Key 必须绑定允许租户列表
 - 任何跨租户访问应返回 `403` 或 `404`（按策略）
-- Workflow 访问必须经过入口校验 + 数据层 tenant-aware 查询双重控制
-- 受保护控制面（如 `/api/system/*`）必须显式携带租户头，未携带应拒绝
+- Workflow、会话、知识库、记忆等路径必须经过入口校验 + 数据层 tenant-aware 访问双重控制
+- 凡命中租户强制前缀（含 `/api/system/*`、`/v1/chat`、`/api/sessions`、`/api/memory`、`/api/knowledge-bases`、`/api/agent-sessions`、`/v1/vlm`、`/api/v1/workflows`、`/api/v1/audit` 等，以代码为准）必须显式携带租户头，未携带应拒绝
 
 ### 3.4 CSRF 规范
 

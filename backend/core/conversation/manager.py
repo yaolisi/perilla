@@ -226,7 +226,9 @@ class ConversationManager:
         # 4. 注入长期记忆 (Memory)
         # 推荐顺序：System -> Memory -> History
         if self.memory_injector:
-            msg_dicts = self.memory_injector.inject(msg_dicts, user_id=user_id)
+            msg_dicts = self.memory_injector.inject(
+                msg_dicts, user_id=user_id, tenant_id=tenant_id
+            )
             
         # 5. 角色序列修复（确保 User/Assistant 交替）
         msg_dicts = self._fix_role_sequence(msg_dicts)

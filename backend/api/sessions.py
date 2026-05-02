@@ -18,6 +18,7 @@ from config.settings import settings
 from core.conversation.history_store import HistoryStore, HistoryStoreConfig
 from core.types import ChatCompletionMessageContentItem
 from core.utils.user_context import get_user_id
+from core.utils.tenant_request import get_effective_tenant_id
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -106,15 +107,19 @@ _store = HistoryStore(HistoryStoreConfig(db_path=_db_path))
 @router.get("", response_model=ChatSessionListResponse)
 async def list_sessions(request: Request, limit: int = 50) -> ChatSessionListResponse:
     user_id = _get_user_id(request)
-    rows = _store.list_sessions(user_id=user_id, limit=limit)
+    tenant_id = get_effective_tenant_id(request)
+    rows = _store.list_sessions(user_id=user_id, limit=limit, tenant_id=tenant_id)
     return ChatSessionListResponse(data=[ChatSessionRecord.model_validate(r) for r in rows])
 
 
 @router.get("/{session_id}/messages", response_model=ChatMessageListResponse)
 async def list_messages(request: Request, session_id: str, limit: int = 200) -> ChatMessageListResponse:
     user_id = _get_user_id(request)
-    rows = _store.list_messages(user_id=user_id, session_id=session_id, limit=limit)
-    if rows == [] and not _store.session_exists(user_id=user_id, session_id=session_id):
+    tenant_id = get_effective_tenant_id(request)
+    rows = _store.list_messages(user_id=user_id, session_id=session_id, limit=limit, tenant_id=tenant_id)
+    if rows == [] and not _store.session_exists(
+        user_id=user_id, session_id=session_id, tenant_id=tenant_id
+    ):
         _raise_chat_session_not_found(session_id)
     return ChatMessageListResponse(data=[ChatMessageRecord.model_validate(r) for r in rows])
 
@@ -122,7 +127,8 @@ async def list_messages(request: Request, session_id: str, limit: int = 200) -> 
 @router.patch("/{session_id}", response_model=ChatSessionRenameResponse)
 async def rename_session(request: Request, session_id: str, title: str) -> ChatSessionRenameResponse:
     user_id = _get_user_id(request)
-    ok = _store.rename_session(user_id=user_id, session_id=session_id, title=title)
+    tenant_id = get_effective_tenant_id(request)
+    ok = _store.rename_session(user_id=user_id, session_id=session_id, title=title, tenant_id=tenant_id)
     if not ok:
         _raise_chat_session_not_found(session_id)
     return ChatSessionRenameResponse(id=session_id, title=title)
@@ -131,7 +137,8 @@ async def rename_session(request: Request, session_id: str, title: str) -> ChatS
 @router.delete("/{session_id}", response_model=ChatSessionDeleteResponse)
 async def delete_session(request: Request, session_id: str) -> ChatSessionDeleteResponse:
     user_id = _get_user_id(request)
-    ok = _store.delete_session(user_id=user_id, session_id=session_id, hard=True)
+    tenant_id = get_effective_tenant_id(request)
+    ok = _store.delete_session(user_id=user_id, session_id=session_id, hard=True, tenant_id=tenant_id)
     if not ok:
         _raise_chat_session_not_found(session_id)
     return ChatSessionDeleteResponse(id=session_id)

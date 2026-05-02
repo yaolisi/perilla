@@ -104,6 +104,16 @@ Useful anchors:
 - Troubleshooting FAQ: [`#6-troubleshooting-faq`](docs/GETTING_STARTED_EN.md#6-troubleshooting-faq)
 - Production checklist: [`#7-minimal-production-checklist`](docs/GETTING_STARTED_EN.md#7-minimal-production-checklist)
 
+### Multi-tenant HTTP (summary)
+
+When **`TENANT_ENFORCEMENT_ENABLED`** / **`TENANT_API_KEY_BINDING_ENABLED`** are on, requests under these URL prefixes must include an explicit tenant header (default name **`X-Tenant-Id`**, configurable via **`TENANT_HEADER_NAME`**):
+
+- `/api/v1/workflows`, `/api/v1/audit`, `/api/system`
+- `/v1/chat`, `/api/sessions`, `/api/memory`
+- `/api/knowledge-bases`, `/api/agent-sessions`, `/v1/vlm`
+
+The canonical list is **`backend/middleware/tenant_paths.py`** (`is_tenant_enforcement_protected_path`). Persistence layers scope Workflow, sessions, knowledge bases, memory, governance audit, and related data by **tenant_id**; control-plane resolution follows middleware-injected tenant id (see **`backend/core/utils/tenant_request.py`**). Full narrative: **`tutorials/tutorial.md`** (multi-tenancy section).
+
 ### Naming and migration boundaries (folder vs Redis)
 
 - **Checkout folder vs package name**: Your working copy directory may still be named `openvitamin_enhanced_docker` from history; the root `package.json` `name` is `perilla-enhanced-docker`. Runtime branding follows settings/UI (`settings.app_name`, etc.). **Renaming the folder is optional**; if you do, update scripts, CI, and docs that hard-code paths.

@@ -12,7 +12,7 @@ from config.settings import settings
 from core.system import runtime_settings as rs_runtime
 
 from log import logger, log_structured
-from core.agent_runtime.session import AgentSession
+from core.agent_runtime.session import AgentSession, DEFAULT_AGENT_SESSION_TENANT_ID
 from .models import (
     AgentState,
     ExecutionTrace,
@@ -544,6 +544,7 @@ class PlanBasedExecutor:
             "permissions": permissions or {},
             "trace_id": trace_id,
             "agent_id": agent.agent_id,
+            "tenant_id": (str(getattr(session, "tenant_id", None) or "").strip() or DEFAULT_AGENT_SESSION_TENANT_ID),
             "legacy_executor": self.legacy_executor,  # 传递 legacy executor 供 LLMExecutor 使用
             "current_plan": plan,  # V2.2: 追踪当前执行的 Plan
             "planner": get_planner(),  # V2.2: Planner 引用，供 REPLAN 使用

@@ -72,6 +72,7 @@ class WorkflowExecutionORM(Base):
     __tablename__ = "workflow_executions"
 
     execution_id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(128), nullable=False, default="default", index=True)
     workflow_id = Column(String(36), nullable=False, index=True)
     version_id = Column(String(36), nullable=False, index=True)
     graph_instance_id = Column(String(36), nullable=True, index=True)
@@ -101,6 +102,7 @@ class WorkflowExecutionORM(Base):
     __table_args__ = (
         Index("idx_workflow_executions_workflow_created", "workflow_id", "created_at"),
         Index("idx_workflow_executions_state_created", "state", "created_at"),
+        Index("idx_workflow_executions_tenant_workflow", "tenant_id", "workflow_id"),
     )
 
 
@@ -108,17 +110,21 @@ class WorkflowGovernanceAuditORM(Base):
     __tablename__ = "workflow_governance_audits"
 
     id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(128), nullable=False, default="default", index=True)
     workflow_id = Column(String(36), nullable=False, index=True)
     changed_by = Column(String(128), nullable=True, index=True)
     old_config = Column(JSON, nullable=False, default=dict)
     new_config = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime, nullable=False, default=func.now(), index=True)
 
+    __table_args__ = (Index("idx_workflow_governance_audits_tenant_workflow", "tenant_id", "workflow_id"),)
+
 
 class WorkflowExecutionQueueORM(Base):
     __tablename__ = "workflow_execution_queue"
 
     id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(128), nullable=False, default="default", index=True)
     execution_id = Column(String(36), nullable=False, unique=True, index=True)
     workflow_id = Column(String(36), nullable=False, index=True)
     version_id = Column(String(36), nullable=False, index=True)
@@ -135,6 +141,7 @@ class WorkflowApprovalTaskORM(Base):
     __tablename__ = "workflow_approval_tasks"
 
     id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(128), nullable=False, default="default", index=True)
     execution_id = Column(String(36), nullable=False, index=True)
     workflow_id = Column(String(36), nullable=False, index=True)
     node_id = Column(String(128), nullable=False, index=True)
@@ -148,3 +155,5 @@ class WorkflowApprovalTaskORM(Base):
     expires_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, nullable=False, default=func.now(), index=True)
     updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (Index("idx_workflow_approval_tasks_tenant_execution", "tenant_id", "execution_id"),)

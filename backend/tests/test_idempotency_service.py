@@ -40,6 +40,28 @@ def test_claim_creates_record_and_second_claim_reuses_existing(tmp_path):
     assert second.record.id == first.record.id
 
 
+def test_same_key_different_tenant_is_separate_records(tmp_path):
+    db = _make_session(tmp_path)
+    service = IdempotencyService(db)
+
+    a = service.claim(
+        scope="workflow",
+        owner_id="u1",
+        key="shared-key",
+        request_hash="h1",
+        tenant_id="tenant_a",
+    )
+    b = service.claim(
+        scope="workflow",
+        owner_id="u1",
+        key="shared-key",
+        request_hash="h1",
+        tenant_id="tenant_b",
+    )
+    assert a.is_new and b.is_new
+    assert a.record.id != b.record.id
+
+
 def test_claim_conflict_and_mark_failed_truncates_message(tmp_path):
     db = _make_session(tmp_path)
     service = IdempotencyService(db)

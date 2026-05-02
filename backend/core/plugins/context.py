@@ -18,6 +18,7 @@ class PluginContext:
         session_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
         message_id: Optional[str] = None,
         permissions: Optional[dict] = None,
         logger: Optional["Logger"] = None,
@@ -31,6 +32,7 @@ class PluginContext:
         self.session_id = session_id
         self.agent_id = agent_id
         self.user_id = user_id
+        self.tenant_id = tenant_id
         self.message_id = message_id
         self.permissions = permissions or {}
         self.metadata = metadata or {}

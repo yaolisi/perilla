@@ -32,6 +32,8 @@ class SkillExecutionRequest:
     version: Optional[str] = None
     trace_id: str = ""
     caller_id: str = ""
+    # 可选；设置后 MCP 等按租户解析配置；None 时兼容旧行为（仅按 id 查）
+    tenant_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def validate(self) -> Optional[str]:

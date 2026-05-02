@@ -98,6 +98,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/test-no-fallback.sh -q
 
+      - name: Tenant isolation suite
+        working-directory: ${{ github.workspace }}
+        run: make test-tenant-isolation
+
       - uses: azure/setup-helm@v4
         with:
           version: v3.14.4

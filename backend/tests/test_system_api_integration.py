@@ -538,14 +538,14 @@ def test_event_bus_dlq_replay_idempotency_hit_returns_cached_result(monkeypatch)
             self.conflict = conflict
 
     class _FakeIdempotencyService:
-        _store: dict[tuple[str, str, str], _FakeRecord] = {}
+        _store: dict[tuple[str, str, str, str], _FakeRecord] = {}
 
         def __init__(self, db):
             self.db = db
 
-        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600):
+        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600, tenant_id=None):
             _ = ttl_seconds
-            k = (scope, owner_id, key)
+            k = ((tenant_id or "default"), scope, owner_id, key)
             row = self._store.get(k)
             if row is not None:
                 return _FakeClaim(row, is_new=False, conflict=row.request_hash != request_hash)
@@ -598,14 +598,14 @@ def test_event_bus_dlq_replay_idempotency_conflict(monkeypatch):
             self.conflict = conflict
 
     class _FakeIdempotencyService:
-        _store: dict[tuple[str, str, str], _FakeRecord] = {}
+        _store: dict[tuple[str, str, str, str], _FakeRecord] = {}
 
         def __init__(self, db):
             self.db = db
 
-        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600):
+        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600, tenant_id=None):
             _ = ttl_seconds
-            k = (scope, owner_id, key)
+            k = ((tenant_id or "default"), scope, owner_id, key)
             row = self._store.get(k)
             if row is not None:
                 return _FakeClaim(row, is_new=False, conflict=row.request_hash != request_hash)
@@ -729,14 +729,14 @@ def test_event_bus_dlq_replay_accepts_multiple_idempotency_headers(monkeypatch, 
             self.conflict = conflict
 
     class _FakeIdempotencyService:
-        _store: dict[tuple[str, str, str], _FakeRecord] = {}
+        _store: dict[tuple[str, str, str, str], _FakeRecord] = {}
 
         def __init__(self, db):
             self.db = db
 
-        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600):
+        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600, tenant_id=None):
             _ = ttl_seconds
-            k = (scope, owner_id, key)
+            k = ((tenant_id or "default"), scope, owner_id, key)
             row = self._store.get(k)
             if row is not None:
                 return _FakeClaim(row, is_new=False, conflict=row.request_hash != request_hash)
@@ -792,8 +792,8 @@ def test_event_bus_dlq_replay_idempotency_header_priority(monkeypatch):
         def __init__(self, db):
             self.db = db
 
-        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600):
-            _ = (scope, owner_id, request_hash, ttl_seconds)
+        def claim(self, *, scope, owner_id, key, request_hash, ttl_seconds=3600, tenant_id=None):
+            _ = (scope, owner_id, request_hash, ttl_seconds, tenant_id)
             observed["key"] = key
             return _FakeClaim(_FakeRecord(request_hash=request_hash), is_new=True, conflict=False)
 

@@ -16,15 +16,26 @@ class WorkflowGovernanceAuditRepository:
     def __init__(self, db: Session):
         self.db = db
 
+    @staticmethod
+    def _filter_tenant(q, tenant_id: Optional[str]):
+        if tenant_id is None:
+            return q
+        tid = (str(tenant_id).strip() or "default")
+        return q.filter(WorkflowGovernanceAuditORM.tenant_id == tid)
+
     def create_audit(
         self,
         workflow_id: str,
         changed_by: Optional[str],
         old_config: Dict[str, Any],
         new_config: Dict[str, Any],
+        *,
+        tenant_id: str = "default",
     ) -> Dict[str, Any]:
+        tid = (str(tenant_id).strip() or "default")
         row = WorkflowGovernanceAuditORM(
             id=str(uuid.uuid4()),
+            tenant_id=tid,
             workflow_id=workflow_id,
             changed_by=changed_by,
             old_config=old_config or {},
@@ -47,11 +58,15 @@ class WorkflowGovernanceAuditRepository:
         workflow_id: str,
         limit: int = 50,
         offset: int = 0,
+        *,
+        tenant_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        q = self.db.query(WorkflowGovernanceAuditORM).filter(
+            WorkflowGovernanceAuditORM.workflow_id == workflow_id
+        )
+        q = self._filter_tenant(q, tenant_id)
         rows = (
-            self.db.query(WorkflowGovernanceAuditORM)
-            .filter(WorkflowGovernanceAuditORM.workflow_id == workflow_id)
-            .order_by(WorkflowGovernanceAuditORM.created_at.desc())
+            q.order_by(WorkflowGovernanceAuditORM.created_at.desc())
             .limit(limit)
             .offset(offset)
             .all()
@@ -68,13 +83,9 @@ class WorkflowGovernanceAuditRepository:
             for r in rows
         ]
 
-    def count_audits(self, workflow_id: str) -> int:
-        return cast(
-            int,
-            (
-            self.db.query(WorkflowGovernanceAuditORM)
-            .filter(WorkflowGovernanceAuditORM.workflow_id == workflow_id)
-            .count()
-            ),
+    def count_audits(self, workflow_id: str, *, tenant_id: Optional[str] = None) -> int:
+        q = self.db.query(WorkflowGovernanceAuditORM).filter(
+            WorkflowGovernanceAuditORM.workflow_id == workflow_id
         )
-
+        q = self._filter_tenant(q, tenant_id)
+        return cast(int, q.count())

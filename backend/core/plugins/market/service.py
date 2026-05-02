@@ -109,6 +109,7 @@ class PluginMarketService:
         memory=None,
         model_registry=None,
         installed_by: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         package = self.repo.get_package(package_id)
         if package is None:
@@ -131,6 +132,7 @@ class PluginMarketService:
             manifest_path=package.manifest_path,
             enabled=True,
             installed_by=installed_by,
+            tenant_id=tenant_id,
         )
         return {"package_id": package_id, "installed": True}
 
@@ -142,8 +144,9 @@ class PluginMarketService:
         logger=None,
         memory=None,
         model_registry=None,
+        tenant_id: Optional[str] = None,
     ) -> bool:
-        ins = self.repo.get_installation(package_id)
+        ins = self.repo.get_installation(package_id, tenant_id=tenant_id)
         if ins is None:
             return False
         if enabled:
@@ -156,10 +159,10 @@ class PluginMarketService:
             )
         else:
             await self.manager.unregister(ins.name, ins.version)
-        return self.repo.set_installation_enabled(package_id, enabled)
+        return self.repo.set_installation_enabled(package_id, enabled, tenant_id=tenant_id)
 
-    def list_installations(self) -> List[Dict[str, Any]]:
-        rows = self.repo.list_installations()
+    def list_installations(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        rows = self.repo.list_installations(tenant_id=tenant_id)
         return [
             {
                 "id": row.id,

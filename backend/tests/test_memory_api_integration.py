@@ -12,13 +12,20 @@ pytestmark = pytest.mark.no_fallback
 
 
 class _FakeMemoryStore:
-    def list(self, *, user_id: str, limit: int = 50, include_deprecated: bool = False):
+    def list(
+        self,
+        *,
+        user_id: str,
+        limit: int = 50,
+        include_deprecated: bool = False,
+        tenant_id: str = "default",
+    ):
         return []
 
-    def delete(self, *, user_id: str, memory_id: str) -> bool:
+    def delete(self, *, user_id: str, memory_id: str, tenant_id: str = "default") -> bool:
         return False
 
-    def clear(self, *, user_id: str) -> int:
+    def clear(self, *, user_id: str, tenant_id: str = "default") -> int:
         return 0
 
 

@@ -15,19 +15,25 @@ pytestmark = pytest.mark.no_fallback
 
 def test_sessions_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPatch, fallback_probe):
     class _FakeHistoryStore:
-        def list_sessions(self, *, user_id: str, limit: int = 50):
+        def list_sessions(self, *, user_id: str, limit: int = 50, tenant_id: str = "default"):
             return []
 
-        def list_messages(self, *, user_id: str, session_id: str, limit: int = 200):
+        def list_messages(
+            self, *, user_id: str, session_id: str, limit: int = 200, tenant_id: str = "default"
+        ):
             return []
 
-        def session_exists(self, *, user_id: str, session_id: str) -> bool:
+        def session_exists(self, *, user_id: str, session_id: str, tenant_id: str = "default") -> bool:
             return False
 
-        def rename_session(self, *, user_id: str, session_id: str, title: str) -> bool:
+        def rename_session(
+            self, *, user_id: str, session_id: str, title: str, tenant_id: str = "default"
+        ) -> bool:
             return False
 
-        def delete_session(self, *, user_id: str, session_id: str, hard: bool = True) -> bool:
+        def delete_session(
+            self, *, user_id: str, session_id: str, hard: bool = True, tenant_id: str = "default"
+        ) -> bool:
             return False
 
     monkeypatch.setattr(sessions_api, "_store", _FakeHistoryStore())
@@ -41,13 +47,20 @@ def test_sessions_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPatc
 
 def test_memory_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPatch, fallback_probe):
     class _FakeMemoryStore:
-        def list(self, *, user_id: str, limit: int = 50, include_deprecated: bool = False):
+        def list(
+            self,
+            *,
+            user_id: str,
+            limit: int = 50,
+            include_deprecated: bool = False,
+            tenant_id: str = "default",
+        ):
             return []
 
-        def delete(self, *, user_id: str, memory_id: str) -> bool:
+        def delete(self, *, user_id: str, memory_id: str, tenant_id: str = "default") -> bool:
             return False
 
-        def clear(self, *, user_id: str) -> int:
+        def clear(self, *, user_id: str, tenant_id: str = "default") -> int:
             return 0
 
     monkeypatch.setattr(memory_api, "_store", _FakeMemoryStore())
@@ -61,7 +74,9 @@ def test_memory_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPatch,
 
 def test_knowledge_not_found_does_not_hit_fallback(monkeypatch: pytest.MonkeyPatch, fallback_probe):
     class _FakeKBStore:
-        def get_knowledge_base(self, kb_id: str, user_id: str = "default"):
+        def get_knowledge_base(
+            self, kb_id: str, user_id: str = "default", tenant_id: str = "default"
+        ):
             return None
 
     monkeypatch.setattr(knowledge_api, "_kb_store", _FakeKBStore())

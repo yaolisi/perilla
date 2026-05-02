@@ -13,7 +13,9 @@ pytestmark = pytest.mark.no_fallback
 @pytest.fixture()
 def knowledge_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     class _FakeKBStore:
-        def get_knowledge_base(self, kb_id: str, user_id: str = "default"):
+        def get_knowledge_base(
+            self, kb_id: str, user_id: str = "default", tenant_id: str = "default"
+        ):
             return None
 
     monkeypatch.setattr(knowledge_api, "_kb_store", _FakeKBStore())
@@ -22,7 +24,7 @@ def knowledge_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 @pytest.fixture()
 def images_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setattr(images_api, "_db_get_latest_warmup", lambda model: None)
+    monkeypatch.setattr(images_api, "_db_get_latest_warmup", lambda model, **_: None)
     return build_minimal_router_test_client(images_api)
 
 

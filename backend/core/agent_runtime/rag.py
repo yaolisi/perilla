@@ -5,7 +5,12 @@ Retrieves relevant context from knowledge bases for agent execution
 from typing import List, Dict, Any, Optional
 
 from log import logger
-from core.knowledge.knowledge_base_store import KnowledgeBaseStore, KnowledgeBaseConfig
+from core.knowledge.knowledge_base_store import (
+    DEFAULT_KB_TENANT_ID,
+    KnowledgeBaseStore,
+    KnowledgeBaseConfig,
+)
+from core.utils.user_context import ResourceNotFoundError, UserAccessDeniedError
 from core.rag.runtime_multi_hop import run_multi_hop_retrieval
 from config.settings import settings
 
@@ -64,6 +69,8 @@ class RAGRetrieval:
         multi_hop_relax_relevance: bool = True,
         multi_hop_feedback_chars: int = 320,
         fallback_messages: Optional[List[Dict[str, Any]]] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> str:
         """
         Retrieve relevant context from knowledge bases
@@ -95,9 +102,16 @@ class RAGRetrieval:
                 logger.debug("[RAGRetrieval] sqlite-vec not available, skipping RAG")
                 return ""
 
+            uid = (user_id or "default").strip() or "default"
+            tid = (tenant_id or DEFAULT_KB_TENANT_ID).strip() or DEFAULT_KB_TENANT_ID
             kb_infos: List[tuple[str, Dict[str, Any]]] = []
             for kb_id in knowledge_base_ids:
-                info = self.kb_store.get_knowledge_base(kb_id)
+                try:
+                    info = self.kb_store.get_knowledge_base(
+                        kb_id, user_id=uid, tenant_id=tid
+                    )
+                except (ResourceNotFoundError, UserAccessDeniedError):
+                    info = None
                 if info:
                     kb_infos.append((kb_id, info))
             if not kb_infos:
@@ -249,13 +263,21 @@ class RAGRetrieval:
             logger.warning("[RAGRetrieval] Gateway embed failed: %s", str(e)[:200])
             return None
 
-    async def get_knowledge_base_info(self, kb_id: str) -> Optional[Dict[str, Any]]:
+    async def get_knowledge_base_info(
+        self,
+        kb_id: str,
+        *,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Get information about a specific knowledge base"""
         if not self.kb_store:
             return None
-            
+
+        uid = (user_id or "default").strip() or "default"
+        tid = (tenant_id or DEFAULT_KB_TENANT_ID).strip() or DEFAULT_KB_TENANT_ID
         try:
-            return self.kb_store.get_knowledge_base(kb_id)
+            return self.kb_store.get_knowledge_base(kb_id, user_id=uid, tenant_id=tid)
         except Exception as e:
             logger.error(f"[RAGRetrieval] Error getting KB info: {e}")
             return None

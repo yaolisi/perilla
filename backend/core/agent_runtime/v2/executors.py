@@ -133,12 +133,15 @@ class SkillExecutor(BaseExecutor):
         definition = SkillRegistry.get(skill_id)
         if not definition:
             raise ValueError(f"Skill not found: {skill_id}")
+        _tid = context.get("tenant_id")
+        _tenant = (str(_tid).strip() if _tid else "") or None
         request = SkillExecutionRequest(
             skill_id=skill_id,
             input=skill_inputs,
             version=None,
             trace_id=context.get("trace_id", ""),
             caller_id=context.get("agent_id", ""),
+            tenant_id=_tenant,
             metadata={
                 "workspace": context.get("workspace", "."),
                 "permissions": context.get("permissions", {}),

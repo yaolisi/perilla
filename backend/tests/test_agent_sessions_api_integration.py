@@ -28,22 +28,51 @@ class _MemSessionStore:
     def __init__(self) -> None:
         self._sessions: Dict[str, AgentSession] = {}
 
-    def get_session(self, session_id: str) -> Optional[AgentSession]:
-        return self._sessions.get(session_id)
+    def get_session_principal(self, session_id: str):
+        s = self._sessions.get(session_id)
+        if not s:
+            return None
+        tid = getattr(s, "tenant_id", None) or "default"
+        return (s.user_id, tid)
+
+    def get_session(
+        self,
+        session_id: str,
+        *,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[AgentSession]:
+        s = self._sessions.get(session_id)
+        if not s:
+            return None
+        if user_id is not None and s.user_id != user_id:
+            return None
+        stid = getattr(s, "tenant_id", None) or "default"
+        if tenant_id is not None and stid != tenant_id:
+            return None
+        return s
 
     def save_session(self, session: AgentSession) -> bool:
         self._sessions[session.session_id] = session
         return True
 
-    def delete_session(self, session_id: str, user_id: str = "default") -> bool:
+    def delete_session(self, session_id: str, user_id: str = "default", tenant_id: str = "default") -> bool:
         s = self._sessions.get(session_id)
-        if not s or s.user_id != user_id:
+        stid = getattr(s, "tenant_id", None) or "default"
+        if not s or s.user_id != user_id or stid != tenant_id:
             return False
         del self._sessions[session_id]
         return True
 
-    def delete_message(self, session_id: str, message_index: int) -> bool:
-        session = self._sessions.get(session_id)
+    def delete_message(
+        self,
+        session_id: str,
+        message_index: int,
+        *,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> bool:
+        session = self.get_session(session_id, user_id=user_id, tenant_id=tenant_id)
         if not session:
             return False
         if message_index < 0 or message_index >= len(session.messages):
@@ -56,8 +85,13 @@ class _MemSessionStore:
         user_id: str = "default",
         limit: int = 50,
         agent_id: Optional[str] = None,
+        tenant_id: str = "default",
     ) -> list:
-        out = [s for s in self._sessions.values() if s.user_id == user_id]
+        out = [
+            s
+            for s in self._sessions.values()
+            if s.user_id == user_id and (getattr(s, "tenant_id", None) or "default") == tenant_id
+        ]
         if agent_id:
             out = [s for s in out if s.agent_id == agent_id]
         return out[:limit]
@@ -333,7 +367,7 @@ def test_stream_agent_session_runtime_missing_emits_error_code(sessions_client: 
 
     call_count = 0
 
-    def _flaky_get_session(session_id: str):
+    def _flaky_get_session(session_id: str, **kwargs):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -370,7 +404,7 @@ def test_stream_agent_session_runtime_missing_sse_message_zh_when_lang_zh(sessio
 
     call_count = 0
 
-    def _flaky_get_session(session_id: str):
+    def _flaky_get_session(session_id: str, **kwargs):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -407,7 +441,7 @@ def test_stream_agent_session_runtime_missing_sse_message_en_when_lang_en(sessio
 
     call_count = 0
 
-    def _flaky_get_session(session_id: str):
+    def _flaky_get_session(session_id: str, **kwargs):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -427,3 +461,49 @@ def test_stream_agent_session_runtime_missing_sse_message_en_when_lang_en(sessio
     data_lines = [ln for ln in lines if ln.startswith("data: ")]
     first_obj = json.loads(data_lines[0].replace("data: ", "", 1))
     assert first_obj["message"] == "agent session not found"
+
+
+def test_get_agent_trace_wrong_tenant_returns_not_found(sessions_client: TestClient):
+    store: _MemSessionStore = sessions_client._test_session_store  # type: ignore[assignment]
+    store._sessions["s_trace_t1"] = AgentSession(
+        session_id="s_trace_t1",
+        agent_id="a1",
+        user_id="default",
+        tenant_id="tenant-a",
+    )
+    resp = sessions_client.get(
+        "/api/agent-sessions/s_trace_t1/trace",
+        headers={**HEADERS_ADMIN, "X-Tenant-Id": "tenant-b"},
+    )
+    assert resp.status_code == 404
+    _assert_structured(resp.json(), code="agent_session_not_found")
+
+
+def test_get_agent_trace_passes_tenant_to_trace_store(
+    monkeypatch: pytest.MonkeyPatch, sessions_client: TestClient
+):
+    store: _MemSessionStore = sessions_client._test_session_store  # type: ignore[assignment]
+    store._sessions["s_trace_ok"] = AgentSession(
+        session_id="s_trace_ok",
+        agent_id="a1",
+        user_id="default",
+        tenant_id="t-trace",
+    )
+    called: dict[str, str] = {}
+
+    class _TraceStub:
+        def get_session_traces(self, session_id: str, tenant_id=None):  # noqa: ARG002
+            called["session_id"] = session_id
+            called["tenant_id"] = tenant_id or ""
+            return []
+
+    monkeypatch.setattr("api.agents.get_agent_trace_store", lambda: _TraceStub())
+    resp = sessions_client.get(
+        "/api/agent-sessions/s_trace_ok/trace",
+        headers={**HEADERS_ADMIN, "X-Tenant-Id": "t-trace"},
+    )
+    assert resp.status_code == 200
+    assert resp.json().get("object") == "list"
+    assert resp.json().get("data") == []
+    assert called["session_id"] == "s_trace_ok"
+    assert called["tenant_id"] == "t-trace"

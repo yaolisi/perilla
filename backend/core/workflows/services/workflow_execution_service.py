@@ -15,7 +15,11 @@ from core.workflows.models import (
     WorkflowExecutionNodeState,
     WorkflowExecutionCreateRequest
 )
-from core.workflows.repository import WorkflowExecutionRepository, WorkflowVersionRepository
+from core.workflows.repository import (
+    WorkflowExecutionRepository,
+    WorkflowRepository,
+    WorkflowVersionRepository,
+)
 from core.workflows.governance.execution_manager import ExecutionManager
 from config.settings import settings
 from log import logger
@@ -29,6 +33,7 @@ class WorkflowExecutionService:
         self.db = db
         self.repository = WorkflowExecutionRepository(db)
         self.version_repository = WorkflowVersionRepository(db)
+        self.workflow_repository = WorkflowRepository(db)
         self.execution_manager = execution_manager
 
     @staticmethod
@@ -70,6 +75,11 @@ class WorkflowExecutionService:
                 + "; ".join(preflight_errors)
             )
         
+        wf_row = self.workflow_repository.get_by_id(request.workflow_id)
+        if not wf_row:
+            raise ValueError(f"Workflow not found: {request.workflow_id}")
+        tenant_id = (str(wf_row.namespace).strip() or "default")
+
         # 初始化节点状态
         node_states = [
             WorkflowExecutionNode(node_id=node.id)
@@ -80,6 +90,7 @@ class WorkflowExecutionService:
         execution = WorkflowExecution(
             workflow_id=request.workflow_id,
             version_id=version.version_id,
+            tenant_id=tenant_id,
             state=WorkflowExecutionState.PENDING,
             input_data=request.input_data,
             global_context=request.global_context,
@@ -146,9 +157,9 @@ class WorkflowExecutionService:
             f"Version {version.version_id} is not executable (state: {version.state.value})"
         )
     
-    def get_execution(self, execution_id: str) -> Optional[WorkflowExecution]:
+    def get_execution(self, execution_id: str, tenant_id: Optional[str] = None) -> Optional[WorkflowExecution]:
         """获取执行"""
-        return self.repository.get_by_id(execution_id)
+        return self.repository.get_by_id(execution_id, tenant_id)
     
     def list_executions(
         self,
@@ -156,7 +167,8 @@ class WorkflowExecutionService:
         version_id: Optional[str] = None,
         state: Optional[WorkflowExecutionState] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        tenant_id: Optional[str] = None,
     ) -> List[WorkflowExecution]:
         """列出执行"""
         return cast(List[WorkflowExecution], self.repository.list_executions(
@@ -164,7 +176,8 @@ class WorkflowExecutionService:
             version_id=version_id,
             state=state,
             limit=limit,
-            offset=offset
+            offset=offset,
+            tenant_id=tenant_id,
         ))
 
     def count_executions(
@@ -173,23 +186,27 @@ class WorkflowExecutionService:
         version_id: Optional[str] = None,
         state: Optional[WorkflowExecutionState] = None,
         trigger_type: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> int:
         return cast(int, self.repository.count_executions(
             workflow_id=workflow_id,
             version_id=version_id,
             state=state,
             trigger_type=trigger_type,
+            tenant_id=tenant_id,
         ))
     
     def start_execution(
         self,
         execution_id: str,
-        graph_instance_id: Optional[str] = None
+        graph_instance_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> Optional[WorkflowExecution]:
         """开始执行"""
-        execution = self.repository.get_by_id(execution_id)
+        execution = self.repository.get_by_id(execution_id, tenant_id)
         if not execution:
             return None
+        tid = execution.tenant_id
         
         # 检查状态
         if execution.state != WorkflowExecutionState.PENDING:
@@ -197,12 +214,13 @@ class WorkflowExecutionService:
         
         # 更新 GraphInstance ID
         if graph_instance_id:
-            self.repository.update_graph_instance_id(execution_id, graph_instance_id)
+            self.repository.update_graph_instance_id(execution_id, graph_instance_id, tenant_id=tid)
         
         # 更新状态
         updated = self.repository.update_state(
             execution_id,
-            WorkflowExecutionState.RUNNING
+            WorkflowExecutionState.RUNNING,
+            tenant_id=tid,
         )
         
         logger.info(f"[WorkflowExecutionService] Started execution: {execution_id}")
@@ -211,21 +229,24 @@ class WorkflowExecutionService:
     def complete_execution(
         self,
         execution_id: str,
-        output_data: Optional[Dict[str, Any]] = None
+        output_data: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Optional[WorkflowExecution]:
         """完成执行"""
-        execution = self.repository.get_by_id(execution_id)
+        execution = self.repository.get_by_id(execution_id, tenant_id)
         if not execution:
             return None
+        tid = execution.tenant_id
         
         # 更新输出
         if output_data:
-            self.repository.update_output(execution_id, output_data)
+            self.repository.update_output(execution_id, output_data, tenant_id=tid)
         
         # 更新状态
         updated = self.repository.update_state(
             execution_id,
-            WorkflowExecutionState.COMPLETED
+            WorkflowExecutionState.COMPLETED,
+            tenant_id=tid,
         )
         
         logger.info(f"[WorkflowExecutionService] Completed execution: {execution_id}")
@@ -235,18 +256,21 @@ class WorkflowExecutionService:
         self,
         execution_id: str,
         error_message: str,
-        error_details: Optional[Dict[str, Any]] = None
+        error_details: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Optional[WorkflowExecution]:
         """标记执行失败"""
-        execution = self.repository.get_by_id(execution_id)
+        execution = self.repository.get_by_id(execution_id, tenant_id)
         if not execution:
             return None
+        tid = execution.tenant_id
         
         updated = self.repository.update_state(
             execution_id,
             WorkflowExecutionState.FAILED,
             error_message=error_message,
-            error_details=error_details
+            error_details=error_details,
+            tenant_id=tid,
         )
         
         logger.info(f"[WorkflowExecutionService] Failed execution: {execution_id} - {error_message}")
@@ -255,12 +279,14 @@ class WorkflowExecutionService:
     def cancel_execution(
         self,
         execution_id: str,
-        reason: Optional[str] = None
+        reason: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> Optional[WorkflowExecution]:
         """取消执行"""
-        execution = self.repository.get_by_id(execution_id)
+        execution = self.repository.get_by_id(execution_id, tenant_id)
         if not execution:
             return None
+        tid = execution.tenant_id
         
         if not execution.can_cancel():
             raise ValueError(f"Cannot cancel execution in state {execution.state.value}")
@@ -268,7 +294,8 @@ class WorkflowExecutionService:
         updated = self.repository.update_state(
             execution_id,
             WorkflowExecutionState.CANCELLED,
-            error_message=reason
+            error_message=reason,
+            tenant_id=tid,
         )
         
         logger.info(f"[WorkflowExecutionService] Cancelled execution: {execution_id}")
@@ -280,12 +307,14 @@ class WorkflowExecutionService:
         node_id: str,
         state: WorkflowExecutionNodeState,
         output_data: Optional[Dict[str, Any]] = None,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> Optional[WorkflowExecution]:
         """更新节点状态"""
-        execution = self.repository.get_by_id(execution_id)
+        execution = self.repository.get_by_id(execution_id, tenant_id)
         if not execution:
             return None
+        tid = execution.tenant_id
         
         self._apply_node_state_update(
             execution=execution,
@@ -295,7 +324,7 @@ class WorkflowExecutionService:
             error_message=error_message,
         )
         
-        updated = self.repository.update_node_states(execution_id, execution.node_states)
+        updated = self.repository.update_node_states(execution_id, execution.node_states, tenant_id=tid)
         return updated
 
     def _apply_node_state_update(
@@ -330,26 +359,28 @@ class WorkflowExecutionService:
     
     def get_running_executions(
         self,
-        workflow_id: Optional[str] = None
+        workflow_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> List[WorkflowExecution]:
         """获取正在执行的记录"""
-        return cast(List[WorkflowExecution], self.repository.get_running_executions(workflow_id))
+        return cast(List[WorkflowExecution], self.repository.get_running_executions(workflow_id, tenant_id))
     
     def get_execution_stats(
         self,
-        workflow_id: str
+        workflow_id: str,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """获取执行统计"""
         stats = {
-            "total": self.repository.count_by_state(workflow_id),
+            "total": self.repository.count_by_state(workflow_id, tenant_id=tenant_id),
             "completed": self.repository.count_by_state(
-                workflow_id, WorkflowExecutionState.COMPLETED
+                workflow_id, WorkflowExecutionState.COMPLETED, tenant_id=tenant_id
             ),
             "failed": self.repository.count_by_state(
-                workflow_id, WorkflowExecutionState.FAILED
+                workflow_id, WorkflowExecutionState.FAILED, tenant_id=tenant_id
             ),
             "running": self.repository.count_by_state(
-                workflow_id, WorkflowExecutionState.RUNNING
+                workflow_id, WorkflowExecutionState.RUNNING, tenant_id=tenant_id
             ),
         }
         return stats
@@ -357,20 +388,21 @@ class WorkflowExecutionService:
     def cleanup_old_executions(
         self,
         workflow_id: str,
-        keep_count: int = 100
+        keep_count: int = 100,
+        tenant_id: Optional[str] = None,
     ) -> int:
         """清理旧执行记录"""
-        deleted = self.repository.delete_old_executions(workflow_id, keep_count)
+        deleted = self.repository.delete_old_executions(workflow_id, keep_count, tenant_id=tenant_id)
         logger.info(f"[WorkflowExecutionService] Cleaned up {deleted} old executions for {workflow_id}")
         return cast(int, deleted)
 
-    def delete_execution(self, execution_id: str) -> bool:
+    def delete_execution(self, execution_id: str, tenant_id: Optional[str] = None) -> bool:
         """删除单条执行记录（仅允许终态）"""
-        execution = self.repository.get_by_id(execution_id)
+        execution = self.repository.get_by_id(execution_id, tenant_id)
         if not execution:
             return False
         if execution.state in {WorkflowExecutionState.PENDING, WorkflowExecutionState.RUNNING}:
             raise ValueError(
                 f"Cannot delete execution in state {execution.state.value}; cancel or wait for completion first"
             )
-        return cast(bool, self.repository.delete_by_id(execution_id))
+        return cast(bool, self.repository.delete_by_id(execution_id, tenant_id=execution.tenant_id))

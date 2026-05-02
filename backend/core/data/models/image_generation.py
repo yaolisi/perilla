@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, JSON
+from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, JSON, Index
 from sqlalchemy.sql import func
 
 from core.data.base import Base
@@ -8,6 +8,7 @@ class ImageGenerationJobORM(Base):
     __tablename__ = "image_generation_jobs"
 
     job_id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(128), nullable=False, default="default", index=True)
     model = Column(String(255), nullable=False, index=True)
     prompt = Column(Text, nullable=False)
     status = Column(String(32), nullable=False, index=True)
@@ -20,11 +21,14 @@ class ImageGenerationJobORM(Base):
     finished_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
 
+    __table_args__ = (Index("idx_image_generation_jobs_tenant_created", "tenant_id", "created_at"),)
+
 
 class ImageGenerationWarmupORM(Base):
     __tablename__ = "image_generation_warmups"
 
     warmup_id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(128), nullable=False, default="default", index=True)
     model = Column(String(255), nullable=False, index=True)
     prompt = Column(Text, nullable=False)
     status = Column(String(32), nullable=False, index=True)
@@ -40,3 +44,5 @@ class ImageGenerationWarmupORM(Base):
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (Index("idx_image_generation_warmups_tenant_model_latest", "tenant_id", "model", "latest"),)

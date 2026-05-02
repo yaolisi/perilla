@@ -67,6 +67,7 @@ async def test_resume_upstream_cancel_stops_after_first_disconnect(monkeypatch: 
         request_id=None,
         conv_manager=MagicMock(),
         persist_success_turn=_never_success,
+        tenant_id="default",
         stream_format="openai",
         use_gzip=False,
     ):

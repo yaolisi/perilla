@@ -18,6 +18,9 @@ from core.data.vector_search import get_vector_provider
 from core.data.base import get_engine
 from sqlalchemy import inspect as sqlalchemy_inspect
 
+# 与 HistoryStore / X-Tenant-Id 默认回落一致
+DEFAULT_MEMORY_TENANT_ID = "default"
+
 
 @dataclass(frozen=True)
 class MemoryStoreConfig:
@@ -93,12 +96,23 @@ class MemoryStore:
                 )
                 # 兼容迁移：为已存在的旧表补列（不依赖外部迁移框架）
                 self._migrate_if_needed(conn)
+                # 独立 sqlite 文件场景下 ORM inspect 可能指向不同库，保证 tenant_id 存在
+                try:
+                    conn.execute(
+                        "ALTER TABLE memory_items ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+                    )
+                except sqlite3.OperationalError:
+                    pass
 
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_memory_items_user_created_at ON memory_items(user_id, created_at);"
                 )
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_memory_items_user_last_used_at ON memory_items(user_id, last_used_at);"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memory_items_user_tenant_created_at "
+                    "ON memory_items(user_id, tenant_id, created_at);"
                 )
 
                 # 尝试启用 sqlite-vec（可用则使用，不可用则自动降级）
@@ -139,6 +153,7 @@ class MemoryStore:
         """
         columns_to_add = [
             ("user_id", "ALTER TABLE memory_items ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default';"),
+            ("tenant_id", "ALTER TABLE memory_items ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';"),
             ("last_used_at", "ALTER TABLE memory_items ADD COLUMN last_used_at TEXT;"),
             ("confidence", "ALTER TABLE memory_items ADD COLUMN confidence REAL;"),
             ("embedding_json", "ALTER TABLE memory_items ADD COLUMN embedding_json TEXT;"),
@@ -184,6 +199,7 @@ class MemoryStore:
         user_id: str,
         source: str = "memory_extractor",
         meta: Optional[dict] = None,
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
     ) -> list[MemoryItem]:
         """
         结构化写入入口：支持 key/value，便于确定性冲突/合并。
@@ -191,7 +207,9 @@ class MemoryStore:
         items: list[tuple[MemoryType, str, Optional[str], Optional[str], Optional[float]]] = []
         for c in candidates:
             items.append((c.type, c.content or "", c.key, c.value, c.confidence))
-        return self._add_items_internal(items, user_id=user_id, source=source, meta=meta)
+        return self._add_items_internal(
+            items, user_id=user_id, source=source, meta=meta, tenant_id=tenant_id
+        )
 
     def add_items(
         self,
@@ -201,11 +219,14 @@ class MemoryStore:
         source: str = "memory_extractor",
         meta: Optional[dict] = None,
         confidence: Optional[float] = None,
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
     ) -> list[MemoryItem]:
         items2: list[tuple[MemoryType, str, Optional[str], Optional[str], Optional[float]]] = [
             (t, c, None, None, confidence) for (t, c) in items
         ]
-        return self._add_items_internal(items2, user_id=user_id, source=source, meta=meta)
+        return self._add_items_internal(
+            items2, user_id=user_id, source=source, meta=meta, tenant_id=tenant_id
+        )
 
     def _add_items_internal(
         self,
@@ -214,10 +235,12 @@ class MemoryStore:
         user_id: str,
         source: str,
         meta: Optional[dict],
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
     ) -> list[MemoryItem]:
         now = datetime.now(timezone.utc).isoformat()
         meta_json = json.dumps(meta, ensure_ascii=False) if meta else None
         created: list[MemoryItem] = []
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
 
         with self._connect() as conn:
             for t, content, key, value, conf in items:
@@ -247,30 +270,30 @@ class MemoryStore:
                 if key_norm and validate_key(key_norm) and value_norm is None:
                     continue
 
-                # 结构化冲突/合并：同 user_id + type + key
+                # 结构化冲突/合并：同 user_id + tenant + type + key
                 if key_norm:
                     ex = conn.execute(
                         """
                         SELECT id, value, status, confidence
                         FROM memory_items
-                        WHERE user_id = ? AND type = ? AND key = ? AND status = 'active'
+                        WHERE user_id = ? AND tenant_id = ? AND type = ? AND key = ? AND status = 'active'
                         ORDER BY created_at DESC
                         LIMIT 1
                         """,
-                        (user_id, t, key_norm),
+                        (user_id, tid, t, key_norm),
                     ).fetchone()
                     if ex is not None:
                         old_id = ex["id"]
                         old_value = ex["value"]
                         if (old_value or "") == (value_norm or ""):
                             # 同值：提升 confidence/updated_at，不插入
-                            self._bump_confidence(conn, user_id=user_id, memory_id=old_id)
+                            self._bump_confidence(conn, user_id=user_id, memory_id=old_id, tenant_id=tid)
                             continue
                         # 值变化：deprecated 旧条目，插入新条目
-                        self._deprecate(conn, user_id=user_id, memory_id=old_id)
+                        self._deprecate(conn, user_id=user_id, memory_id=old_id, tenant_id=tid)
 
                 # fallback 去重：type+content 精确去重
-                if self.exists_exact(user_id=user_id, mem_type=t, content=content_norm):
+                if self.exists_exact(user_id=user_id, mem_type=t, content=content_norm, tenant_id=tid):
                     continue
 
                 text_for_embed = f"{key_norm}:{value_norm} {content_norm}" if key_norm and value_norm else content_norm
@@ -278,7 +301,9 @@ class MemoryStore:
                 embedding_json = json.dumps(vec)
 
                 # 非结构化：再做相似度 merge/conflict（保留原逻辑）
-                candidate = self._find_best_candidate(conn, user_id=user_id, mem_type=t, vec=vec)
+                candidate = self._find_best_candidate(
+                    conn, user_id=user_id, mem_type=t, vec=vec, tenant_id=tid
+                )
                 if candidate is not None:
                     existing_item, sim = candidate
                     if (
@@ -287,7 +312,7 @@ class MemoryStore:
                         and sim >= self.config.conflict_similarity_threshold
                         and self._is_conflict(existing_item.content, content_norm)
                     ):
-                        self._deprecate(conn, user_id=user_id, memory_id=existing_item.id)
+                        self._deprecate(conn, user_id=user_id, memory_id=existing_item.id, tenant_id=tid)
                     elif (
                         self.config.merge_enabled
                         and existing_item.status == "active"
@@ -301,18 +326,20 @@ class MemoryStore:
                             new_embedding_json=embedding_json,
                             source=source,
                             meta=meta,
+                            tenant_id=tid,
                         )
                         continue
 
                 mid = str(uuid.uuid4())
                 cur = conn.execute(
                     """
-                    INSERT INTO memory_items (id, user_id, type, key, value, content, created_at, updated_at, last_used_at, confidence, embedding_json, status, source, meta_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO memory_items (id, user_id, tenant_id, type, key, value, content, created_at, updated_at, last_used_at, confidence, embedding_json, status, source, meta_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         mid,
                         user_id,
+                        tid,
                         t,
                         key_norm,
                         value_norm,
@@ -367,33 +394,44 @@ class MemoryStore:
 
         return created
 
-    def _bump_confidence(self, conn: sqlite3.Connection, *, user_id: str, memory_id: str) -> None:
+    def _bump_confidence(
+        self, conn: sqlite3.Connection, *, user_id: str, memory_id: str, tenant_id: str = DEFAULT_MEMORY_TENANT_ID
+    ) -> None:
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         now = datetime.now(timezone.utc).isoformat()
         row = conn.execute(
-            "SELECT confidence FROM memory_items WHERE user_id = ? AND id = ?;",
-            (user_id, memory_id),
+            "SELECT confidence FROM memory_items WHERE user_id = ? AND tenant_id = ? AND id = ?;",
+            (user_id, tid, memory_id),
         ).fetchone()
         old_conf = float(row["confidence"]) if row and row["confidence"] is not None else self.config.default_confidence
         new_conf = min(1.0, old_conf * 0.85 + 0.15)
         conn.execute(
-            "UPDATE memory_items SET confidence = ?, updated_at = ? WHERE user_id = ? AND id = ?;",
-            (new_conf, now, user_id, memory_id),
+            "UPDATE memory_items SET confidence = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id = ?;",
+            (new_conf, now, user_id, tid, memory_id),
         )
 
-    def exists_exact(self, *, user_id: str, mem_type: MemoryType, content: str) -> bool:
+    def exists_exact(
+        self,
+        *,
+        user_id: str,
+        mem_type: MemoryType,
+        content: str,
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
+    ) -> bool:
         """
         最小去重：同一 user_id 下，同 type + content 完全一致则认为重复
         """
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         content_norm = self._normalize_content(content)
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT 1
                 FROM memory_items
-                WHERE user_id = ? AND type = ? AND content = ?
+                WHERE user_id = ? AND tenant_id = ? AND type = ? AND content = ?
                 LIMIT 1
                 """,
-                (user_id, mem_type, content_norm),
+                (user_id, tid, mem_type, content_norm),
             ).fetchone()
             return row is not None
 
@@ -406,22 +444,34 @@ class MemoryStore:
         # sqlite-vss 通常期望 float32 blob
         return struct.pack(f"{len(vec)}f", *[float(x) for x in vec])
 
-    def search(self, *, query: str, top_k: int = 5, user_id: str = "default") -> list[MemoryItem]:
+    def search(
+        self,
+        *,
+        query: str,
+        top_k: int = 5,
+        user_id: str = "default",
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
+    ) -> list[MemoryItem]:
         """
         统一检索接口：优先使用向量搜索，失败或未启用则降级为关键字搜索
         """
         if self.config.vector_enabled:
             try:
-                return self.search_vector(user_id=user_id, query=query, limit=top_k)
+                return self.search_vector(
+                    user_id=user_id, query=query, limit=top_k, tenant_id=tenant_id
+                )
             except Exception as e:
                 logger.warning(f"[MemoryStore] Vector search failed, falling back: {e}")
-        
-        return self.search_like(user_id=user_id, query=query, limit=top_k)
 
-    def search_vector(self, *, user_id: str, query: str, limit: int = 5) -> list[MemoryItem]:
+        return self.search_like(user_id=user_id, query=query, limit=top_k, tenant_id=tenant_id)
+
+    def search_vector(
+        self, *, user_id: str, query: str, limit: int = 5, tenant_id: str = DEFAULT_MEMORY_TENANT_ID
+    ) -> list[MemoryItem]:
         """
         向量检索（VectorSearchProvider 优先，失败则 python cosine）
         """
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         q = self._normalize_content(query)
         if not q:
             return []
@@ -438,7 +488,7 @@ class MemoryStore:
                         table_name="memory_vec",
                         query_vector=qvec,
                         limit=limit,
-                        filters={"user_id": user_id},
+                        filters={"user_id": user_id, "tenant_id": tid},
                         business_table="memory_items"  # 用于 JOIN 过滤
                     )
                     
@@ -456,9 +506,9 @@ class MemoryStore:
                                 f"""
                                 SELECT id, user_id, type, key, value, content, created_at, updated_at, last_used_at, confidence, embedding_json, status, source, meta_json, rowid
                                 FROM memory_items
-                                WHERE rowid IN ({placeholders}) AND user_id = ?
+                                WHERE rowid IN ({placeholders}) AND user_id = ? AND tenant_id = ?
                                 """,
-                                tuple(rowids) + (user_id,),
+                                tuple(rowids) + (user_id, tid),
                             ).fetchall()
                         
                         # 按 VectorSearchProvider 返回的距离顺序排序
@@ -482,11 +532,11 @@ class MemoryStore:
                 """
                 SELECT id, user_id, type, key, value, content, created_at, updated_at, last_used_at, confidence, embedding_json, status, source, meta_json
                 FROM memory_items
-                WHERE user_id = ? AND embedding_json IS NOT NULL
+                WHERE user_id = ? AND tenant_id = ? AND embedding_json IS NOT NULL
                 ORDER BY created_at DESC
                 LIMIT 500
                 """,
-                (user_id,),
+                (user_id, tid),
             ).fetchall()
 
         scored: list[tuple[float, sqlite3.Row]] = []
@@ -522,63 +572,85 @@ class MemoryStore:
             return 0.0
         return dot / (math.sqrt(na) * math.sqrt(nb))
 
-    def list_recent(self, *, user_id: str, limit: int = 20) -> list[MemoryItem]:
+    def list_recent(
+        self, *, user_id: str, limit: int = 20, tenant_id: str = DEFAULT_MEMORY_TENANT_ID
+    ) -> list[MemoryItem]:
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT id, user_id, type, key, value, content, created_at, updated_at, last_used_at, confidence, embedding_json, status, source, meta_json
                 FROM memory_items
-                WHERE user_id = ?
+                WHERE user_id = ? AND tenant_id = ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (user_id, limit),
+                (user_id, tid, limit),
             ).fetchall()
         return [self._row_to_item(r) for r in rows]
 
-    def search_like(self, *, user_id: str, query: str, limit: int = 10) -> list[MemoryItem]:
+    def search_like(
+        self,
+        *,
+        user_id: str,
+        query: str,
+        limit: int = 10,
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
+    ) -> list[MemoryItem]:
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         q = f"%{query}%"
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT id, user_id, type, key, value, content, created_at, updated_at, last_used_at, confidence, embedding_json, status, source, meta_json
                 FROM memory_items
-                WHERE user_id = ? AND content LIKE ?
+                WHERE user_id = ? AND tenant_id = ? AND content LIKE ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (user_id, q, limit),
+                (user_id, tid, q, limit),
             ).fetchall()
         return [self._row_to_item(r) for r in rows]
 
-    def list(self, *, user_id: str, limit: int = 50, include_deprecated: bool = False) -> list[MemoryItem]:
+    def list(
+        self,
+        *,
+        user_id: str,
+        limit: int = 50,
+        include_deprecated: bool = False,
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
+    ) -> list[MemoryItem]:
         if include_deprecated:
-            return self.list_recent(user_id=user_id, limit=limit)
+            return self.list_recent(user_id=user_id, limit=limit, tenant_id=tenant_id)
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT id, user_id, type, key, value, content, created_at, updated_at, last_used_at, confidence, embedding_json, status, source, meta_json
                 FROM memory_items
-                WHERE user_id = ? AND status = 'active'
+                WHERE user_id = ? AND tenant_id = ? AND status = 'active'
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (user_id, limit),
+                (user_id, tid, limit),
             ).fetchall()
         return [self._row_to_item(r) for r in rows]
 
-    def delete(self, *, user_id: str, memory_id: str) -> bool:
+    def delete(
+        self, *, user_id: str, memory_id: str, tenant_id: str = DEFAULT_MEMORY_TENANT_ID
+    ) -> bool:
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         with self._connect() as conn:
             # 先获取 rowid（用于删除向量）
             rowid_row = conn.execute(
-                "SELECT rowid FROM memory_items WHERE user_id = ? AND id = ?;",
-                (user_id, memory_id),
+                "SELECT rowid FROM memory_items WHERE user_id = ? AND tenant_id = ? AND id = ?;",
+                (user_id, tid, memory_id),
             ).fetchone()
-            
+
             # 删除 memory_items 记录
             cur = conn.execute(
-                "DELETE FROM memory_items WHERE user_id = ? AND id = ?;",
-                (user_id, memory_id),
+                "DELETE FROM memory_items WHERE user_id = ? AND tenant_id = ? AND id = ?;",
+                (user_id, tid, memory_id),
             )
             
             # 删除对应的向量（如果向量检索已启用）
@@ -596,17 +668,20 @@ class MemoryStore:
             
             return cur.rowcount > 0
 
-    def clear(self, *, user_id: str) -> int:
+    def clear(self, *, user_id: str, tenant_id: str = DEFAULT_MEMORY_TENANT_ID) -> int:
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         with self._connect() as conn:
             # 先获取所有要删除的记录的 rowid（用于删除向量）
             rowid_rows = conn.execute(
-                "SELECT rowid FROM memory_items WHERE user_id = ?;",
-                (user_id,),
+                "SELECT rowid FROM memory_items WHERE user_id = ? AND tenant_id = ?;",
+                (user_id, tid),
             ).fetchall()
             rowids = [r["rowid"] for r in rowid_rows]
-            
+
             # 删除 memory_items 记录
-            cur = conn.execute("DELETE FROM memory_items WHERE user_id = ?;", (user_id,))
+            cur = conn.execute(
+                "DELETE FROM memory_items WHERE user_id = ? AND tenant_id = ?;", (user_id, tid)
+            )
             deleted_count = cur.rowcount
             
             # 批量删除对应的向量（如果向量检索已启用）
@@ -623,15 +698,23 @@ class MemoryStore:
             
             return deleted_count
 
-    def touch_last_used(self, *, user_id: str, memory_ids: list[str]) -> int:
+    def touch_last_used(
+        self,
+        *,
+        user_id: str,
+        memory_ids: list[str],
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
+    ) -> int:
         if not memory_ids:
             return 0
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         now = datetime.now(timezone.utc).isoformat()
         placeholders = ",".join(["?"] * len(memory_ids))
         with self._connect() as conn:
             cur = conn.execute(
-                f"UPDATE memory_items SET last_used_at = ?, updated_at = ? WHERE user_id = ? AND id IN ({placeholders});",
-                [now, now, user_id, *memory_ids],
+                f"UPDATE memory_items SET last_used_at = ?, updated_at = ? "
+                f"WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders});",
+                [now, now, user_id, tid, *memory_ids],
             )
             return cur.rowcount
 
@@ -667,17 +750,24 @@ class MemoryStore:
         )
 
     def _find_best_candidate(
-        self, conn: sqlite3.Connection, *, user_id: str, mem_type: MemoryType, vec: list[float]
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: str,
+        mem_type: MemoryType,
+        vec: list[float],
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
     ) -> Optional[tuple[MemoryItem, float]]:
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         rows = conn.execute(
             """
             SELECT id, user_id, type, content, created_at, updated_at, last_used_at, confidence, embedding_json, status, source, meta_json
             FROM memory_items
-            WHERE user_id = ? AND type = ? AND embedding_json IS NOT NULL
+            WHERE user_id = ? AND tenant_id = ? AND type = ? AND embedding_json IS NOT NULL
             ORDER BY created_at DESC
             LIMIT 200
             """,
-            (user_id, mem_type),
+            (user_id, tid, mem_type),
         ).fetchall()
         best: Optional[tuple[MemoryItem, float]] = None
         for r in rows:
@@ -709,11 +799,20 @@ class MemoryStore:
         b = self._polarity(new)
         return a != 0 and b != 0 and a != b
 
-    def _deprecate(self, conn: sqlite3.Connection, *, user_id: str, memory_id: str) -> None:
+    def _deprecate(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: str,
+        memory_id: str,
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
+    ) -> None:
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
-            "UPDATE memory_items SET status = 'deprecated', updated_at = ? WHERE user_id = ? AND id = ?;",
-            (now, user_id, memory_id),
+            "UPDATE memory_items SET status = 'deprecated', updated_at = ? "
+            "WHERE user_id = ? AND tenant_id = ? AND id = ?;",
+            (now, user_id, tid, memory_id),
         )
 
     def _merge_into(
@@ -726,11 +825,13 @@ class MemoryStore:
         new_embedding_json: str,
         source: str,
         meta: Optional[dict],
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
     ) -> None:
+        tid = (tenant_id or DEFAULT_MEMORY_TENANT_ID).strip() or DEFAULT_MEMORY_TENANT_ID
         now = datetime.now(timezone.utc).isoformat()
         row = conn.execute(
-            "SELECT confidence, meta_json FROM memory_items WHERE user_id = ? AND id = ?;",
-            (user_id, memory_id),
+            "SELECT confidence, meta_json FROM memory_items WHERE user_id = ? AND tenant_id = ? AND id = ?;",
+            (user_id, tid, memory_id),
         ).fetchone()
         old_conf = float(row["confidence"]) if row and row["confidence"] is not None else self.config.default_confidence
         new_conf = min(1.0, old_conf * 0.85 + 0.15)
@@ -752,7 +853,7 @@ class MemoryStore:
             """
             UPDATE memory_items
             SET content = ?, embedding_json = ?, confidence = ?, updated_at = ?, meta_json = ?
-            WHERE user_id = ? AND id = ?
+            WHERE user_id = ? AND tenant_id = ? AND id = ?
             """,
             (
                 new_content,
@@ -761,17 +862,18 @@ class MemoryStore:
                 now,
                 json.dumps(merged_meta, ensure_ascii=False),
                 user_id,
+                tid,
                 memory_id,
             ),
         )
-        
+
         # 更新向量表（如果向量检索已启用）
         if self.config.vector_enabled and cur.rowcount > 0:
             try:
                 # 获取更新后的 rowid
                 rowid_row = conn.execute(
-                    "SELECT rowid FROM memory_items WHERE user_id = ? AND id = ?;",
-                    (user_id, memory_id),
+                    "SELECT rowid FROM memory_items WHERE user_id = ? AND tenant_id = ? AND id = ?;",
+                    (user_id, tid, memory_id),
                 ).fetchone()
                 
                 if rowid_row:

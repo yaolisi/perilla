@@ -7,10 +7,13 @@ from core.data.base import Base
 class IdempotencyRecordORM(Base):
     __tablename__ = "idempotency_records"
     __table_args__ = (
-        UniqueConstraint("scope", "owner_id", "idempotency_key", name="uq_idem_scope_owner_key"),
+        UniqueConstraint(
+            "tenant_id", "scope", "owner_id", "idempotency_key", name="uq_idem_tenant_scope_owner_key"
+        ),
     )
 
     id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(128), nullable=False, default="default", index=True)
     scope = Column(String(64), nullable=False, index=True)
     owner_id = Column(String(128), nullable=False, index=True)
     idempotency_key = Column(String(256), nullable=False)

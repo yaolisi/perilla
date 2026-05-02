@@ -27,6 +27,7 @@ class ExecutionRequest:
     execution_id: str
     workflow_id: str
     version_id: str
+    tenant_id: str = "default"
     priority: int = 0  # 优先级，数字越小优先级越高
     estimated_tokens: Optional[int] = None
     timeout_seconds: Optional[float] = None
@@ -496,6 +497,7 @@ class ExecutionManager:
             execution_id=cast(str, leased_any.execution_id),
             workflow_id=cast(str, leased_any.workflow_id),
             version_id=cast(str, leased_any.version_id),
+            tenant_id=(str(getattr(leased_any, "tenant_id", None) or "default").strip() or "default"),
             priority=int(cast(int, leased_any.priority) or 0),
         )
         queued_meta = self._queued_meta.pop(request.execution_id, {})
@@ -546,6 +548,7 @@ class ExecutionManager:
                 execution_id=request.execution_id,
                 workflow_id=request.workflow_id,
                 version_id=request.version_id,
+                tenant_id=(str(request.tenant_id).strip() or "default"),
                 priority=request.priority,
                 queue_order=queue_order,
             )
@@ -572,6 +575,7 @@ class ExecutionManager:
                     execution_id=cast(str, row_any.execution_id),
                     workflow_id=cast(str, row_any.workflow_id),
                     version_id=cast(str, row_any.version_id),
+                    tenant_id=(str(getattr(row_any, "tenant_id", None) or "default").strip() or "default"),
                     priority=int(cast(int, row_any.priority) or 0),
                 )
                 if req.execution_id in self._queued_executions:

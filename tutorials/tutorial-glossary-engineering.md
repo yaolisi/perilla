@@ -32,6 +32,9 @@
 | Tenant | Tenant | 隔离边界，跨租户访问应阻断 |
 | Namespace | Namespace | 资源逻辑域，workflow 通常要求 namespace==tenant |
 | Tenant Binding | Tenant Binding | API Key 可访问 tenant 映射 |
+| 租户强制路径 | Tenant enforcement prefixes | `backend/middleware/tenant_paths.py` 中列出的 URL 前缀；命中则须显式租户头 |
+| resolve_api_tenant_id | resolve_api_tenant_id | 仅用中间件注入的 `request.state.tenant_id`（及默认租户），不读头覆盖 state |
+| get_effective_tenant_id | get_effective_tenant_id | state 未设置时可读 `TENANT_HEADER_NAME`，再回落默认租户 |
 
 ---
 

@@ -59,6 +59,7 @@ from core.models.registry import get_model_registry
 from core.agent_runtime.definition import get_agent_registry
 from core.knowledge.knowledge_base_store import KnowledgeBaseStore
 from core.data.base import get_db
+from core.utils.tenant_request import resolve_api_tenant_id
 from core.idempotency.service import (
     IDEMPOTENCY_STATUS_FAILED,
     IDEMPOTENCY_STATUS_SUCCEEDED,
@@ -752,6 +753,8 @@ class QueueSummaryResponse(BaseModel):
     image_generation: QueueImageGenerationSummary
     runtime: QueueRuntimeSummary
     total_load: int
+    tenant_scope: bool = False
+    tenant_id: Optional[str] = None
 
 
 class EventBusRuntimeStatusResponse(BaseModel):
@@ -1392,6 +1395,7 @@ async def _run_replay_with_optional_idempotency(
         return await _run_replay_with_rate_limit(body)
 
     owner_id = str(getattr(request.state, "user_id", None) or "platform_admin")
+    tenant_id = resolve_api_tenant_id(request)
     idem_service = IdempotencyService(db)
     req_hash = _stable_request_hash(
         {
@@ -1408,6 +1412,7 @@ async def _run_replay_with_optional_idempotency(
         key=idem_key,
         request_hash=req_hash,
         ttl_seconds=3600,
+        tenant_id=tenant_id,
     )
     if claim.conflict:
         raise_api_error(
@@ -1608,6 +1613,7 @@ async def install_plugin_market_package(
     _role: Annotated[Any, Depends(require_platform_admin)],
 ) -> PluginMarketInstallResponse:
     service = get_plugin_market_service()
+    tenant_id = resolve_api_tenant_id(request)
     model_registry, memory = _plugin_init_context()
     try:
         result = await service.install(
@@ -1616,6 +1622,7 @@ async def install_plugin_market_package(
             memory=memory,
             model_registry=model_registry,
             installed_by=getattr(request.state, "user_id", None),
+            tenant_id=tenant_id,
         )
     except PluginMarketValidationError as e:
         raise_api_error(status_code=400, code="plugin_market_install_failed", message=str(e))
@@ -1624,10 +1631,13 @@ async def install_plugin_market_package(
 
 @router.get("/plugins/market/installations")
 async def list_plugin_market_installations(
-    *, _role: Annotated[Any, Depends(require_platform_admin)]
+    request: Request,
+    *,
+    _role: Annotated[Any, Depends(require_platform_admin)],
 ) -> PluginMarketInstallationListResponse:
     service = get_plugin_market_service()
-    items = service.list_installations()
+    tenant_id = resolve_api_tenant_id(request)
+    items = service.list_installations(tenant_id=tenant_id)
     parsed = [SystemJsonRecord.model_validate(x) for x in items]
     return PluginMarketInstallationListResponse(count=len(parsed), items=parsed)
 
@@ -1635,10 +1645,12 @@ async def list_plugin_market_installations(
 @router.post("/plugins/market/toggle")
 async def toggle_plugin_market_installation(
     body: PluginMarketToggleBody,
+    request: Request,
     *,
     _role: Annotated[Any, Depends(require_platform_admin)],
 ) -> PluginMarketToggleResponse:
     service = get_plugin_market_service()
+    tenant_id = resolve_api_tenant_id(request)
     model_registry, memory = _plugin_init_context()
     ok = await service.set_enabled(
         body.package_id,
@@ -1646,6 +1658,7 @@ async def toggle_plugin_market_installation(
         logger=logger,
         memory=memory,
         model_registry=model_registry,
+        tenant_id=tenant_id,
     )
     if not ok:
         raise_api_error(
@@ -2035,12 +2048,24 @@ async def storage_readiness_api() -> StorageReadinessResponse:
 
 
 @router.get("/queue-summary")
-async def queue_summary_api() -> QueueSummaryResponse:
+async def queue_summary_api(
+    request: Request,
+    scoped: Annotated[
+        bool,
+        Query(
+            description=(
+                "为 true 时仅统计当前解析租户下的 workflow 执行与图片任务（与 X-Tenant-Id / 绑定上下文一致）；"
+                "默认 false 保持全库聚合（运维大盘）"
+            ),
+        ),
+    ] = False,
+) -> QueueSummaryResponse:
     """统一任务负载摘要（workflow + image + runtime）。"""
     workflow_running = 0
     image_pending = 0
     image_running = 0
     runtime_models = 0
+    eff_tenant = resolve_api_tenant_id(request)
     try:
         from core.data.base import db_session
         from core.data.models.workflow import WorkflowExecutionORM
@@ -2048,27 +2073,22 @@ async def queue_summary_api() -> QueueSummaryResponse:
         from sqlalchemy import func
 
         with db_session() as db:
-            workflow_running = int(
-                db.query(func.count())
-                .select_from(WorkflowExecutionORM)
-                .filter(WorkflowExecutionORM.state == "running")
-                .scalar()
-                or 0
+            wf_q = db.query(func.count()).select_from(WorkflowExecutionORM).filter(
+                WorkflowExecutionORM.state == "running"
             )
-            image_pending = int(
-                db.query(func.count())
-                .select_from(ImageGenerationJobORM)
-                .filter(ImageGenerationJobORM.status == "queued")
-                .scalar()
-                or 0
+            img_p_q = db.query(func.count()).select_from(ImageGenerationJobORM).filter(
+                ImageGenerationJobORM.status == "queued"
             )
-            image_running = int(
-                db.query(func.count())
-                .select_from(ImageGenerationJobORM)
-                .filter(ImageGenerationJobORM.status == "running")
-                .scalar()
-                or 0
+            img_r_q = db.query(func.count()).select_from(ImageGenerationJobORM).filter(
+                ImageGenerationJobORM.status == "running"
             )
+            if scoped:
+                wf_q = wf_q.filter(WorkflowExecutionORM.tenant_id == eff_tenant)
+                img_p_q = img_p_q.filter(ImageGenerationJobORM.tenant_id == eff_tenant)
+                img_r_q = img_r_q.filter(ImageGenerationJobORM.tenant_id == eff_tenant)
+            workflow_running = int(wf_q.scalar() or 0)
+            image_pending = int(img_p_q.scalar() or 0)
+            image_running = int(img_r_q.scalar() or 0)
     except Exception:
         pass
     try:
@@ -2079,7 +2099,14 @@ async def queue_summary_api() -> QueueSummaryResponse:
         runtime_models = 0
 
     return QueueSummaryResponse.model_validate(
-        build_unified_queue_summary(workflow_running, image_pending, image_running, runtime_models),
+        build_unified_queue_summary(
+            workflow_running,
+            image_pending,
+            image_running,
+            runtime_models,
+            tenant_scope=scoped,
+            tenant_id=eff_tenant if scoped else None,
+        ),
     )
 
 

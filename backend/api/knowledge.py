@@ -17,12 +17,39 @@ from core.knowledge.file_storage import FileStorage
 from core.knowledge.indexer import KnowledgeBaseIndexer
 from core.knowledge.status import DocumentStatus
 from core.utils.user_context import get_user_id, UserAccessDeniedError, ResourceNotFoundError
-
+from core.utils.tenant_request import get_effective_tenant_id
 router = APIRouter(prefix="/api", tags=["knowledge"])
 MSG_KB_NOT_FOUND = "Knowledge base not found"
 MSG_DOC_NOT_FOUND = "Document not found"
 MSG_DOC_WRONG_KB = "Document does not belong to this knowledge base"
 MSG_REQUEST_REQUIRED = "Request is required"
+
+
+def _get_kb_or_raise(request: Request, kb_id: str) -> dict:
+    """校验 KB 存在且属于当前请求的 user + tenant。"""
+    user_id = get_user_id(request)
+    tenant_id = get_effective_tenant_id(request)
+    try:
+        kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id, tenant_id=tenant_id)
+    except ResourceNotFoundError:
+        raise_api_error(
+            status_code=404,
+            code="knowledge_base_not_found",
+            message=MSG_KB_NOT_FOUND,
+            details={"knowledge_base_id": kb_id},
+        )
+    except UserAccessDeniedError as e:
+        logger.warning(f"Knowledge base access denied: {e}")
+        raise_api_error(status_code=403, code="knowledge_access_denied", message=str(e))
+    if not kb:
+        raise_api_error(
+            status_code=404,
+            code="knowledge_base_not_found",
+            message=MSG_KB_NOT_FOUND,
+            details={"knowledge_base_id": kb_id},
+        )
+    return kb
+
 
 # 确定统一数据库路径
 _db_path = (
@@ -261,7 +288,8 @@ async def create_knowledge_base(req: CreateKnowledgeBaseRequest, request: Reques
     """创建知识库"""
     try:
         user_id = get_user_id(request)
-        
+        tenant_id = get_effective_tenant_id(request)
+
         kb_id = _kb_store.create_knowledge_base(
             name=req.name,
             description=req.description,
@@ -273,6 +301,7 @@ async def create_knowledge_base(req: CreateKnowledgeBaseRequest, request: Reques
                 req.chunk_size_overrides.model_dump(mode="json"),
                 ensure_ascii=False,
             ),
+            tenant_id=tenant_id,
         )
         return KnowledgeBaseCreatedResponse(
             id=kb_id,
@@ -294,7 +323,8 @@ async def list_knowledge_bases(request: Request) -> KnowledgeBaseListEnvelope:
     """列出用户的所有知识库"""
     try:
         user_id = get_user_id(request)
-        kbs = _kb_store.list_knowledge_bases(user_id=user_id)
+        tenant_id = get_effective_tenant_id(request)
+        kbs = _kb_store.list_knowledge_bases(user_id=user_id, tenant_id=tenant_id)
         return KnowledgeBaseListEnvelope(
             object="list",
             data=[KnowledgeBaseRecordResponse.model_validate(k) for k in kbs],
@@ -309,17 +339,8 @@ async def list_knowledge_bases(request: Request) -> KnowledgeBaseListEnvelope:
 async def get_knowledge_base(kb_id: str, request: Request) -> KnowledgeBaseRecordResponse:
     """获取知识库信息"""
     try:
-        user_id = get_user_id(request)
-        kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        if not kb:
-            raise_api_error(
-                status_code=404,
-                code="knowledge_base_not_found",
-                message=MSG_KB_NOT_FOUND,
-                details={"knowledge_base_id": kb_id},
-            )
-        assert kb is not None
-        
+        kb = _get_kb_or_raise(request, kb_id)
+
         # 计算磁盘使用量
         disk_size_info = _kb_store.get_knowledge_base_disk_size(kb_id)
         kb["disk_size"] = disk_size_info
@@ -350,18 +371,9 @@ async def update_knowledge_base(
     """更新知识库信息"""
     try:
         user_id = get_user_id(request)
-        
-        # 验证知识库存在
-        kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        if not kb:
-            raise_api_error(
-                status_code=404,
-                code="knowledge_base_not_found",
-                message=MSG_KB_NOT_FOUND,
-                details={"knowledge_base_id": kb_id},
-            )
-        assert kb is not None
-        
+        tenant_id = get_effective_tenant_id(request)
+        _get_kb_or_raise(request, kb_id)
+
         # 更新知识库
         success = _kb_store.update_knowledge_base(
             kb_id=kb_id,
@@ -374,6 +386,8 @@ async def update_knowledge_base(
                 if req.chunk_size_overrides is not None
                 else None
             ),
+            user_id=user_id,
+            tenant_id=tenant_id,
         )
         
         if not success:
@@ -385,7 +399,7 @@ async def update_knowledge_base(
             )
         
         # 返回更新后的知识库信息
-        updated_kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
+        updated_kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id, tenant_id=tenant_id)
         assert updated_kb is not None
         return KnowledgeBaseRecordResponse.model_validate(updated_kb)
     except APIException:
@@ -401,11 +415,12 @@ async def delete_knowledge_base(kb_id: str, request: Request) -> KnowledgeBaseDe
     """删除知识库（包含物理文件删除）"""
     try:
         user_id = get_user_id(request)
-        
+        tenant_id = get_effective_tenant_id(request)
+
         # 获取知识库下的所有文档，用于删除物理文件
         # 先获取 KB 信息（可能抛出权限或不存在异常）
-        _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        docs = _kb_store.list_documents(kb_id, user_id=user_id)
+        _get_kb_or_raise(request, kb_id)
+        docs = _kb_store.list_documents(kb_id, user_id=user_id, tenant_id=tenant_id)
         
         # 删除所有文档的物理文件
         for doc in docs:
@@ -428,7 +443,7 @@ async def delete_knowledge_base(kb_id: str, request: Request) -> KnowledgeBaseDe
             logger.warning(f"Failed to delete knowledge base directory: {e}")
         
         # 删除数据库记录（级联删除文档和 chunks）
-        _kb_store.delete_knowledge_base(kb_id, user_id=user_id)
+        _kb_store.delete_knowledge_base(kb_id, user_id=user_id, tenant_id=tenant_id)
         
         logger.info(f"Deleted knowledge base: {kb_id}")
         return KnowledgeBaseDeleteResponse(deleted=True, id=kb_id)
@@ -478,20 +493,12 @@ async def get_knowledge_base_stats(kb_id: str, request: Request) -> KnowledgeBas
     """获取知识库统计信息"""
     try:
         user_id = get_user_id(request)
-        
-        # 验证知识库存在
-        kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        if not kb:
-            raise_api_error(
-                status_code=404,
-                code="knowledge_base_not_found",
-                message=MSG_KB_NOT_FOUND,
-                details={"knowledge_base_id": kb_id},
-            )
-        assert kb is not None
-        
+        tenant_id = get_effective_tenant_id(request)
+
+        kb = _get_kb_or_raise(request, kb_id)
+
         # 获取文档统计
-        docs = _kb_store.list_documents(kb_id, user_id=user_id)
+        docs = _kb_store.list_documents(kb_id, user_id=user_id, tenant_id=tenant_id)
         doc_count = len(docs)
         
         # 按状态统计文档
@@ -528,7 +535,9 @@ async def list_documents(kb_id: str, request: Request) -> KnowledgeDocumentListE
     """列出知识库下的所有文档"""
     try:
         user_id = get_user_id(request)
-        docs = _kb_store.list_documents(kb_id, user_id=user_id)
+        tenant_id = get_effective_tenant_id(request)
+        _get_kb_or_raise(request, kb_id)
+        docs = _kb_store.list_documents(kb_id, user_id=user_id, tenant_id=tenant_id)
         # 确保状态和 chunks 字段存在
         for doc in docs:
             if not isinstance(doc, dict):
@@ -550,17 +559,10 @@ async def get_document(kb_id: str, doc_id: str, request: Request) -> KnowledgeDo
     """获取文档详细信息"""
     try:
         user_id = get_user_id(request)
-        
-        # 验证知识库存在
-        kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        if not kb:
-            raise_api_error(
-                status_code=404,
-                code="knowledge_base_not_found",
-                message=MSG_KB_NOT_FOUND,
-                details={"knowledge_base_id": kb_id},
-            )
-        
+        tenant_id = get_effective_tenant_id(request)
+
+        _get_kb_or_raise(request, kb_id)
+
         # 获取文档信息
         doc = _kb_store.get_document(doc_id)
         if not doc:
@@ -580,7 +582,21 @@ async def get_document(kb_id: str, doc_id: str, request: Request) -> KnowledgeDo
                 message=MSG_DOC_WRONG_KB,
                 details={"document_id": doc_id, "knowledge_base_id": kb_id},
             )
-        
+
+        if doc.get("user_id") != user_id:
+            raise_api_error(
+                status_code=403,
+                code="knowledge_access_denied",
+                message="Document does not belong to the current user",
+            )
+        doc_tid = (str(doc.get("tenant_id") or "").strip()) or "default"
+        if doc_tid != tenant_id:
+            raise_api_error(
+                status_code=403,
+                code="knowledge_access_denied",
+                message="Document does not belong to the current tenant",
+            )
+
         # 添加额外统计信息
         doc["status"] = doc.get("status", "UPLOADED")
         doc["chunks"] = doc.get("chunks_count", 0)
@@ -605,7 +621,7 @@ def index_document_background(
     """后台索引任务（同步函数，由 BackgroundTasks 调用）"""
     try:
         # 获取知识库信息，确保使用正确的 embedding 维度
-        kb_info = _kb_store.get_knowledge_base(kb_id)
+        kb_info = _kb_store.read_knowledge_base_row(kb_id)
         if not kb_info:
             raise ValueError(f"Knowledge base '{kb_id}' not found")
         
@@ -687,17 +703,10 @@ async def upload_document(
     """上传文档到知识库并启动索引流程"""
     try:
         user_id = get_user_id(request)
-        
-        # 验证知识库存在
-        kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        if not kb:
-            raise_api_error(
-                status_code=404,
-                code="knowledge_base_not_found",
-                message=MSG_KB_NOT_FOUND,
-                details={"knowledge_base_id": kb_id},
-            )
-        
+        tenant_id = get_effective_tenant_id(request)
+
+        _get_kb_or_raise(request, kb_id)
+
         # 验证文件类型
         allowed_extensions = {'.pdf', '.txt', '.md', '.docx'}
         if not file.filename:
@@ -733,6 +742,7 @@ async def upload_document(
             status=DocumentStatus.UPLOADED,
             user_id=user_id,
             content_hash=content_hash,
+            tenant_id=tenant_id,
         )
         
         # 保存文件到本地存储
@@ -772,17 +782,10 @@ async def delete_document(kb_id: str, doc_id: str, request: Request) -> Document
     """删除文档"""
     try:
         user_id = get_user_id(request)
-        
-        # 验证知识库存在
-        kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        if not kb:
-            raise_api_error(
-                status_code=404,
-                code="knowledge_base_not_found",
-                message=MSG_KB_NOT_FOUND,
-                details={"knowledge_base_id": kb_id},
-            )
-        
+        tenant_id = get_effective_tenant_id(request)
+
+        _get_kb_or_raise(request, kb_id)
+
         # 获取文档信息（用于删除文件）
         doc = _kb_store.get_document(doc_id)
         if not doc:
@@ -802,6 +805,20 @@ async def delete_document(kb_id: str, doc_id: str, request: Request) -> Document
                 message=MSG_DOC_WRONG_KB,
                 details={"document_id": doc_id, "knowledge_base_id": kb_id},
             )
+
+        if doc.get("user_id") != user_id:
+            raise_api_error(
+                status_code=403,
+                code="knowledge_access_denied",
+                message="Document does not belong to the current user",
+            )
+        doc_tid = (str(doc.get("tenant_id") or "").strip()) or "default"
+        if doc_tid != tenant_id:
+            raise_api_error(
+                status_code=403,
+                code="knowledge_access_denied",
+                message="Document does not belong to the current tenant",
+            )
         
         # 删除 chunks（通过知识库的向量表）
         _kb_store.delete_document_chunks(kb_id, doc_id)
@@ -818,7 +835,7 @@ async def delete_document(kb_id: str, doc_id: str, request: Request) -> Document
                 logger.warning(f"Failed to delete file {doc['file_path']}: {e}")
         
         # 删除文档记录
-        success = _kb_store.delete_document(doc_id, user_id=user_id)
+        success = _kb_store.delete_document(doc_id, user_id=user_id, tenant_id=tenant_id)
         
         if not success:
             raise_api_error(
@@ -850,17 +867,10 @@ async def reindex_document(
     """重新索引文档"""
     try:
         user_id = get_user_id(request)
-        
-        # 验证知识库存在
-        kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        if not kb:
-            raise_api_error(
-                status_code=404,
-                code="knowledge_base_not_found",
-                message=MSG_KB_NOT_FOUND,
-                details={"knowledge_base_id": kb_id},
-            )
-        
+        tenant_id = get_effective_tenant_id(request)
+
+        _get_kb_or_raise(request, kb_id)
+
         # 获取文档信息
         doc = _kb_store.get_document(doc_id)
         if not doc:
@@ -879,6 +889,20 @@ async def reindex_document(
                 code="knowledge_document_wrong_kb",
                 message=MSG_DOC_WRONG_KB,
                 details={"document_id": doc_id, "knowledge_base_id": kb_id},
+            )
+
+        if doc.get("user_id") != user_id:
+            raise_api_error(
+                status_code=403,
+                code="knowledge_access_denied",
+                message="Document does not belong to the current user",
+            )
+        doc_tid = (str(doc.get("tenant_id") or "").strip()) or "default"
+        if doc_tid != tenant_id:
+            raise_api_error(
+                status_code=403,
+                code="knowledge_access_denied",
+                message="Document does not belong to the current tenant",
             )
         
         # 验证文件存在
@@ -958,18 +982,8 @@ async def list_chunks(
 ) -> KnowledgeChunkListEnvelope:
     """列出知识库下的所有 chunks"""
     try:
-        user_id = get_user_id(request)
+        _get_kb_or_raise(request, kb_id)
 
-        # 验证知识库存在
-        kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        if not kb:
-            raise_api_error(
-                status_code=404,
-                code="knowledge_base_not_found",
-                message=MSG_KB_NOT_FOUND,
-                details={"knowledge_base_id": kb_id},
-            )
-        
         # 获取 chunk 数量
         total = _kb_store.get_chunk_count(kb_id)
         
@@ -1003,18 +1017,8 @@ async def search_knowledge_base(
     """检索知识库"""
     try:
         user_id = get_user_id(request)
-        
-        # 验证知识库存在
-        kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-        if not kb:
-            raise_api_error(
-                status_code=404,
-                code="knowledge_base_not_found",
-                message=MSG_KB_NOT_FOUND,
-                details={"knowledge_base_id": kb_id},
-            )
-        assert kb is not None
-        
+        kb = _get_kb_or_raise(request, kb_id)
+
         # 获取 embedding model
         from core.models.registry import get_model_registry
         registry = get_model_registry()
@@ -1116,10 +1120,7 @@ async def create_kb_version(
     req: CreateKnowledgeBaseVersionRequest,
     request: Request,
 ) -> KbVersionCreatedResponse:
-    user_id = get_user_id(request)
-    kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-    if not kb:
-        raise_api_error(status_code=404, code="knowledge_base_not_found", message=MSG_KB_NOT_FOUND)
+    _get_kb_or_raise(request, kb_id)
     version_id = _kb_store.create_kb_version(
         kb_id=kb_id,
         version_label=req.version_label,
@@ -1136,10 +1137,7 @@ async def create_kb_version(
 
 @router.get("/knowledge-bases/{kb_id}/versions", response_model=KbVersionListEnvelope)
 async def list_kb_versions(kb_id: str, request: Request) -> KbVersionListEnvelope:
-    user_id = get_user_id(request)
-    kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-    if not kb:
-        raise_api_error(status_code=404, code="knowledge_base_not_found", message=MSG_KB_NOT_FOUND)
+    _get_kb_or_raise(request, kb_id)
     versions = _kb_store.list_kb_versions(kb_id)
     return KbVersionListEnvelope(
         object="list",
@@ -1153,10 +1151,7 @@ async def search_kb_graph(
     req: GraphSearchRequest,
     request: Request,
 ) -> KnowledgeGraphSearchEnvelope:
-    user_id = get_user_id(request)
-    kb = _kb_store.get_knowledge_base(kb_id, user_id=user_id)
-    if not kb:
-        raise_api_error(status_code=404, code="knowledge_base_not_found", message=MSG_KB_NOT_FOUND)
+    _get_kb_or_raise(request, kb_id)
     results = _kb_store.search_graph_relations(
         kb_id=kb_id,
         query_text=req.query,

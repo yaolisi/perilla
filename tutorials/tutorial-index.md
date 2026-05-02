@@ -212,7 +212,8 @@ PYTHONPATH=backend python3 backend/scripts/test_execution_kernel_regression.py
 
 ## 8. 当前版本能力摘要（文档层）
 
-- Workflow 多租户：入口校验 + 存储层 tenant-aware  
+- 租户强制路径集合：`backend/middleware/tenant_paths.py`（聊天、会话、记忆、知识库、agent 会话、VLM、workflow、audit、system 等前缀）；须 **`X-Tenant-Id`** + API Key–租户绑定  
+- 数据面 tenant-aware：Workflow、会话、知识库、记忆、治理审计等；MCP/Skills 等控制面按中间件租户解析（见 `resolve_api_tenant_id`）  
 - API Key 与租户绑定  
 - `api/system` 关键写接口管理员权限  
 - 追踪头净化与限流响应去敏  

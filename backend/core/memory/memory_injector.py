@@ -7,7 +7,7 @@ from typing import Literal
 
 from log import logger
 from core.memory.memory_item import MemoryItem
-from core.memory.memory_store import MemoryStore
+from core.memory.memory_store import DEFAULT_MEMORY_TENANT_ID, MemoryStore
 
 MessageDict = dict[str, str]
 Role = Literal["system", "user", "assistant", "tool"]
@@ -35,10 +35,18 @@ class MemoryInjector:
         self.store = store
         self.config = config
 
-    def inject(self, messages: list[MessageDict], *, user_id: str) -> list[MessageDict]:
+    def inject(
+        self,
+        messages: list[MessageDict],
+        *,
+        user_id: str,
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
+    ) -> list[MessageDict]:
         try:
             top_k = max(0, min(self.config.top_k, 5))
-            mems = self._select_memories(messages, user_id=user_id, top_k=top_k)
+            mems = self._select_memories(
+                messages, user_id=user_id, top_k=top_k, tenant_id=tenant_id
+            )
             if not mems:
                 return messages
 
@@ -63,7 +71,9 @@ class MemoryInjector:
 
             # 更新 last_used_at（用于后续衰减/排序）
             try:
-                self.store.touch_last_used(user_id=user_id, memory_ids=[m.id for m in mems])
+                self.store.touch_last_used(
+                    user_id=user_id, memory_ids=[m.id for m in mems], tenant_id=tenant_id
+                )
             except Exception:
                 pass
 
@@ -74,9 +84,16 @@ class MemoryInjector:
             logger.error(f"[MemoryInjector] inject failed: {e}", exc_info=True)
             return messages
 
-    def _select_memories(self, messages: list[MessageDict], *, user_id: str, top_k: int) -> list[MemoryItem]:
+    def _select_memories(
+        self,
+        messages: list[MessageDict],
+        *,
+        user_id: str,
+        top_k: int,
+        tenant_id: str = DEFAULT_MEMORY_TENANT_ID,
+    ) -> list[MemoryItem]:
         if self.config.mode == "recent":
-            return self.store.list_recent(user_id=user_id, limit=top_k)
+            return self.store.list_recent(user_id=user_id, limit=top_k, tenant_id=tenant_id)
 
         # keyword / vector 都需要 last user
         last_user = ""
@@ -88,9 +105,13 @@ class MemoryInjector:
             return []
 
         if self.config.mode == "vector":
-            return self.store.search_vector(user_id=user_id, query=last_user, limit=top_k)
+            return self.store.search_vector(
+                user_id=user_id, query=last_user, limit=top_k, tenant_id=tenant_id
+            )
 
-        return self.store.search_like(user_id=user_id, query=last_user[:64], limit=top_k)
+        return self.store.search_like(
+            user_id=user_id, query=last_user[:64], limit=top_k, tenant_id=tenant_id
+        )
 
     @staticmethod
     def _format_memory_message(mems: list[MemoryItem]) -> str:

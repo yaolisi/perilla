@@ -42,8 +42,10 @@ def build_keyed_hash_idempotency_service(record_id: int = 1):
         def __init__(self, _db):
             self._db = _db
 
-        def claim(self, *, scope, owner_id, key, request_hash):
-            idx = (scope, owner_id, key)
+        def claim(self, *, scope, owner_id, key, request_hash, tenant_id=None, ttl_seconds=86400):
+            _ = ttl_seconds
+            tid = (str(tenant_id or "default").strip() or "default")
+            idx = (tid, scope, owner_id, key)
             prev = self._seen.get(idx)
             if prev is None:
                 self._seen[idx] = request_hash

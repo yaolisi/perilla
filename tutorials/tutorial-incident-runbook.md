@@ -49,6 +49,8 @@
 - `TENANT_API_KEY_TENANTS_JSON`
 - 请求头：`X-Api-Key`、`X-Tenant-Id`
 
+若同时出现大量 **400** / 文案含 **`tenant id required for protected path`**：核对客户端是否对 **租户强制路径** 漏带头（前缀集合见 **`backend/middleware/tenant_paths.py`**，含 chat、session、memory 等）。
+
 快速判断：
 
 - 单租户失败：可能是 key-tenant 绑定缺失

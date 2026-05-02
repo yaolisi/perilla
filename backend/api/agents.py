@@ -48,6 +48,9 @@ from core.data.base import get_db
 from config.settings import settings
 from api.error_i18n import localize_error_message, resolve_accept_language_for_sse
 from api.errors import APIErrorHttpEnvelope, raise_api_error  # type: ignore[import-untyped]
+from core.utils.user_context import get_user_id, ResourceNotFoundError, UserAccessDeniedError
+from core.utils.tenant_request import get_effective_tenant_id
+from core.agent_runtime.session import DEFAULT_AGENT_SESSION_TENANT_ID
 
 router = APIRouter(
     prefix="/api/agents",
@@ -638,7 +641,7 @@ async def list_agents() -> AgentsListEnvelope:
         },
     },
 )
-async def create_agent(req: CreateAgentRequest) -> AgentWithSkillsMetaResponse:
+async def create_agent(req: CreateAgentRequest, request: Request) -> AgentWithSkillsMetaResponse:
     """Create a new agent with validation"""
     registry = get_agent_registry()
     
@@ -681,8 +684,21 @@ async def create_agent(req: CreateAgentRequest) -> AgentWithSkillsMetaResponse:
                 code="agent_kb_store_unavailable",
                 message="Knowledge base store is not available. Please try again later.",
             )
+        uid = get_user_id(request)
+        tid = get_effective_tenant_id(request)
         for kb_id in rag_ids:
-            if not kb_store.get_knowledge_base(kb_id):
+            try:
+                kb_ok = kb_store.get_knowledge_base(kb_id, user_id=uid, tenant_id=tid)
+            except ResourceNotFoundError:
+                kb_ok = None
+            except UserAccessDeniedError:
+                raise_api_error(
+                    status_code=403,
+                    code="agent_knowledge_base_access_denied",
+                    message=f"Access denied for knowledge base '{kb_id}'.",
+                    details={"knowledge_base_id": kb_id},
+                )
+            if not kb_ok:
                 raise_api_error(
                     status_code=400,
                     code="agent_knowledge_base_not_found",
@@ -849,7 +865,7 @@ async def get_agent(agent_id: str) -> AgentWithSkillsMetaResponse:
         },
     },
 )
-async def update_agent(agent_id: str, req: CreateAgentRequest) -> AgentWithSkillsMetaResponse:
+async def update_agent(agent_id: str, req: CreateAgentRequest, request: Request) -> AgentWithSkillsMetaResponse:
     registry = get_agent_registry()
     
     # 获取现有 agent，用于合并 model_params
@@ -886,8 +902,21 @@ async def update_agent(agent_id: str, req: CreateAgentRequest) -> AgentWithSkill
                 code="agent_kb_store_unavailable",
                 message="Knowledge base store is not available. Please try again later.",
             )
+        uid = get_user_id(request)
+        tid = get_effective_tenant_id(request)
         for kb_id in rag_ids:
-            if not kb_store.get_knowledge_base(kb_id):
+            try:
+                kb_ok = kb_store.get_knowledge_base(kb_id, user_id=uid, tenant_id=tid)
+            except ResourceNotFoundError:
+                kb_ok = None
+            except UserAccessDeniedError:
+                raise_api_error(
+                    status_code=403,
+                    code="agent_knowledge_base_access_denied",
+                    message=f"Access denied for knowledge base '{kb_id}'.",
+                    details={"knowledge_base_id": kb_id},
+                )
+            if not kb_ok:
                 raise_api_error(
                     status_code=400,
                     code="agent_knowledge_base_not_found",
@@ -1212,16 +1241,36 @@ def _prepare_run_with_files_session(
     session_store: Any,
     session_id: str,
     agent_id: str,
+    user_id: str,
+    tenant_id: str,
     messages_objs: List[Message],
     saved_names: List[str],
     workspace_dir_str: str,
     collaboration: Optional[Dict[str, Any]] = None,
 ) -> AgentSession:
-    session = cast(Optional[AgentSession], session_store.get_session(session_id))
+    tid = (tenant_id or DEFAULT_AGENT_SESSION_TENANT_ID).strip() or DEFAULT_AGENT_SESSION_TENANT_ID
+    principal = session_store.get_session_principal(session_id)
+    if principal:
+        pu, pt = principal
+        if pu != user_id or pt != tid:
+            raise_api_error(
+                status_code=409,
+                code="agent_session_id_conflict",
+                message=(
+                    f"Session ID '{session_id}' is already bound to another user or tenant."
+                ),
+                details={"session_id": session_id},
+            )
+    session = cast(
+        Optional[AgentSession],
+        session_store.get_session(session_id, user_id=user_id, tenant_id=tid),
+    )
     if not session:
         session = AgentSession(
             session_id=session_id,
             agent_id=agent_id,
+            user_id=user_id,
+            tenant_id=tid,
             messages=messages_objs,
             status="idle",
         )
@@ -1253,6 +1302,7 @@ def _claim_run_idempotency(
     db: Session,
     idem_key: Optional[str],
     user_id: str,
+    tenant_id: str,
     agent_id: str,
     req: RunAgentRequest,
     session_store: Any,
@@ -1275,6 +1325,7 @@ def _claim_run_idempotency(
         owner_id=user_id,
         key=idem_key,
         request_hash=req_hash,
+        tenant_id=tenant_id,
     )
     if claim.conflict:
         raise_api_error(
@@ -1286,7 +1337,11 @@ def _claim_run_idempotency(
     idem_record = claim.record
     if not claim.is_new:
         if claim.record.response_ref:
-            existing_session = session_store.get_session(claim.record.response_ref)
+            existing_session = session_store.get_session(
+                claim.record.response_ref,
+                user_id=user_id,
+                tenant_id=tenant_id,
+            )
             if existing_session:
                 return idem_service, existing_session
         raise_api_error(
@@ -1303,15 +1358,32 @@ def _prepare_run_session(
     session_store: Any,
     session_id: str,
     agent_id: str,
+    user_id: str,
+    tenant_id: str,
     messages: List[Message],
     agent: AgentDefinition,
     collaboration: Optional[Dict[str, Any]] = None,
 ) -> tuple[AgentSession, str]:
-    session = session_store.get_session(session_id)
+    tid = (tenant_id or DEFAULT_AGENT_SESSION_TENANT_ID).strip() or DEFAULT_AGENT_SESSION_TENANT_ID
+    principal = session_store.get_session_principal(session_id)
+    if principal:
+        pu, pt = principal
+        if pu != user_id or pt != tid:
+            raise_api_error(
+                status_code=409,
+                code="agent_session_id_conflict",
+                message=(
+                    f"Session ID '{session_id}' is already bound to another user or tenant."
+                ),
+                details={"session_id": session_id},
+            )
+    session = session_store.get_session(session_id, user_id=user_id, tenant_id=tid)
     if not session:
         session = AgentSession(
             session_id=session_id,
             agent_id=agent_id,
+            user_id=user_id,
+            tenant_id=tid,
             messages=messages,
             status="idle",
         )
@@ -1391,7 +1463,8 @@ async def run_agent(
     registry = get_agent_registry()
     session_store = get_agent_session_store()
     executor = get_agent_executor()
-    user_id = _get_user_id(request)
+    user_id = get_user_id(request)
+    tenant_id = get_effective_tenant_id(request)
     idem_key = _extract_idempotency_key(request)
     idem_service = None
     idem_record = None
@@ -1413,6 +1486,7 @@ async def run_agent(
         db=db,
         idem_key=idem_key,
         user_id=user_id,
+        tenant_id=tenant_id,
         agent_id=agent_id,
         req=req,
         session_store=session_store,
@@ -1431,6 +1505,8 @@ async def run_agent(
         session_store=session_store,
         session_id=session_id,
         agent_id=agent_id,
+        user_id=user_id,
+        tenant_id=tenant_id,
         messages=req.messages,
         agent=agent,
         collaboration=collab,
@@ -1463,6 +1539,7 @@ async def run_agent(
     },
 )
 async def run_agent_with_files(
+    request: Request,
     agent_id: str,
     messages: Annotated[str, Form(..., description="JSON array of Message objects")],
     session_id: Annotated[Optional[str], Form()] = None,
@@ -1478,7 +1555,9 @@ async def run_agent_with_files(
     registry = get_agent_registry()
     session_store = get_agent_session_store()
     executor = get_agent_executor()
-    
+    user_id = get_user_id(request)
+    tenant_id = get_effective_tenant_id(request)
+
     agent = registry.get_agent(agent_id)
     if not agent:
         raise_api_error(
@@ -1519,6 +1598,8 @@ async def run_agent_with_files(
         session_store=session_store,
         session_id=session_id,
         agent_id=agent_id,
+        user_id=user_id,
+        tenant_id=tenant_id,
         messages_objs=messages_objs,
         saved_names=saved_names,
         workspace_dir_str=workspace_dir_str,
@@ -1550,9 +1631,12 @@ async def run_agent_with_files(
 async def list_agent_sessions(
     request: Request, agent_id: Optional[str] = None, limit: int = 50
 ) -> AgentSessionsListEnvelope:
-    user_id = _get_user_id(request)
+    user_id = get_user_id(request)
+    tenant_id = get_effective_tenant_id(request)
     session_store = get_agent_session_store()
-    sessions = session_store.list_sessions(user_id=user_id, limit=limit, agent_id=agent_id)
+    sessions = session_store.list_sessions(
+        user_id=user_id, limit=limit, agent_id=agent_id, tenant_id=tenant_id
+    )
     return AgentSessionsListEnvelope(object="list", data=sessions)
 
 @session_router.get(
@@ -1565,9 +1649,11 @@ async def list_agent_sessions(
         },
     },
 )
-async def get_agent_session(session_id: str) -> AgentSession:
+async def get_agent_session(session_id: str, request: Request) -> AgentSession:
     session_store = get_agent_session_store()
-    session = session_store.get_session(session_id)
+    user_id = get_user_id(request)
+    tenant_id = get_effective_tenant_id(request)
+    session = session_store.get_session(session_id, user_id=user_id, tenant_id=tenant_id)
     if not session:
         raise_api_error(
             status_code=404,
@@ -1622,7 +1708,9 @@ async def stream_agent_session_status(
         accept_language=accept_sse,
     )
     session_store = get_agent_session_store()
-    if not session_store.get_session(session_id):
+    stream_uid = get_user_id(request)
+    stream_tid = get_effective_tenant_id(request)
+    if not session_store.get_session(session_id, user_id=stream_uid, tenant_id=stream_tid):
         raise_api_error(
             status_code=404,
             code="agent_session_not_found",
@@ -1640,7 +1728,9 @@ async def stream_agent_session_status(
 
         while True:
             try:
-                session = session_store.get_session(session_id)
+                session = session_store.get_session(
+                    session_id, user_id=stream_uid, tenant_id=stream_tid
+                )
                 if not session:
                     yield _agent_sse_data(
                         {
@@ -1712,10 +1802,16 @@ async def stream_agent_session_status(
         },
     },
 )
-async def get_agent_session_file(session_id: str, filename: str) -> FileResponse:
+async def get_agent_session_file(
+    session_id: str, filename: str, request: Request
+) -> FileResponse:
     """Serve a file from the agent session workspace."""
     session_store = get_agent_session_store()
-    session = session_store.get_session(session_id)
+    session = session_store.get_session(
+        session_id,
+        user_id=get_user_id(request),
+        tenant_id=get_effective_tenant_id(request),
+    )
     if not session:
         raise_api_error(
             status_code=404,
@@ -1770,9 +1866,15 @@ class UpdateAgentSessionRequest(BaseModel):
         },
     },
 )
-async def update_agent_session(session_id: str, req: UpdateAgentSessionRequest) -> AgentSession:
+async def update_agent_session(
+    session_id: str, req: UpdateAgentSessionRequest, request: Request
+) -> AgentSession:
     session_store = get_agent_session_store()
-    session = session_store.get_session(session_id)
+    session = session_store.get_session(
+        session_id,
+        user_id=get_user_id(request),
+        tenant_id=get_effective_tenant_id(request),
+    )
     if not session:
         raise_api_error(
             status_code=404,
@@ -1796,10 +1898,34 @@ async def update_agent_session(session_id: str, req: UpdateAgentSessionRequest) 
         details={"session_id": session_id},
     )
 
-@session_router.get("/agent-sessions/{session_id}/trace", response_model=AgentTraceEventsListEnvelope)
-async def get_agent_trace(session_id: str) -> AgentTraceEventsListEnvelope:
+@session_router.get(
+    "/agent-sessions/{session_id}/trace",
+    response_model=AgentTraceEventsListEnvelope,
+    responses={
+        404: {
+            "model": APIErrorHttpEnvelope,
+            "description": "Session not found.",
+        },
+    },
+)
+async def get_agent_trace(session_id: str, request: Request) -> AgentTraceEventsListEnvelope:
+    session_store = get_agent_session_store()
+    session = session_store.get_session(
+        session_id,
+        user_id=get_user_id(request),
+        tenant_id=get_effective_tenant_id(request),
+    )
+    if not session:
+        raise_api_error(
+            status_code=404,
+            code="agent_session_not_found",
+            message=SESSION_NOT_FOUND_MESSAGE,
+            details={"session_id": session_id},
+        )
+    assert session is not None
+    tid = (str(getattr(session, "tenant_id", None) or "").strip()) or DEFAULT_AGENT_SESSION_TENANT_ID
     trace_store = get_agent_trace_store()
-    traces = trace_store.get_session_traces(session_id)
+    traces = trace_store.get_session_traces(session_id, tenant_id=tid)
     return AgentTraceEventsListEnvelope(object="list", data=traces)
 
 @session_router.delete(
@@ -1812,10 +1938,17 @@ async def get_agent_trace(session_id: str) -> AgentTraceEventsListEnvelope:
         },
     },
 )
-async def delete_agent_session_message(session_id: str, message_index: int) -> AgentSession:
+async def delete_agent_session_message(
+    session_id: str, message_index: int, request: Request
+) -> AgentSession:
     """Delete a message from agent session by index"""
     session_store = get_agent_session_store()
-    success = session_store.delete_message(session_id, message_index)
+    success = session_store.delete_message(
+        session_id,
+        message_index,
+        user_id=get_user_id(request),
+        tenant_id=get_effective_tenant_id(request),
+    )
     if not success:
         raise_api_error(
             status_code=404,
@@ -1824,7 +1957,11 @@ async def delete_agent_session_message(session_id: str, message_index: int) -> A
             details={"session_id": session_id, "message_index": message_index},
         )
     # Return updated session
-    updated_session = session_store.get_session(session_id)
+    updated_session = session_store.get_session(
+        session_id,
+        user_id=get_user_id(request),
+        tenant_id=get_effective_tenant_id(request),
+    )
     if not updated_session:
         raise_api_error(
             status_code=404,
@@ -1846,9 +1983,10 @@ async def delete_agent_session_message(session_id: str, message_index: int) -> A
 )
 async def delete_agent_session(request: Request, session_id: str) -> AgentSessionDeletedResponse:
     """Delete an entire agent session"""
-    user_id = _get_user_id(request)
+    user_id = get_user_id(request)
+    tenant_id = get_effective_tenant_id(request)
     session_store = get_agent_session_store()
-    success = session_store.delete_session(session_id, user_id)
+    success = session_store.delete_session(session_id, user_id, tenant_id=tenant_id)
     if not success:
         raise_api_error(
             status_code=404,

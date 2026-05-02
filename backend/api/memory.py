@@ -21,6 +21,7 @@ from api.errors import raise_api_error
 from config.settings import settings
 from core.memory.memory_item import MemoryItem
 from core.memory.memory_store import MemoryStore, MemoryStoreConfig
+from core.utils.tenant_request import get_effective_tenant_id
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
@@ -80,7 +81,13 @@ async def list_memory(
 ) -> MemoryListResponse:
     """列出当前用户的记忆（最近优先）"""
     user_id = _get_user_id(request)
-    items = _store.list(user_id=user_id, limit=limit, include_deprecated=include_deprecated)
+    tenant_id = get_effective_tenant_id(request)
+    items = _store.list(
+        user_id=user_id,
+        limit=limit,
+        include_deprecated=include_deprecated,
+        tenant_id=tenant_id,
+    )
     return MemoryListResponse(data=items)
 
 
@@ -88,7 +95,8 @@ async def list_memory(
 async def delete_memory(memory_id: str, request: Request) -> MemoryDeleteResponse:
     """删除一条记忆"""
     user_id = _get_user_id(request)
-    ok = _store.delete(user_id=user_id, memory_id=memory_id)
+    tenant_id = get_effective_tenant_id(request)
+    ok = _store.delete(user_id=user_id, memory_id=memory_id, tenant_id=tenant_id)
     if not ok:
         raise_api_error(
             status_code=404,
@@ -103,6 +111,7 @@ async def delete_memory(memory_id: str, request: Request) -> MemoryDeleteRespons
 async def clear_memory(request: Request) -> MemoryClearResponse:
     """清空当前用户的所有记忆"""
     user_id = _get_user_id(request)
-    n = _store.clear(user_id=user_id)
+    tenant_id = get_effective_tenant_id(request)
+    n = _store.clear(user_id=user_id, tenant_id=tenant_id)
     return MemoryClearResponse(deleted_count=n)
 

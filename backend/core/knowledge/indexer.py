@@ -125,7 +125,7 @@ class KnowledgeBaseIndexer:
             result["chunks_created"] = len(chunks)
             
             # 3. Get embedding model
-            kb_info = self.kb_store.get_knowledge_base(kb_id)
+            kb_info = self.kb_store.read_knowledge_base_row(kb_id)
             if not kb_info:
                 raise ValueError(f"Knowledge base '{kb_id}' not found")
             

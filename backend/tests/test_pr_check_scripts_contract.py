@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -80,10 +82,36 @@ def test_makefile_pr_check_includes_helm_deploy_contract_check() -> None:
         stripped = line.strip()
         if stripped.startswith("pr-check:"):
             assert "helm-deploy-contract-check" in stripped
-            assert stripped.index("test-no-fallback") < stripped.index("helm-deploy-contract-check")
+            assert "test-tenant-isolation" in stripped
+            assert stripped.index("test-no-fallback") < stripped.index("test-tenant-isolation")
+            assert stripped.index("test-tenant-isolation") < stripped.index("helm-deploy-contract-check")
         if stripped.startswith("pr-check-fast:"):
             assert "helm-deploy-contract-check" in stripped
-            assert stripped.index("test-no-fallback") < stripped.index("helm-deploy-contract-check")
+            assert "test-tenant-isolation" in stripped
+            assert stripped.index("test-no-fallback") < stripped.index("test-tenant-isolation")
+            assert stripped.index("test-tenant-isolation") < stripped.index("helm-deploy-contract-check")
+
+
+def test_tenant_isolation_marker_collects_regression_suite() -> None:
+    """Makefile test-tenant-isolation 使用 -m tenant_isolation；须能收集到非空用例，防漏标导致空跑通过。"""
+    root = repo_root()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "backend"
+    r = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-m", "tenant_isolation"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    combined = r.stdout + r.stderr
+    assert r.returncode == 0, combined
+    m = re.search(r"(\d+)/\d+ tests collected", combined)
+    if not m:
+        m = re.search(r"(\d+) tests collected", combined)
+    assert m is not None, combined
+    assert int(m.group(1)) >= 65, f"tenant_isolation marker suite unexpectedly small: {combined!r}"
 
 
 def test_merge_gate_contract_tests_script_paths_exist_and_unique() -> None:
@@ -142,3 +170,4 @@ def test_merge_gate_contract_tests_script_is_single_manifest() -> None:
         assert name in script, f"missing manifest entry: {name}"
     workflow = _read_script(root / ".github/workflows" / "backend-static-analysis.yml")
     assert "merge-gate-contract-tests.sh" in workflow
+    assert "make test-tenant-isolation" in workflow

@@ -26,15 +26,25 @@ class IdempotencyService:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def _get_existing(self, scope: str, owner_id: str, key: str) -> Optional[IdempotencyRecordORM]:
+    @staticmethod
+    def _eff_tenant(tenant_id: Optional[str]) -> str:
+        if tenant_id is None:
+            return "default"
+        return (str(tenant_id).strip() or "default")
+
+    def _get_existing(
+        self, scope: str, owner_id: str, key: str, *, tenant_id: Optional[str] = None
+    ) -> Optional[IdempotencyRecordORM]:
+        tid = self._eff_tenant(tenant_id)
         return cast(
             Optional[IdempotencyRecordORM],
             (
-            self.db.query(IdempotencyRecordORM)
-            .filter(IdempotencyRecordORM.scope == scope)
-            .filter(IdempotencyRecordORM.owner_id == owner_id)
-            .filter(IdempotencyRecordORM.idempotency_key == key)
-            .first()
+                self.db.query(IdempotencyRecordORM)
+                .filter(IdempotencyRecordORM.tenant_id == tid)
+                .filter(IdempotencyRecordORM.scope == scope)
+                .filter(IdempotencyRecordORM.owner_id == owner_id)
+                .filter(IdempotencyRecordORM.idempotency_key == key)
+                .first()
             ),
         )
 
@@ -54,8 +64,10 @@ class IdempotencyService:
         key: str,
         request_hash: str,
         ttl_seconds: int = 86400,
+        tenant_id: Optional[str] = None,
     ) -> IdempotencyClaimResult:
-        existing = self._get_existing(scope=scope, owner_id=owner_id, key=key)
+        tid = self._eff_tenant(tenant_id)
+        existing = self._get_existing(scope=scope, owner_id=owner_id, key=key, tenant_id=tenant_id)
         if existing:
             conflict = existing.request_hash != request_hash
             return IdempotencyClaimResult(record=existing, is_new=False, conflict=conflict)
@@ -63,6 +75,7 @@ class IdempotencyService:
         expire_at = datetime.now(timezone.utc) + timedelta(seconds=max(60, int(ttl_seconds)))
         row = IdempotencyRecordORM(
             id=str(uuid.uuid4()),
+            tenant_id=tid,
             scope=scope,
             owner_id=owner_id,
             idempotency_key=key,
@@ -75,7 +88,7 @@ class IdempotencyService:
             self.db.commit()
         except IntegrityError:
             self.db.rollback()
-            existing = self._get_existing(scope=scope, owner_id=owner_id, key=key)
+            existing = self._get_existing(scope=scope, owner_id=owner_id, key=key, tenant_id=tenant_id)
             if not existing:
                 raise
             conflict = existing.request_hash != request_hash
