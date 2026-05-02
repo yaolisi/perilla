@@ -139,10 +139,10 @@ class EventTypeBreakdownResponse(BaseModel):
     breakdown: EventTypeBreakdownCounts
 
 
-def _require_graph_instance_tenant_scope(instance_id: str, tenant_id: str) -> None:
+def _graph_instance_visible_to_tenant(instance_id: str, tenant_id: str) -> bool:
     """
-    若 workflow_executions 中已有该 graph_instance_id，则仅允许归属租户访问。
-    无 ORM 记录时不拦截（兼容仅有 execution_event 行的调试路径）。
+    workflow_executions 无记录 → True（仅有 execution_event 的调试路径）。
+    有记录则 tenant_id 必须一致。
     """
     tid = (tenant_id or "").strip() or "default"
     with db_session() as db:
@@ -152,15 +152,23 @@ def _require_graph_instance_tenant_scope(instance_id: str, tenant_id: str) -> No
             .first()
         )
         if row is None:
-            return
+            return True
         row_tid = str(row.tenant_id or "default").strip() or "default"
-        if row_tid != tid:
-            raise_api_error(
-                status_code=404,
-                code="execution_instance_not_found",
-                message="instance not found",
-                details={"instance_id": instance_id},
-            )
+        return row_tid == tid
+
+
+def _require_graph_instance_tenant_scope(instance_id: str, tenant_id: str) -> None:
+    """
+    若 workflow_executions 中已有该 graph_instance_id，则仅允许归属租户访问。
+    无 ORM 记录时不拦截（兼容仅有 execution_event 行的调试路径）。
+    """
+    if not _graph_instance_visible_to_tenant(instance_id, tenant_id):
+        raise_api_error(
+            status_code=404,
+            code="execution_instance_not_found",
+            message="instance not found",
+            details={"instance_id": instance_id},
+        )
 
 
 # =========================
@@ -238,6 +246,7 @@ async def get_instance_events(
 @router.get("/agent-session/{session_id}")
 async def get_agent_session_events(
     session_id: str,
+    request: Request,
     limit_instances: Annotated[int, Query(ge=1, le=100, description="最多返回的实例数")] = 20,
 ) -> AgentSessionEventsResponse:
     """
@@ -246,6 +255,7 @@ async def get_agent_session_events(
     通过 GraphStarted 事件 payload.initial_context.session_id 反查相关 instance。
     """
     try:
+        tenant_id = resolve_api_tenant_id(request)
         db = _get_db()
         async with db.async_session() as session:
             rows = await session.execute(
@@ -254,7 +264,10 @@ async def get_agent_session_events(
                 .order_by(ExecutionEventDB.instance_id.desc())
                 .limit(limit_instances)
             )
-            instance_ids = [r[0] for r in rows.fetchall() if r and r[0]]
+            raw_instance_ids = [r[0] for r in rows.fetchall() if r and r[0]]
+            instance_ids = [
+                iid for iid in raw_instance_ids if _graph_instance_visible_to_tenant(iid, tenant_id)
+            ]
             store = EventStore(session)
             out: Dict[str, List[EventResponse]] = {}
             for instance_id in instance_ids:
