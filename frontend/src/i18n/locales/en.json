@@ -1431,6 +1431,7 @@
       "events_strict_workflow_binding_desc": "When enabled: only graph_instance_id registered in workflow_executions can access /api/events; otherwise hidden/404. When disabled, instances with only execution_event rows still work (default for local debug). Recommended for multi-tenant or production.",
       "events_api_require_auth": "Require API key (admin) for /api/events",
       "events_api_require_auth_desc": "When enabled: RBAC must be enabled (rbac_enabled); requests need the API key header with platform admin role. Returns a configuration error if RBAC is off. Disable for local debugging; recommended for production.",
+      "events_audit_compliance_hint": "Access & audit (read-only, process env): RBAC {rbac}; audit GET rows {auditGet}; audit prefix covers /api/events {coversEvents}. events API admin auth requires RBAC; compliance may need AUDIT_LOG_PATH_PREFIXES and AUDIT_LOG_INCLUDE_GET.",
       "rl_on": "On",
       "rl_off": "Off",
       "api_rate_limit_global_env_hint": "Global API rate limit (read-only): {enabled}, up to {requests} requests per {window}s. Configure API_RATE_LIMIT_ENABLED, API_RATE_LIMIT_REQUESTS, API_RATE_LIMIT_WINDOW_SECONDS.",

@@ -325,6 +325,41 @@ def test_log_production_warns_when_events_auth_without_dedicated_events_rate_lim
     assert any("API_RATE_LIMIT_EVENTS_REQUESTS" in m for m in warnings)
 
 
+def test_log_production_warns_when_events_audit_prefix_missing(monkeypatch):
+    """审计开启且 events 要求认证时：前缀未覆盖 /api/events 则告警。"""
+    warnings: list[str] = []
+
+    def _capture(msg: str, *a, **k) -> None:
+        warnings.append(msg)
+
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod.logger, "warning", _capture)
+    monkeypatch.setattr(main_mod.settings, "audit_log_enabled", True)
+    monkeypatch.setattr(main_mod.settings, "events_api_require_authenticated", True)
+    monkeypatch.setattr(main_mod.settings, "audit_log_path_prefixes", "/api/v1/workflows")
+    main_mod._log_production_operational_warnings()
+    assert any("AUDIT_LOG_PATH_PREFIXES does not cover /api/events" in m for m in warnings)
+
+
+def test_log_production_warns_when_events_audit_prefix_ok_but_get_skipped(monkeypatch):
+    """前缀覆盖 /api/events 且 audit_log_include_get=false 时告警 GET 未审计。"""
+    warnings: list[str] = []
+
+    def _capture(msg: str, *a, **k) -> None:
+        warnings.append(msg)
+
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod.logger, "warning", _capture)
+    monkeypatch.setattr(main_mod.settings, "audit_log_enabled", True)
+    monkeypatch.setattr(main_mod.settings, "events_api_require_authenticated", True)
+    monkeypatch.setattr(main_mod.settings, "audit_log_path_prefixes", "/api/events")
+    monkeypatch.setattr(main_mod.settings, "audit_log_include_get", False)
+    main_mod._log_production_operational_warnings()
+    assert any("audit_log_include_get=False" in m for m in warnings)
+
+
 def test_log_production_warns_when_events_auth_but_gateway_rl_middleware_inactive(monkeypatch):
     """events 要求认证时若全局限流未挂载（与 main.py 门闩一致），提示无内置网关限流。"""
     warnings: list[str] = []

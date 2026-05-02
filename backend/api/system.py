@@ -27,6 +27,7 @@ from core.inference.gateway import get_inference_gateway
 from core.cache import get_redis_cache_client
 from core.security.deps import require_authenticated_platform_admin, require_platform_admin
 from middleware.api_key_scope import get_revoked_api_keys, revoke_api_key, unrevoke_api_key
+from middleware.audit_log import audit_settings_cover_events_api_paths
 from core.system.runtime_settings import (
     get_continuous_batch_enabled,
     get_continuous_batch_max_size,
@@ -850,6 +851,11 @@ class SystemConfigReadResponse(BaseModel):
     api_rate_limit_events_path_prefix_effective: str
     # api_rate_limit_events_requests>0 时启用 ev: 独立计数桶
     api_rate_limit_events_dedicated_bucket_active_effective: bool
+    # 进程环境：RBAC（events API 强制认证依赖 rbac_enabled）
+    rbac_enabled_effective: bool
+    # 审计 GET 是否写入；前缀是否覆盖典型 /api/events 路径（不含审计库内容，仅配置语义）
+    audit_log_include_get_effective: bool
+    audit_log_covers_events_api_effective: bool
 
 
 class SystemConfigUpdateResponse(BaseModel):
@@ -1268,6 +1274,9 @@ async def get_config() -> SystemConfigReadResponse:
         api_rate_limit_events_requests_effective=_arl_ev_req,
         api_rate_limit_events_path_prefix_effective=_ev_ep,
         api_rate_limit_events_dedicated_bucket_active_effective=bool(_arl_ev_req > 0),
+        rbac_enabled_effective=bool(getattr(settings, "rbac_enabled", False)),
+        audit_log_include_get_effective=bool(getattr(settings, "audit_log_include_get", False)),
+        audit_log_covers_events_api_effective=audit_settings_cover_events_api_paths(),
     )
 
 @router.post("/config")

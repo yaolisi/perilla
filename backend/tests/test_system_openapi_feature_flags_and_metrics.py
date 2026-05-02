@@ -199,6 +199,9 @@ def test_openapi_system_config_named_schemas() -> None:
         "api_rate_limit_events_requests_effective",
         "api_rate_limit_events_path_prefix_effective",
         "api_rate_limit_events_dedicated_bucket_active_effective",
+        "rbac_enabled_effective",
+        "audit_log_include_get_effective",
+        "audit_log_covers_events_api_effective",
     }
 
     cfg_post = paths["/api/system/config"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
@@ -230,6 +233,9 @@ def test_openapi_system_config_named_schemas() -> None:
     assert isinstance(body["api_rate_limit_events_requests_effective"], int)
     assert isinstance(body["api_rate_limit_events_path_prefix_effective"], str)
     assert isinstance(body["api_rate_limit_events_dedicated_bucket_active_effective"], bool)
+    assert isinstance(body["rbac_enabled_effective"], bool)
+    assert isinstance(body["audit_log_include_get_effective"], bool)
+    assert isinstance(body["audit_log_covers_events_api_effective"], bool)
 
 
 def test_openapi_plugins_and_market_named_schemas() -> None:

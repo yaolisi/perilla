@@ -108,6 +108,9 @@ const {
   apiRateLimitEventsRequestsEffective,
   apiRateLimitEventsPathPrefixEffective,
   apiRateLimitEventsDedicatedBucketActiveEffective,
+  rbacEnabledEffective,
+  auditLogIncludeGetEffective,
+  auditLogCoversEventsApiEffective,
   inferenceSmartRoutingEnabled,
   inferenceSmartRoutingPoliciesJson,
   skillDiscoveryTagMatchWeight,
@@ -690,6 +693,15 @@ watch(
                     @update:checked="(v: boolean) => { eventsApiRequireAuthenticated = v; isEditing = true }"
                   />
                 </div>
+                <p class="text-xs text-muted-foreground pt-2 border-t border-border/50 leading-relaxed">
+                  {{
+                    t('settings.runtime.events_audit_compliance_hint', {
+                      rbac: rbacEnabledEffective ? t('settings.runtime.rl_on') : t('settings.runtime.rl_off'),
+                      auditGet: auditLogIncludeGetEffective ? t('settings.runtime.rl_on') : t('settings.runtime.rl_off'),
+                      coversEvents: auditLogCoversEventsApiEffective ? t('settings.runtime.rl_on') : t('settings.runtime.rl_off'),
+                    })
+                  }}
+                </p>
                 <p class="text-xs text-muted-foreground pt-2 border-t border-border/50 leading-relaxed">
                   {{
                     t('settings.runtime.api_rate_limit_global_env_hint', {

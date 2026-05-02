@@ -1030,6 +1030,9 @@ export interface SystemConfig {
   api_rate_limit_events_requests_effective?: number
   api_rate_limit_events_path_prefix_effective?: string
   api_rate_limit_events_dedicated_bucket_active_effective?: boolean
+  rbac_enabled_effective?: boolean
+  audit_log_include_get_effective?: boolean
+  audit_log_covers_events_api_effective?: boolean
 }
 
 export async function getSystemMetrics(): Promise<SystemMetrics> {

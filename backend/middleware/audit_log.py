@@ -12,6 +12,24 @@ from middleware.client_ip import client_host_from_request
 from middleware.ops_paths import is_ops_probe_or_metrics_path
 
 
+def audit_settings_cover_events_api_paths() -> bool:
+    """
+    任一 audit_log_path_prefixes 前缀可匹配典型 GET /api/events 路径时返回 True，
+    与 AuditLogMiddleware 对路径前缀的匹配语义一致（用于运维只读与健康告警）。
+    """
+    if not getattr(settings, "audit_log_enabled", False):
+        return False
+    raw = (getattr(settings, "audit_log_path_prefixes", "") or "").strip()
+    if not raw:
+        return False
+    probe = "/api/events/instance/__audit_probe__"
+    for seg in raw.split(","):
+        pref = seg.strip()
+        if pref and probe.startswith(pref):
+            return True
+    return False
+
+
 class AuditLogMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
         super().__init__(app)

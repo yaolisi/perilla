@@ -238,6 +238,22 @@ def _log_production_operational_warnings() -> None:
             "[SecurityBaseline] audit_log_enabled=False in production; control-plane mutations may lack audit trail "
             "(enable AUDIT_LOG_ENABLED and tune AUDIT_LOG_PATH_PREFIXES for compliance)."
         )
+    if getattr(settings, "audit_log_enabled", False) and bool(
+        getattr(settings, "events_api_require_authenticated", False)
+    ):
+        from middleware.audit_log import audit_settings_cover_events_api_paths
+
+        if not audit_settings_cover_events_api_paths():
+            logger.warning(
+                "[SecurityBaseline] events_api_require_authenticated=True and audit_log_enabled=True but "
+                "AUDIT_LOG_PATH_PREFIXES does not cover /api/events; add prefix /api/events (or /api) if execution-kernel "
+                "read access must appear in audit_logs."
+            )
+        elif not getattr(settings, "audit_log_include_get", False):
+            logger.warning(
+                "[SecurityBaseline] /api/events is GET-heavy: audit_log_include_get=False skips GET/HEAD under matched "
+                "prefixes; set AUDIT_LOG_INCLUDE_GET=true to record read access in audit_logs."
+            )
     if getattr(settings, "enable_long_term_memory", False):
         logger.warning(
             "[SecurityBaseline] enable_long_term_memory=True in production; confirm retention policies, "

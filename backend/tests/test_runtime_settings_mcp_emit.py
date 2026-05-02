@@ -99,6 +99,9 @@ def test_get_config_includes_mcp_emit_effective(monkeypatch):
     assert isinstance(body.get("api_rate_limit_events_requests_effective"), int)
     assert isinstance(body.get("api_rate_limit_events_path_prefix_effective"), str)
     assert isinstance(body.get("api_rate_limit_events_dedicated_bucket_active_effective"), bool)
+    assert isinstance(body.get("rbac_enabled_effective"), bool)
+    assert isinstance(body.get("audit_log_include_get_effective"), bool)
+    assert isinstance(body.get("audit_log_covers_events_api_effective"), bool)
 
 
 @pytest.mark.no_fallback

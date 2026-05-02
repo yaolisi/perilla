@@ -135,6 +135,9 @@ export function useRuntimeSettings() {
   const apiRateLimitEventsRequestsEffective = ref<number>(0)
   const apiRateLimitEventsPathPrefixEffective = ref<string>('/api/events')
   const apiRateLimitEventsDedicatedBucketActiveEffective = ref<boolean>(false)
+  const rbacEnabledEffective = ref<boolean>(false)
+  const auditLogIncludeGetEffective = ref<boolean>(false)
+  const auditLogCoversEventsApiEffective = ref<boolean>(false)
   const isSaving = ref(false)
   const saveSuccess = ref(false)
   const saveError = ref('')
@@ -201,6 +204,18 @@ export function useRuntimeSettings() {
       {
         const d = c.api_rate_limit_events_dedicated_bucket_active_effective
         apiRateLimitEventsDedicatedBucketActiveEffective.value = typeof d === 'boolean' ? d : false
+      }
+      {
+        const rb = c.rbac_enabled_effective
+        rbacEnabledEffective.value = typeof rb === 'boolean' ? rb : false
+      }
+      {
+        const ag = c.audit_log_include_get_effective
+        auditLogIncludeGetEffective.value = typeof ag === 'boolean' ? ag : false
+      }
+      {
+        const ac = c.audit_log_covers_events_api_effective
+        auditLogCoversEventsApiEffective.value = typeof ac === 'boolean' ? ac : false
       }
       const s = c.settings ?? {}
       autoUnloadLocalModelOnSwitch.value = parseBool(s.autoUnloadLocalModelOnSwitch, false)
@@ -935,6 +950,9 @@ export function useRuntimeSettings() {
     apiRateLimitEventsRequestsEffective,
     apiRateLimitEventsPathPrefixEffective,
     apiRateLimitEventsDedicatedBucketActiveEffective,
+    rbacEnabledEffective,
+    auditLogIncludeGetEffective,
+    auditLogCoversEventsApiEffective,
     config,
     isSaving,
     saveSuccess,
