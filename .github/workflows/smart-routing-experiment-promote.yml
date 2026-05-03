@@ -83,7 +83,7 @@ jobs:
     if: ${{ vars.SMART_ROUTING_BASE_URL != '' && secrets.SMART_ROUTING_ADMIN_KEY != '' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
         uses: actions/setup-python@v5
