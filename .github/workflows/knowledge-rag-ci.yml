@@ -207,7 +207,7 @@ jobs:
 
       - name: Create issue when smoke fails
         if: always() && inputs.auto_create_issue == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -273,7 +273,7 @@ jobs:
 
       - name: Auto close issue when smoke recovers
         if: always() && inputs.auto_create_issue == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
