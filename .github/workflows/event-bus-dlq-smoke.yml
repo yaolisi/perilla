@@ -1,5 +1,9 @@
 name: Event Bus DLQ Smoke
 
+permissions:
+  contents: read
+  actions: write # upload-artifact
+
 on:
   workflow_dispatch:
     inputs:

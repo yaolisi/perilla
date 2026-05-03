@@ -1,6 +1,10 @@
 # 单 job：`check-nvmrc-align` → **`pip install`** → **`scripts/check-dependency-version-policy.sh`** → **`scripts/lint-backend.sh`** → `scripts/test-no-fallback.sh`（no_fallback 用例 + **`test_production_readiness_baseline`**) → **`make test-tenant-isolation`** → **`scripts/helm-chart-check.sh`** → **`scripts/merge-gate-contract-tests.sh`** → **`scripts/compose-config-check.sh`**（`docker-compose.yml` + **`docker-compose.prod.yml`** + **`deploy/monitoring/docker-compose.monitoring.yml`** 叠加）→ **`scripts/monitoring-config-check.sh`**（Prometheus / Alertmanager）→ **`scripts/k8s-manifest-check.sh`**（`deploy/k8s` kubeconform）→ **`scripts/dockerfile-hadolint-check.sh`**（`docker/*.Dockerfile` hadolint）→ **`scripts/check-security-guardrails-ci.sh`**（封装合成 env + **`scripts/check-security-guardrails.sh`**）。本地等价：**`bash scripts/production-preflight.sh`** / **`make production-preflight`**；全栈含前端见 **`bash scripts/release-preflight.sh`**。**`make pr-check`** / **`pr-check-fast`** 含 **`dependency-policy`**、**`backend-static-analysis-extras`**，另有 Vitest、**`roadmap-acceptance-unit`**（可 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`**）、**`build-frontend`**（仅 `pr-check`）。
 name: backend-static-analysis
 
+permissions:
+  contents: read
+  actions: write # setup-python pip cache
+
 on:
   pull_request:
     paths:

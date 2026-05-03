@@ -2,6 +2,10 @@
 # Node：`setup-node` 读仓库根 `.nvmrc`；`scripts/check-nvmrc-align.sh` 保证其与 **`frontend/.nvmrc`** 字节一致。
 name: frontend-build
 
+permissions:
+  contents: read
+  actions: write # setup-node npm cache
+
 on:
   pull_request:
     paths:

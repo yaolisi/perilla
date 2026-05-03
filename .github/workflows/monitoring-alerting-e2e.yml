@@ -1,5 +1,10 @@
 name: monitoring-alerting-e2e
 
+permissions:
+  contents: read
+  actions: write # upload-artifact
+  issues: write # github-script create/update issues on failure
+
 on:
   workflow_dispatch:
     inputs:

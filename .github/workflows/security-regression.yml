@@ -1,5 +1,9 @@
 name: security-regression
 
+permissions:
+  contents: read
+  actions: write # setup-node npm cache
+
 on:
   workflow_dispatch:
     inputs:

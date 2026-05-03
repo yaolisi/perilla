@@ -9,6 +9,9 @@
 
 name: smart-routing-gates-matrix
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   pull_request:

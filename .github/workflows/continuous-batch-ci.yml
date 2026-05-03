@@ -1,5 +1,9 @@
 name: Continuous Batch CI
 
+permissions:
+  contents: read
+  actions: write # upload-artifact
+
 on:
   push:
     paths:

@@ -181,6 +181,8 @@ def test_backend_static_analysis_includes_dependency_version_policy() -> None:
     wf = _read_script(repo_root() / ".github/workflows/backend-static-analysis.yml")
     assert "scripts/check-dependency-version-policy.sh" in wf
     assert "Dependency version policy" in wf
+    assert "permissions:" in wf
+    assert "contents: read" in wf
 
 
 def test_backend_static_analysis_includes_security_guardrails_step() -> None:
