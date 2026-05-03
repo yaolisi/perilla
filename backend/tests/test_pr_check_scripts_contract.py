@@ -204,6 +204,43 @@ def test_dependency_review_workflow_matches_supply_chain_gate() -> None:
     assert "workflow_dispatch:" in wf
 
 
+def test_frontend_dockerfile_node_major_matches_nvmrc() -> None:
+    """docker/frontend.Dockerfile 的 Node 主版本须与 .nvmrc 一致（镜像构建与 CI 对齐）。"""
+    root = repo_root()
+    nvm_major = int(
+        (root / ".nvmrc").read_text(encoding="utf-8").strip().lstrip("v").split(".")[0]
+    )
+    df = (root / "docker" / "frontend.Dockerfile").read_text(encoding="utf-8")
+    m = re.search(r"(?mi)^FROM\s+node:(\d+)", df)
+    assert m, "docker/frontend.Dockerfile: expected FROM node:<major>-..."
+    assert int(m.group(1)) == nvm_major, (
+        f"Dockerfile node major {m.group(1)} != .nvmrc major {nvm_major}"
+    )
+
+
+def test_ci_python_versions_align_with_backend_dockerfile() -> None:
+    """.github 内 setup-python 版本须与 docker/backend.Dockerfile 中 FROM python:X.Y 一致。"""
+    root = repo_root()
+    dockerfile = (root / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
+    m = re.search(r"(?mi)^FROM\s+python:(\d+\.\d+)", dockerfile)
+    assert m, "docker/backend.Dockerfile: expected FROM python:X.Y-..."
+    py_expected = m.group(1)
+    gh = root / ".github"
+    mismatches: list[str] = []
+    for path in sorted(gh.rglob("*.yml")) + sorted(gh.rglob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("python-version:"):
+                continue
+            vm = re.search(r'python-version:\s*["\']?([\d.]+)', stripped)
+            if vm and vm.group(1) != py_expected:
+                mismatches.append(f"{path.relative_to(root)}: {vm.group(1)} (!= {py_expected})")
+    assert not mismatches, "python-version drift vs docker/backend.Dockerfile:\n" + "\n".join(
+        mismatches
+    )
+
+
 def test_dependabot_config_covers_backend_frontend_actions_and_docker() -> None:
     """Dependabot 须覆盖 pip、npm、Actions、Docker 基础镜像（供应链入口）。"""
     raw = _read_script(repo_root() / ".github/dependabot.yml")
