@@ -1,0 +1,42 @@
+# 与 Makefile `docker-build-backend` / `docker-build-frontend` / `docker-build-all` 对齐：CI 内冒烟构建（不推镜像）
+name: docker-image-build
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "docker/**"
+      - ".dockerignore"
+      - ".github/workflows/docker-image-build.yml"
+      - "backend/**"
+      - "frontend/**"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "docker/**"
+      - ".dockerignore"
+      - ".github/workflows/docker-image-build.yml"
+      - "backend/**"
+      - "frontend/**"
+
+concurrency:
+  group: docker-image-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -f docker/backend.Dockerfile -t perilla-backend:ci .
+
+      - name: Build frontend image
+        run: docker build -f docker/frontend.Dockerfile -t perilla-frontend:ci .

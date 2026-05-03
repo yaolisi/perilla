@@ -302,6 +302,17 @@ def test_frontend_build_workflow_includes_i18n_and_npm_audit_critical() -> None:
     assert "npm audit --audit-level=critical" in wf
 
 
+def test_docker_image_build_workflow_aligns_makefile_smoke() -> None:
+    """docker-image-build 须与 Makefile docker-build-* 同源命令，支持手动触发（应急 / 对拍）。"""
+    root = repo_root()
+    wf = _read_script(root / ".github/workflows/docker-image-build.yml")
+    assert "workflow_dispatch:" in wf
+    assert "docker build -f docker/backend.Dockerfile" in wf
+    assert "docker build -f docker/frontend.Dockerfile" in wf
+    assert "perilla-backend:ci" in wf
+    assert "perilla-frontend:ci" in wf
+
+
 def test_core_ci_workflows_support_manual_dispatch() -> None:
     """主 CI 须支持 workflow_dispatch，便于在 default 分支上应急重跑全量门禁。"""
     root = repo_root()
