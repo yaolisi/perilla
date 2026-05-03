@@ -479,3 +479,33 @@ def test_check_dependency_version_policy_script_strict_bash_and_cwd_repo_root() 
     assert "set -euo pipefail" in text
     assert 'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
     assert 'cd "$ROOT_DIR"' in text
+
+
+def test_helm_chart_check_script_strict_bash_and_root() -> None:
+    """Helm 检查通过 dirname \"$0\" 定位仓库根（与直接 bash 路径调用一致）。"""
+    rel = "scripts/helm-chart-check.sh"
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT="$(cd "$(dirname "$0")/.." && pwd)"' in text
+
+
+def test_check_security_guardrails_ci_script_strict_bash_and_cwd_repo_root() -> None:
+    """CI 合成 env 包装层须 cd 仓库根再 exec 真实 guardrails 脚本。"""
+    rel = "scripts/check-security-guardrails-ci.sh"
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+    assert 'cd "$ROOT"' in text
+    assert "exec bash scripts/check-security-guardrails.sh" in text
+
+
+def test_check_security_guardrails_script_strict_bash_and_cwd_repo_root() -> None:
+    """生产 guardrails 入口使用 ROOT_DIR 与 cd 仓库根。"""
+    rel = "scripts/check-security-guardrails.sh"
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+    assert 'cd "$ROOT_DIR"' in text
