@@ -116,6 +116,12 @@ def test_make_help_mentions_helm_deploy_contract_check() -> None:
     assert "helm-deploy-contract-check" in output
 
 
+def test_make_help_mentions_docker_build_npm_parity() -> None:
+    output = _make_help_output()
+    assert "npm run docker-build-all" in output
+    assert "make docker-build-all" in output
+
+
 def test_make_help_mentions_frontend_unit_coverage() -> None:
     output = _make_help_output()
     assert "make test-frontend-unit-coverage" in output
