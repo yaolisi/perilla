@@ -34,3 +34,4 @@ make backend-static-analysis-extras
 
 echo "[production-preflight] OK — full backend-static-analysis parity (11 steps)."
 echo "[production-preflight] Next: fill production .env (see root .env.example), then: make security-guardrails"
+echo "[production-preflight] Optional: make docker-build-all (requires Docker) — smoke-build backend + frontend images"

@@ -230,6 +230,14 @@ def test_makefile_defines_docker_build_smoke_targets() -> None:
     assert "docker build -f docker/frontend.Dockerfile" in makefile
 
 
+def test_preflight_scripts_mention_docker_build_smoke() -> None:
+    """发布前脚本结束时须提示可选镜像冒烟，与 Makefile docker-build-* 一致。"""
+    root = repo_root()
+    for rel in ("scripts/production-preflight.sh", "scripts/release-preflight.sh"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "docker-build-all" in text, f"{rel} should mention make docker-build-all"
+
+
 def test_makefile_healthcheck_and_security_guardrails_invoke_repo_scripts() -> None:
     """运维/生产门禁入口须指向真实脚本，避免 make 目标漂移或文件被删。"""
     root = repo_root()
