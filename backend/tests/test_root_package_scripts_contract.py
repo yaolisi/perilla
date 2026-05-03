@@ -29,6 +29,9 @@ def test_root_package_json_includes_roadmap_acceptance_scripts() -> None:
         "npm run check-nvmrc-align && npm --prefix frontend run test:unit:coverage"
     )
     assert scripts.get("helm-chart-check") == "make helm-chart-check"
+    assert scripts.get("docker-build-backend") == "make docker-build-backend"
+    assert scripts.get("docker-build-frontend") == "make docker-build-frontend"
+    assert scripts.get("docker-build-all") == "make docker-build-all"
     assert scripts.get("helm-deploy-contract-check") == "make helm-deploy-contract-check"
     assert scripts.get("merge-gate-contract-tests") == "bash scripts/merge-gate-contract-tests.sh"
     assert scripts.get("ci") == "bash scripts/pr-check.sh"
