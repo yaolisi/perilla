@@ -13,12 +13,12 @@ from tests.repo_paths import repo_root
 pytestmark = pytest.mark.requires_monorepo
 
 
-def _collect_backend_static_analysis_on_paths(wf: str, event: str) -> list[str]:
-    """解析 backend-static-analysis.yml 中 `on.<event>.paths` 的 glob 列表（顺序敏感）。"""
+def _collect_github_workflow_on_paths(wf: str, event: str) -> list[str]:
+    """解析 workflow YAML 中 `on.<event>.paths` 的 glob 列表（顺序敏感）。"""
     lines = wf.splitlines()
     head = f"  {event}:"
     start = next((i for i, ln in enumerate(lines) if ln == head), None)
-    assert start is not None, f"missing {head} in backend-static-analysis.yml"
+    assert start is not None, f"missing {head} in workflow"
     i = start + 1
     while i < len(lines):
         if lines[i].strip() == "paths:":
@@ -205,10 +205,22 @@ def test_backend_static_analysis_triggers_on_deploy_k8s() -> None:
 def test_backend_static_analysis_pr_and_push_path_filters_match() -> None:
     """PR 与 main/master push 的路径过滤须一致，避免只在一侧触发 CI。"""
     wf = read_script(repo_root() / ".github/workflows/backend-static-analysis.yml")
-    pr_paths = _collect_backend_static_analysis_on_paths(wf, "pull_request")
-    push_paths = _collect_backend_static_analysis_on_paths(wf, "push")
+    pr_paths = _collect_github_workflow_on_paths(wf, "pull_request")
+    push_paths = _collect_github_workflow_on_paths(wf, "push")
     assert pr_paths == push_paths, (
         "pull_request.paths vs push.paths mismatch:\n"
+        f"  only in PR:   {sorted(set(pr_paths) - set(push_paths))!r}\n"
+        f"  only in push: {sorted(set(push_paths) - set(pr_paths))!r}"
+    )
+
+
+def test_dependency_security_scan_pr_and_push_path_filters_match() -> None:
+    """dependency-security-scan：PR 与 main 推送的路径过滤须一致。"""
+    wf = read_script(repo_root() / ".github/workflows/dependency-security-scan.yml")
+    pr_paths = _collect_github_workflow_on_paths(wf, "pull_request")
+    push_paths = _collect_github_workflow_on_paths(wf, "push")
+    assert pr_paths == push_paths, (
+        "dependency-security-scan pull_request.paths vs push.paths mismatch:\n"
         f"  only in PR:   {sorted(set(pr_paths) - set(push_paths))!r}\n"
         f"  only in push: {sorted(set(push_paths) - set(pr_paths))!r}"
     )
