@@ -1,4 +1,4 @@
-# Vitest + TypeScript/Vite 生产构建。本地：`make test-frontend-unit`、`make build-frontend`；前后端合并等价：`bash scripts/release-preflight.sh` / **`make release-preflight`**（含 **`production-preflight`** + i18n + Vitest + build，无 roadmap）。**`make pr-check`** 另含 **`roadmap-acceptance-unit`**；**`make pr-check-fast`** 跳过 Production build； roadmap 可用 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`** 跳过。
+# Vitest + TypeScript/Vite 生产构建 + **i18n 硬编码基线** + **`npm audit --audit-level=critical`**。本地：`make test-frontend-unit`、`make build-frontend`；前后端合并等价：`bash scripts/release-preflight.sh` / **`make release-preflight`**。**`make pr-check`** 另含 **`roadmap-acceptance-unit`**；**`make pr-check-fast`** 跳过 Production build； roadmap 可用 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`** 跳过。
 # Node：`setup-node` 读仓库根 `.nvmrc`；`scripts/check-nvmrc-align.sh` 保证其与 **`frontend/.nvmrc`** 字节一致。
 name: frontend-build
 
@@ -18,6 +18,8 @@ on:
       # Repo root only; npm scripts orchestrate frontend (e.g. test-frontend-unit / build-frontend).
       - "package.json"
       - ".github/workflows/frontend-build.yml"
+      - "scripts/check-frontend-i18n-hardcoded.sh"
+      - "scripts/i18n-hardcoded-baseline.txt"
   push:
     branches:
       - main
@@ -36,6 +38,8 @@ on:
       # Repo root only; npm scripts orchestrate frontend (e.g. test-frontend-unit / build-frontend).
       - "package.json"
       - ".github/workflows/frontend-build.yml"
+      - "scripts/check-frontend-i18n-hardcoded.sh"
+      - "scripts/i18n-hardcoded-baseline.txt"
 
 concurrency:
   group: frontend-build-${{ github.workflow }}-${{ github.ref }}
@@ -63,6 +67,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: i18n hardcoded strings guard (baseline)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/check-frontend-i18n-hardcoded.sh
+
+      - name: npm audit (critical threshold)
+        run: npm audit --audit-level=critical
 
       - name: Unit tests (Vitest)
         run: npm run test:unit

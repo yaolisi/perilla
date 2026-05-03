@@ -147,6 +147,13 @@ def test_merge_gate_contract_tests_script_paths_exist_and_unique() -> None:
         assert (root / rel).is_file(), f"merge gate lists missing file: {rel}"
 
 
+def test_frontend_build_workflow_includes_i18n_and_npm_audit_critical() -> None:
+    """纯前端 PR 须跑 i18n 基线与 critical 级 npm audit（与 make pr-check / release-preflight 对齐）。"""
+    wf = _read_script(repo_root() / ".github/workflows/frontend-build.yml")
+    assert "scripts/check-frontend-i18n-hardcoded.sh" in wf
+    assert "npm audit --audit-level=critical" in wf
+
+
 def test_backend_static_analysis_triggers_on_deploy_k8s() -> None:
     """deploy、Compose、healthcheck、Dockerfile、监控目录变更须触发静态分析与合并门禁。"""
     wf = _read_script(repo_root() / ".github/workflows/backend-static-analysis.yml")
