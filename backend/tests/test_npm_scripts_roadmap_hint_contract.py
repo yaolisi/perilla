@@ -90,3 +90,10 @@ def test_npm_scripts_sh_prints_roadmap_gate_hint_on_default_list() -> None:
     unknown_case = content.split("\n  *)", 1)[1].split("esac", 1)[0].split(";;", 1)[0]
     assert 'echo >&2 "npm-scripts.sh: unknown option: ${1}"' in unknown_case
     assert "print_npm_scripts_error_followups" in unknown_case
+
+
+def test_npm_scripts_sh_stderr_hints_mention_docker_image_workflow() -> None:
+    """列出 npm scripts 时 stderr 须提示 docker-build-* 与 CI workflow，避免仅依赖 roadmap 文案。"""
+    content = (repo_root() / "scripts" / "npm-scripts.sh").read_text(encoding="utf-8")
+    assert "docker-build-all" in content
+    assert "docker-image-build" in content

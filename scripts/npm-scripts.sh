@@ -33,6 +33,7 @@ go_no_go (see also `make help`).
 npm-scripts hint: POST /api/system/roadmap/phase-gates (platform admin) merges persisted phase gate overrides (see also `make help`).
 npm-scripts hint: GET /api/system/roadmap/monthly-review (platform admin) lists paginated monthly reviews with filter meta (see also `make help`).
 npm-scripts hint: POST /api/system/roadmap/monthly-review (platform admin) appends a gated snapshot review (see also `make help`).
+npm-scripts hint: image smoke — `npm run docker-build-all` (or -backend / -frontend) delegates to `make docker-build-*` (see `make help`); CI: GitHub Actions workflow `docker-image-build`.
 EOF
 }
 case "${1:-}" in
