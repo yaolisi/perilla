@@ -1,0 +1,10 @@
+---
+description: 固化变更时用本地 git commit；除非用户明确要求，不要 git push。
+alwaysApply: true
+---
+
+# Git：仅本地提交（默认不推送）
+
+- 用户要求固化结果时，可进行 **`git add` / `git commit`**。
+- **不要**执行 **`git push`**、**`git push origin`** 或其它推送到远端的操作，除非用户在对话中**明确**说要推送。
+- 涉及 **`git rebase` / `git reset --hard`** 等改写历史的操作，仅在用户明确要求时执行。
