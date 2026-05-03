@@ -158,6 +158,16 @@ def test_dependabot_config_covers_backend_frontend_and_github_actions() -> None:
     assert 'directory: "/"' in raw
 
 
+def test_all_github_workflows_declare_permissions() -> None:
+    """每个 workflow 须显式声明 permissions（GITHUB_TOKEN 最小权限），防新增裸 workflow。"""
+    wf_dir = repo_root() / ".github" / "workflows"
+    files = sorted(wf_dir.glob("*.yml")) + sorted(wf_dir.glob("*.yaml"))
+    assert files, "expected .github/workflows/*.yml"
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        assert "permissions:" in text, f"missing permissions block: {path.name}"
+
+
 def test_frontend_build_workflow_includes_i18n_and_npm_audit_critical() -> None:
     """纯前端 PR 须跑 i18n 基线与 critical 级 npm audit（与 make pr-check / release-preflight 对齐）。"""
     wf = _read_script(repo_root() / ".github/workflows/frontend-build.yml")
@@ -168,6 +178,7 @@ def test_frontend_build_workflow_includes_i18n_and_npm_audit_critical() -> None:
 def test_backend_static_analysis_triggers_on_deploy_k8s() -> None:
     """deploy、Compose、healthcheck、Dockerfile、监控目录变更须触发静态分析与合并门禁。"""
     wf = _read_script(repo_root() / ".github/workflows/backend-static-analysis.yml")
+    assert ".github/workflows/**" in wf
     assert "deploy/k8s/**" in wf
     assert "deploy/monitoring/**" in wf
     assert "docker-compose.yml" in wf
