@@ -1,8 +1,9 @@
-# 与 Makefile `docker-build-backend` / `docker-build-frontend` / `docker-build-all` 对齐：CI 内冒烟构建（不推镜像）
+# 与 Makefile docker-build-* 对齐：冒烟构建；Trivy（固定 aquasec/trivy 版本；见下方镜像 tag）；main/master push 时推 GHCR（PR 不推送）
 name: docker-image-build
 
 permissions:
   contents: read
+  packages: write
 
 on:
   workflow_dispatch:
@@ -31,12 +32,54 @@ concurrency:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set GHCR base (owner lowercased)
+        run: |
+          o="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "GHCR_BASE=ghcr.io/${o}" >> "$GITHUB_ENV"
 
       - name: Build backend image
         run: docker build -f docker/backend.Dockerfile -t perilla-backend:ci .
 
       - name: Build frontend image
         run: docker build -f docker/frontend.Dockerfile -t perilla-frontend:ci .
+
+      - name: Pull Trivy scanner image (pinned)
+        run: docker pull aquasec/trivy:0.69.3
+
+      - name: Trivy scan backend (CRITICAL fail)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.69.3 image --exit-code 1 --severity CRITICAL perilla-backend:ci
+
+      - name: Trivy scan frontend (CRITICAL fail)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.69.3 image --exit-code 1 --severity CRITICAL perilla-frontend:ci
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push backend to GHCR
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        run: |
+          docker tag perilla-backend:ci "${GHCR_BASE}/perilla-backend:main"
+          docker tag perilla-backend:ci "${GHCR_BASE}/perilla-backend:${GITHUB_SHA}"
+          docker push "${GHCR_BASE}/perilla-backend:main"
+          docker push "${GHCR_BASE}/perilla-backend:${GITHUB_SHA}"
+
+      - name: Tag and push frontend to GHCR
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        run: |
+          docker tag perilla-frontend:ci "${GHCR_BASE}/perilla-frontend:main"
+          docker tag perilla-frontend:ci "${GHCR_BASE}/perilla-frontend:${GITHUB_SHA}"
+          docker push "${GHCR_BASE}/perilla-frontend:main"
+          docker push "${GHCR_BASE}/perilla-frontend:${GITHUB_SHA}"

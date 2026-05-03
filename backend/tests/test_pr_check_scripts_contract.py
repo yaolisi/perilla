@@ -303,7 +303,7 @@ def test_frontend_build_workflow_includes_i18n_and_npm_audit_critical() -> None:
 
 
 def test_docker_image_build_workflow_aligns_makefile_smoke() -> None:
-    """docker-image-build 须与 Makefile docker-build-* 同源命令，支持手动触发（应急 / 对拍）。"""
+    """docker-image-build 须与 Makefile docker-build-* 同源命令；含 Trivy 与 main 推 GHCR。"""
     root = repo_root()
     wf = _read_script(root / ".github/workflows/docker-image-build.yml")
     assert "workflow_dispatch:" in wf
@@ -311,6 +311,10 @@ def test_docker_image_build_workflow_aligns_makefile_smoke() -> None:
     assert "docker build -f docker/frontend.Dockerfile" in wf
     assert "perilla-backend:ci" in wf
     assert "perilla-frontend:ci" in wf
+    assert "packages: write" in wf
+    assert "ghcr.io" in wf
+    assert "aquasec/trivy:" in wf
+    assert "docker/login-action" in wf
 
 
 def test_core_ci_workflows_support_manual_dispatch() -> None:
