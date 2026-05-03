@@ -447,10 +447,13 @@ def test_merge_gate_contract_tests_script_invokes_pytest_with_arg_forwarding() -
         "scripts/pr-check.sh",
         "scripts/pr-check-fast.sh",
         "scripts/merge-gate-contract-tests.sh",
+        "scripts/test-no-fallback.sh",
+        "scripts/check-nvmrc-align.sh",
+        "scripts/compose-config-check.sh",
     ),
 )
 def test_gate_shell_scripts_strict_bash_and_cwd_repo_root(rel: str) -> None:
-    """PR / 预检 / 合并门禁入口须 bash shebang、set -euo、解析仓库根并 cd。"""
+    """CI / 预检常用入口须 bash shebang、set -euo、ROOT 解析仓库根并 cd \"$ROOT\"（与 lint-backend 等 cd backend 的脚本区分）。"""
     text = _read_script(repo_root() / rel)
     assert text.startswith("#!/usr/bin/env bash\n"), rel
     assert "set -euo pipefail" in text
