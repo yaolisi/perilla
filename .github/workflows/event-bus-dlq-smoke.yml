@@ -44,6 +44,10 @@ on:
         required: false
         default: ""
 
+concurrency:
+  group: event-bus-dlq-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   event-bus-smoke:
     name: Event bus external smoke

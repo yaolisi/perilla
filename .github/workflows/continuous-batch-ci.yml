@@ -36,6 +36,10 @@ on:
         required: false
         default: "ollama:deepseek-r1:32b"
 
+concurrency:
+  group: continuous-batch-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   cb-tests:
     name: Continuous batch unit tests

@@ -72,6 +72,10 @@ on:
         required: true
         default: "1.0"
 
+concurrency:
+  group: smart-routing-experiment-promote-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   promote-gate:
     runs-on: ubuntu-latest

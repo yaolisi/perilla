@@ -195,8 +195,8 @@ def test_merge_gate_contract_tests_script_paths_exist_and_unique() -> None:
         assert (root / rel).is_file(), f"merge gate lists missing file: {rel}"
 
 
-def test_dependabot_config_covers_backend_frontend_and_github_actions() -> None:
-    """Dependabot 须覆盖后端 pip、前端 npm、GitHub Actions（供应链更新入口）。"""
+def test_dependabot_config_covers_backend_frontend_actions_and_docker() -> None:
+    """Dependabot 须覆盖 pip、npm、Actions、Docker 基础镜像（供应链入口）。"""
     raw = _read_script(repo_root() / ".github/dependabot.yml")
     assert 'package-ecosystem: "pip"' in raw
     assert 'directory: "/backend"' in raw
@@ -204,6 +204,18 @@ def test_dependabot_config_covers_backend_frontend_and_github_actions() -> None:
     assert 'directory: "/frontend"' in raw
     assert 'package-ecosystem: "github-actions"' in raw
     assert 'directory: "/"' in raw
+    assert 'package-ecosystem: "docker"' in raw
+    assert 'directory: "/docker"' in raw
+
+
+def test_all_github_workflows_declare_top_level_concurrency() -> None:
+    """每个 workflow 须有顶层 concurrency（队列去重，避免并行重复耗 Runner）。"""
+    wf_dir = repo_root() / ".github" / "workflows"
+    for path in sorted(wf_dir.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        assert re.search(r"(?m)^concurrency:\s*$", text), (
+            f"missing top-level concurrency block: {path.name}"
+        )
 
 
 def test_github_workflow_jobs_have_timeout_when_runs_on() -> None:
