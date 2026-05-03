@@ -438,9 +438,21 @@ def test_merge_gate_contract_tests_script_invokes_pytest_with_arg_forwarding() -
     assert re.search(r'(?m)^\s+"\$@"\s*$', script)
 
 
-def test_merge_gate_contract_tests_script_strict_bash_and_cwd_repo_root() -> None:
-    """须 set -euo、由脚本路径解析仓库根并 cd，避免在错误 cwd 下收集/运行测试。"""
-    script = _read_script(repo_root() / "scripts" / "merge-gate-contract-tests.sh")
-    assert "set -euo pipefail" in script
-    assert 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in script
-    assert 'cd "$ROOT"' in script
+@pytest.mark.parametrize(
+    "rel",
+    (
+        "scripts/quick-check.sh",
+        "scripts/production-preflight.sh",
+        "scripts/release-preflight.sh",
+        "scripts/pr-check.sh",
+        "scripts/pr-check-fast.sh",
+        "scripts/merge-gate-contract-tests.sh",
+    ),
+)
+def test_gate_shell_scripts_strict_bash_and_cwd_repo_root(rel: str) -> None:
+    """PR / 预检 / 合并门禁入口须 bash shebang、set -euo、解析仓库根并 cd。"""
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+    assert 'cd "$ROOT"' in text
