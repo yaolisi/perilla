@@ -195,6 +195,14 @@ def test_merge_gate_contract_tests_script_paths_exist_and_unique() -> None:
         assert (root / rel).is_file(), f"merge gate lists missing file: {rel}"
 
 
+def test_dependency_review_workflow_matches_supply_chain_gate() -> None:
+    """PR 依赖审查须存在且与 critical 阈值一致（与 frontend npm audit / pip graph 对齐）。"""
+    wf = _read_script(repo_root() / ".github/workflows/dependency-review.yml")
+    assert "dependency-review-action" in wf
+    assert "fail-on-severity: critical" in wf
+    assert "pull-requests: write" in wf
+
+
 def test_dependabot_config_covers_backend_frontend_actions_and_docker() -> None:
     """Dependabot 须覆盖 pip、npm、Actions、Docker 基础镜像（供应链入口）。"""
     raw = _read_script(repo_root() / ".github/dependabot.yml")

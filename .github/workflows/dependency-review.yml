@@ -1,0 +1,27 @@
+# PR 依赖变更对比（GitHub Dependency graph）；与 frontend-build 中 npm audit critical 策略一致。
+name: dependency-review
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+    paths:
+      - "frontend/package-lock.json"
+      - "backend/requirements/**"
+      - ".github/workflows/dependency-review.yml"
+
+concurrency:
+  group: dependency-review-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: critical

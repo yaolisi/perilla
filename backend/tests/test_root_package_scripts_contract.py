@@ -56,6 +56,21 @@ def test_root_package_json_includes_roadmap_acceptance_scripts() -> None:
     assert scripts.get("local-frontend") == "bash run-frontend.sh"
 
 
+def test_root_nvmrc_major_matches_package_engines_node() -> None:
+    """仓库根 .nvmrc 主版本须与 package.json engines.node 一致，防 CI / 本地 Node 漂移。"""
+    root = repo_root()
+    nvm_raw = (root / ".nvmrc").read_text(encoding="utf-8").strip().lstrip("v")
+    nvm_major = int(nvm_raw.split(".")[0])
+    pkg = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    node_eng = str((pkg.get("engines") or {}).get("node", ""))
+    m = re.search(r"\d+", node_eng)
+    assert m, f"root package.json engines.node missing or unparsable: {node_eng!r}"
+    eng_major = int(m.group(0))
+    assert eng_major == nvm_major, (
+        f"root .nvmrc major {nvm_major} != package.json engines.node major {eng_major} ({node_eng})"
+    )
+
+
 def test_makefile_quick_check_invokes_same_entry_as_npm() -> None:
     """make quick-check 与 npm run quick-check 须共用 scripts/quick-check.sh。"""
     makefile = (repo_root() / "Makefile").read_text(encoding="utf-8")
