@@ -509,3 +509,29 @@ def test_check_security_guardrails_script_strict_bash_and_cwd_repo_root() -> Non
     assert "set -euo pipefail" in text
     assert 'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
     assert 'cd "$ROOT_DIR"' in text
+
+
+@pytest.mark.parametrize(
+    "rel",
+    (
+        "scripts/monitoring-config-check.sh",
+        "scripts/k8s-manifest-check.sh",
+        "scripts/dockerfile-hadolint-check.sh",
+    ),
+)
+def test_backend_static_analysis_extra_checks_strict_bash_and_root(rel: str) -> None:
+    """Compose 之后的监控 / K8s / Dockerfile 校验脚本用 ROOT 拼绝对路径，不要求 cd 仓库根。"""
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+
+
+def test_healthcheck_script_strict_bash_and_cwd_repo_root() -> None:
+    """healthcheck 在仓库根读 compose / .env 并探测端口，使用 ROOT_DIR 与 cd。"""
+    rel = "scripts/healthcheck.sh"
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+    assert 'cd "${ROOT_DIR}"' in text
