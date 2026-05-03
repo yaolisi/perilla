@@ -34,6 +34,7 @@ on:
       - "backend/tests/test_runtime_fault_injection.py"
       - "frontend/**"
       - "scripts/acceptance/**"
+      - "scripts/check-nvmrc-align.sh"
       - ".github/workflows/security-regression.yml"
   push:
     branches:
@@ -61,6 +62,7 @@ on:
       - "backend/tests/test_runtime_fault_injection.py"
       - "frontend/**"
       - "scripts/acceptance/**"
+      - "scripts/check-nvmrc-align.sh"
       - ".github/workflows/security-regression.yml"
 
 concurrency:
@@ -74,6 +76,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Align .nvmrc (repo root vs frontend/)
+        run: bash scripts/check-nvmrc-align.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

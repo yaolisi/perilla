@@ -285,6 +285,16 @@ def test_all_github_workflows_declare_permissions() -> None:
         assert "permissions:" in text, f"missing permissions block: {path.name}"
 
 
+def test_security_regression_workflow_aligns_nvmrc_before_setup_node() -> None:
+    """security-regression 须在 setup-node 前跑 check-nvmrc-align（与 frontend-build 一致）。"""
+    wf = _read_script(repo_root() / ".github/workflows/security-regression.yml")
+    assert "scripts/check-nvmrc-align.sh" in wf
+    assert "node-version-file: .nvmrc" in wf
+    n = wf.find("check-nvmrc-align.sh")
+    m = wf.find("Setup Node.js")
+    assert n != -1 and m != -1 and n < m
+
+
 def test_frontend_build_workflow_includes_i18n_and_npm_audit_critical() -> None:
     """纯前端 PR 须跑 i18n 基线与 critical 级 npm audit（与 make pr-check / release-preflight 对齐）。"""
     wf = _read_script(repo_root() / ".github/workflows/frontend-build.yml")
