@@ -18,6 +18,54 @@ def _read_script(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+_JOB_HEAD = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+_JOB_BODY_LINE = re.compile(r"^    \S")
+
+
+def _workflow_job_names_with_runs_on_but_no_timeout(content: str) -> list[str]:
+    """扫描 GitHub Actions YAML（jobs: 段）：凡含 runs-on 的 job 须有 timeout-minutes。"""
+    lines = content.splitlines()
+    try:
+        start = next(i for i, ln in enumerate(lines) if ln.strip() == "jobs:")
+    except StopIteration:
+        return []
+    bad: list[str] = []
+    job_name: str | None = None
+    has_timeout = False
+    has_runson = False
+
+    def flush() -> None:
+        nonlocal job_name, has_timeout, has_runson
+        if job_name and has_runson and not has_timeout:
+            bad.append(job_name)
+        job_name = None
+        has_timeout = False
+        has_runson = False
+
+    for line in lines[start + 1 :]:
+        if (
+            line
+            and not line.startswith(("#", " ", "\t"))
+            and line.strip().endswith(":")
+            and line[0].isalpha()
+        ):
+            break
+        m_job = _JOB_HEAD.match(line)
+        if m_job:
+            flush()
+            job_name = m_job.group(1)
+            continue
+        if job_name is None:
+            continue
+        if _JOB_BODY_LINE.match(line):
+            if "timeout-minutes:" in line:
+                has_timeout = True
+            if "runs-on:" in line:
+                has_runson = True
+    flush()
+    return bad
+
+
 def test_pr_check_scripts_delegate_to_make_pr_check_targets() -> None:
     """scripts/pr-check*.sh 仅包装 Makefile，避免与 make pr-check 漂移。"""
     root = repo_root()
@@ -156,6 +204,17 @@ def test_dependabot_config_covers_backend_frontend_and_github_actions() -> None:
     assert 'directory: "/frontend"' in raw
     assert 'package-ecosystem: "github-actions"' in raw
     assert 'directory: "/"' in raw
+
+
+def test_github_workflow_jobs_have_timeout_when_runs_on() -> None:
+    """含 runs-on 的 job 必须声明 timeout-minutes，避免挂死占用 Runner。"""
+    wf_dir = repo_root() / ".github" / "workflows"
+    failures: list[str] = []
+    for path in sorted(wf_dir.glob("*.yml")):
+        missing = _workflow_job_names_with_runs_on_but_no_timeout(path.read_text(encoding="utf-8"))
+        for job in missing:
+            failures.append(f"{path.name}: job `{job}`")
+    assert not failures, "runs-on without timeout-minutes:\n" + "\n".join(failures)
 
 
 def test_all_github_workflows_declare_permissions() -> None:

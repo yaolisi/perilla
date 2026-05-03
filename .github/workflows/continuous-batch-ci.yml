@@ -40,6 +40,7 @@ jobs:
   cb-tests:
     name: Continuous batch unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,6 +57,7 @@ jobs:
     name: Continuous batch pipeline gate
     if: github.event_name == 'workflow_dispatch' && inputs.run_gate == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: cb-tests
     steps:
       - name: Checkout

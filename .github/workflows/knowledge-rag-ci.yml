@@ -57,6 +57,7 @@ jobs:
   knowledge-tests:
     name: Knowledge unit/integration tests
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -84,6 +85,7 @@ jobs:
     name: Knowledge API smoke (live backend)
     if: github.event_name == 'workflow_dispatch' && inputs.run_smoke == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     needs: knowledge-tests
     steps:
       - name: Checkout
