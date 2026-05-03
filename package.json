@@ -29,6 +29,7 @@
     "i18n-scan-frontend": "bash scripts/check-frontend-i18n-hardcoded.sh",
     "lint": "bash scripts/lint-backend.sh",
     "lint-backend": "bash scripts/lint-backend.sh",
+    "install-lint-tools": "pip install -r backend/requirements/lint-tools.txt",
     "local-all": "bash run-all.sh",
     "local-backend": "bash run-backend.sh",
     "local-frontend": "bash run-frontend.sh",

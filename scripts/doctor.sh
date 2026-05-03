@@ -132,6 +132,9 @@ echo ""
 echo "Hint (production merge gate): make helm-deploy-contract-check — or pytest-only: make merge-gate-contract-tests / npm run merge-gate-contract-tests"
 
 echo ""
+echo "Hint (lint toolchain / CI pins): make install-lint-tools or npm run install-lint-tools (backend/requirements/lint-tools.txt)"
+
+echo ""
 echo "Hint (Docker images): make docker-build-all — CI parity: GitHub Actions workflow docker-image-build"
 
 echo ""

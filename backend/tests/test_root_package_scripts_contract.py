@@ -19,9 +19,18 @@ def test_root_package_json_includes_roadmap_acceptance_scripts() -> None:
     assert scripts.get("roadmap-acceptance-unit") == "make roadmap-acceptance-unit"
     assert scripts.get("roadmap-acceptance-smoke") == "make roadmap-acceptance-smoke"
     assert scripts.get("roadmap-acceptance-all") == "make roadmap-acceptance-all"
-    assert scripts.get("roadmap-acceptance-run-validated") == "bash scripts/acceptance/roadmap_run_validated.sh"
-    assert scripts.get("roadmap-acceptance-validate-output") == "bash scripts/acceptance/roadmap_validate_output.sh"
-    assert scripts.get("roadmap-release-gate") == "bash scripts/acceptance/roadmap_release_gate.sh"
+    assert (
+        scripts.get("roadmap-acceptance-run-validated")
+        == "bash scripts/acceptance/roadmap_run_validated.sh"
+    )
+    assert (
+        scripts.get("roadmap-acceptance-validate-output")
+        == "bash scripts/acceptance/roadmap_validate_output.sh"
+    )
+    assert (
+        scripts.get("roadmap-release-gate")
+        == "bash scripts/acceptance/roadmap_release_gate.sh"
+    )
     assert scripts.get("test-frontend-unit") == (
         "npm run check-nvmrc-align && npm --prefix frontend run test:unit"
     )
@@ -32,8 +41,13 @@ def test_root_package_json_includes_roadmap_acceptance_scripts() -> None:
     assert scripts.get("docker-build-backend") == "make docker-build-backend"
     assert scripts.get("docker-build-frontend") == "make docker-build-frontend"
     assert scripts.get("docker-build-all") == "make docker-build-all"
-    assert scripts.get("helm-deploy-contract-check") == "make helm-deploy-contract-check"
-    assert scripts.get("merge-gate-contract-tests") == "bash scripts/merge-gate-contract-tests.sh"
+    assert (
+        scripts.get("helm-deploy-contract-check") == "make helm-deploy-contract-check"
+    )
+    assert (
+        scripts.get("merge-gate-contract-tests")
+        == "bash scripts/merge-gate-contract-tests.sh"
+    )
     assert scripts.get("ci") == "bash scripts/pr-check.sh"
     assert scripts.get("ci-fast") == "bash scripts/pr-check-fast.sh"
     assert scripts.get("pr-check") == "bash scripts/pr-check.sh"
@@ -41,9 +55,15 @@ def test_root_package_json_includes_roadmap_acceptance_scripts() -> None:
     assert scripts.get("quick-check") == "bash scripts/quick-check.sh"
     assert scripts.get("lint") == "bash scripts/lint-backend.sh"
     assert scripts.get("lint-backend") == "bash scripts/lint-backend.sh"
+    assert scripts.get("install-lint-tools") == (
+        "pip install -r backend/requirements/lint-tools.txt"
+    )
     assert scripts.get("test-no-fallback") == "bash scripts/test-no-fallback.sh"
     assert scripts.get("check-nvmrc-align") == "bash scripts/check-nvmrc-align.sh"
-    assert scripts.get("i18n-scan-frontend") == "bash scripts/check-frontend-i18n-hardcoded.sh"
+    assert (
+        scripts.get("i18n-scan-frontend")
+        == "bash scripts/check-frontend-i18n-hardcoded.sh"
+    )
     assert scripts.get("doctor") == "bash scripts/doctor.sh"
     assert scripts.get("healthcheck") == "make healthcheck"
     assert scripts.get("security-guardrails") == "make security-guardrails"
@@ -106,6 +126,20 @@ def test_makefile_lint_targets_match_npm_lint_scripts() -> None:
     assert idx != -1, "expected standalone lint-backend: target in Makefile"
     block = makefile[idx + len(marker) :].split("\n\n", 1)[0]
     assert "scripts/lint-backend.sh" in block
+
+
+def test_root_install_lint_tools_matches_makefile_target() -> None:
+    """npm run install-lint-tools 与 make install-lint-tools 须安装同一 lint-tools.txt。"""
+    root = repo_root()
+    pkg = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    assert pkg["scripts"]["install-lint-tools"] == (
+        "pip install -r backend/requirements/lint-tools.txt"
+    )
+    makefile = (root / "Makefile").read_text(encoding="utf-8")
+    assert (
+        "install-lint-tools:\n\t@pip install -r backend/requirements/lint-tools.txt"
+        in makefile
+    )
 
 
 def test_makefile_test_no_fallback_matches_npm_script() -> None:
@@ -239,7 +273,9 @@ def test_preflight_scripts_mention_docker_build_smoke() -> None:
     for rel in ("scripts/production-preflight.sh", "scripts/release-preflight.sh"):
         text = (root / rel).read_text(encoding="utf-8")
         assert "docker-build-all" in text, f"{rel} should mention make docker-build-all"
-        assert "docker-image-build" in text, f"{rel} should mention workflow docker-image-build"
+        assert "docker-image-build" in text, (
+            f"{rel} should mention workflow docker-image-build"
+        )
 
 
 def test_makefile_healthcheck_and_security_guardrails_invoke_repo_scripts() -> None:

@@ -1,0 +1,3 @@
+# 供 scripts/lint-backend.sh 与 GitHub backend-static-analysis 使用；固定 ruff format/check 与 mypy 行为，避免 CI 与本地因工具版本漂移红绿闪烁。
+ruff==0.14.0
+mypy==1.20.2

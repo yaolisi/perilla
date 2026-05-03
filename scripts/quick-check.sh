@@ -11,6 +11,7 @@ fi
 bash scripts/check-nvmrc-align.sh
 bash scripts/lint-backend.sh
 echo "quick-check: OK"
+echo "quick-check: hint — same ruff/mypy as CI: make install-lint-tools (or npm run install-lint-tools)"
 echo "quick-check: next — merge gate pytest only: make merge-gate-contract-tests (or npm run merge-gate-contract-tests)"
 echo "quick-check: next — helm lint + merge gate: make helm-deploy-contract-check (CI backend-static-analysis parity)"
 echo "quick-check: next — Docker image smoke: make docker-build-all (or npm run docker-build-all; CI: workflow docker-image-build)"

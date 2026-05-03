@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Helm / Makefile / package.json 合并门禁契约测试（单一列表：Makefile 与 CI 共用）。
 # 用法：bash scripts/merge-gate-contract-tests.sh [pytest 额外参数，如 -q]
-# Pytest 列表（含顺序）须与 backend/tests/test_pr_check_scripts_contract.py 中 MERGE_GATE_CONTRACT_TEST_MODULES 一致。
+# Pytest 列表（含顺序）须与 backend/tests/pr_check_contract/common.py 中 MERGE_GATE_CONTRACT_TEST_MODULES 一致。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -26,7 +26,10 @@ exec pytest \
   backend/tests/test_backend_dockerfile_python_main_contract.py \
   backend/tests/test_helm_values_security_uid_alignment_contract.py \
   backend/tests/test_helm_chart_yaml_contract.py \
-  backend/tests/test_pr_check_scripts_contract.py \
+  backend/tests/test_pr_check_contract_entrypoints.py \
+  backend/tests/test_pr_check_contract_github_workflows.py \
+  backend/tests/test_pr_check_contract_makefile.py \
+  backend/tests/test_pr_check_contract_shell_scripts.py \
   backend/tests/test_root_package_scripts_contract.py \
   backend/tests/test_npm_scripts_roadmap_hint_contract.py \
   "$@"
