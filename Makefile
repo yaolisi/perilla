@@ -1,4 +1,4 @@
-.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend helm-chart-check helm-deploy-contract-check compose-config-check monitoring-config-check k8s-manifest-check dockerfile-hadolint-check security-guardrails-ci backend-static-analysis-extras merge-gate-contract-tests check-nvmrc-align test-frontend-unit test-frontend-unit-coverage build-frontend pr-check pr-check-fast ci ci-fast quick-check production-preflight release-preflight dependency-policy dependency-scan test-no-fallback test-workflow-control-flow test-tenant-isolation roadmap-acceptance-unit roadmap-acceptance-smoke roadmap-acceptance-all roadmap-acceptance-validate-schema-version roadmap-acceptance-validate-output roadmap-acceptance-run-validated roadmap-release-gate smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
+.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend helm-chart-check helm-deploy-contract-check compose-config-check monitoring-config-check k8s-manifest-check dockerfile-hadolint-check docker-build-backend docker-build-frontend docker-build-all security-guardrails-ci backend-static-analysis-extras merge-gate-contract-tests check-nvmrc-align test-frontend-unit test-frontend-unit-coverage build-frontend pr-check pr-check-fast ci ci-fast quick-check production-preflight release-preflight dependency-policy dependency-scan test-no-fallback test-workflow-control-flow test-tenant-isolation roadmap-acceptance-unit roadmap-acceptance-smoke roadmap-acceptance-all roadmap-acceptance-validate-schema-version roadmap-acceptance-validate-output roadmap-acceptance-run-validated roadmap-release-gate smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
 
 CB_BASE_URL ?= http://127.0.0.1:8000
 CB_MODEL ?= ollama:deepseek-r1:32b
@@ -158,6 +158,8 @@ help:
 	@echo "                   - kubeconform 校验 deploy/k8s 示例清单（无 Docker 且无 kubeconform 则跳过）"
 	@echo "  make dockerfile-hadolint-check"
 	@echo "                   - hadolint 校验 docker/*.Dockerfile（无 Docker 且无 hadolint 则跳过）"
+	@echo "  make docker-build-backend / docker-build-frontend / docker-build-all"
+	@echo "                   - 本地镜像冒烟构建（需 Docker；不进 CI / pr-check）"
 	@echo "  make security-guardrails-ci"
 	@echo "                   - 合成 env 跑 validate_production_security_guardrails（scripts/check-security-guardrails-ci.sh）"
 	@echo "  make backend-static-analysis-extras"
@@ -590,6 +592,15 @@ k8s-manifest-check:
 
 dockerfile-hadolint-check:
 	@bash scripts/dockerfile-hadolint-check.sh
+
+# 发布前本地镜像冒烟（需 Docker daemon；不进 pr-check / CI）
+docker-build-backend:
+	@docker build -f docker/backend.Dockerfile -t perilla-backend:local .
+
+docker-build-frontend:
+	@docker build -f docker/frontend.Dockerfile -t perilla-frontend:local .
+
+docker-build-all: docker-build-backend docker-build-frontend
 
 # Helm lint/template + 合并门禁契约（列表见 scripts/merge-gate-contract-tests.sh）
 helm-deploy-contract-check: helm-chart-check

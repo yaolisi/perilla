@@ -220,6 +220,16 @@ def test_makefile_local_dev_targets_match_npm_and_runner_scripts_exist() -> None
         assert sh in block, f"{target} should invoke {sh}"
 
 
+def test_makefile_defines_docker_build_smoke_targets() -> None:
+    """Makefile 须提供可重复的本地镜像构建入口（与 docker/*.Dockerfile 路径一致）。"""
+    makefile = (repo_root() / "Makefile").read_text(encoding="utf-8")
+    assert re.search(r"^docker-build-backend:\s*$", makefile, re.MULTILINE)
+    assert re.search(r"^docker-build-frontend:\s*$", makefile, re.MULTILINE)
+    assert re.search(r"^docker-build-all:\s*", makefile, re.MULTILINE)
+    assert "docker build -f docker/backend.Dockerfile" in makefile
+    assert "docker build -f docker/frontend.Dockerfile" in makefile
+
+
 def test_makefile_healthcheck_and_security_guardrails_invoke_repo_scripts() -> None:
     """运维/生产门禁入口须指向真实脚本，避免 make 目标漂移或文件被删。"""
     root = repo_root()

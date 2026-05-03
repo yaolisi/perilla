@@ -30,4 +30,5 @@ def test_dockerignore_trims_build_context() -> None:
     text = path.read_text(encoding="utf-8")
     assert ".git" in text
     assert "node_modules" in text
+    assert "frontend/dist" in text
     assert ".env" in text

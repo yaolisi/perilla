@@ -4,6 +4,8 @@
 
 # 镜像内通过 npm ci 安装
 frontend/node_modules
+# 宿主机构建产物（镜像内 npm run build 生成）
+frontend/dist
 
 # Python 缓存与字节码
 **/__pycache__
