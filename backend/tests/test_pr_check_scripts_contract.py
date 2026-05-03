@@ -13,6 +13,32 @@ from tests.repo_paths import repo_root
 
 pytestmark = pytest.mark.requires_monorepo
 
+# 须与 scripts/merge-gate-contract-tests.sh 内 pytest 列表顺序完全一致（双向契约见下方测试）。
+MERGE_GATE_CONTRACT_TEST_MODULES: tuple[str, ...] = (
+    "test_repo_paths_layout_contract.py",
+    "test_helm_notes_env_mapping_contract.py",
+    "test_helm_deployment_env_contract.py",
+    "test_helm_deployment_duplicate_env_names_contract.py",
+    "test_helm_values_env_duplicate_keys_contract.py",
+    "test_helm_values_critical_keys_contract.py",
+    "test_helm_values_probes_metrics_contract.py",
+    "test_helm_values_service_port_alignment_contract.py",
+    "test_deploy_k8s_example_alignment_contract.py",
+    "test_deploy_k8s_grace_budget_contract.py",
+    "test_deploy_secret_env_rate_limit_trust_contract.py",
+    "test_audit_log_events_path_coverage.py",
+    "test_deploy_ingress_streaming_hints_contract.py",
+    "test_runtime_health_paths_contract.py",
+    "test_docker_compose_production_hints_contract.py",
+    "test_docker_backend_image_contract.py",
+    "test_backend_dockerfile_python_main_contract.py",
+    "test_helm_values_security_uid_alignment_contract.py",
+    "test_helm_chart_yaml_contract.py",
+    "test_pr_check_scripts_contract.py",
+    "test_root_package_scripts_contract.py",
+    "test_npm_scripts_roadmap_hint_contract.py",
+)
+
 
 def _read_script(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -367,31 +393,19 @@ def test_merge_gate_contract_tests_script_is_single_manifest() -> None:
     """Makefile 与 CI 共用 scripts/merge-gate-contract-tests.sh，避免 pytest 列表漂移。"""
     root = repo_root()
     script = _read_script(root / "scripts" / "merge-gate-contract-tests.sh")
-    for name in (
-        "test_repo_paths_layout_contract.py",
-        "test_helm_notes_env_mapping_contract.py",
-        "test_helm_deployment_env_contract.py",
-        "test_helm_deployment_duplicate_env_names_contract.py",
-        "test_helm_values_env_duplicate_keys_contract.py",
-        "test_helm_values_critical_keys_contract.py",
-        "test_helm_values_probes_metrics_contract.py",
-        "test_helm_values_service_port_alignment_contract.py",
-        "test_deploy_k8s_example_alignment_contract.py",
-        "test_deploy_k8s_grace_budget_contract.py",
-        "test_deploy_secret_env_rate_limit_trust_contract.py",
-        "test_audit_log_events_path_coverage.py",
-        "test_deploy_ingress_streaming_hints_contract.py",
-        "test_runtime_health_paths_contract.py",
-        "test_docker_compose_production_hints_contract.py",
-        "test_docker_backend_image_contract.py",
-        "test_backend_dockerfile_python_main_contract.py",
-        "test_helm_values_security_uid_alignment_contract.py",
-        "test_helm_chart_yaml_contract.py",
-        "test_pr_check_scripts_contract.py",
-        "test_root_package_scripts_contract.py",
-        "test_npm_scripts_roadmap_hint_contract.py",
-    ):
+    for name in MERGE_GATE_CONTRACT_TEST_MODULES:
         assert name in script, f"missing manifest entry: {name}"
     workflow = _read_script(root / ".github/workflows" / "backend-static-analysis.yml")
     assert "merge-gate-contract-tests.sh" in workflow
     assert "make test-tenant-isolation" in workflow
+
+
+def test_merge_gate_contract_tests_script_pytest_list_matches_manifest_tuple() -> None:
+    """脚本内 pytest 路径须与 MERGE_GATE_CONTRACT_TEST_MODULES 完全一致（含顺序），防止只改一端。"""
+    script = _read_script(repo_root() / "scripts" / "merge-gate-contract-tests.sh")
+    found = re.findall(r"backend/tests/(test_\w+\.py)", script)
+    assert found == list(MERGE_GATE_CONTRACT_TEST_MODULES), (
+        "merge-gate-contract-tests.sh pytest modules drift vs MERGE_GATE_CONTRACT_TEST_MODULES:\n"
+        f"  script: {found!r}\n"
+        f"  tuple:  {list(MERGE_GATE_CONTRACT_TEST_MODULES)!r}"
+    )
