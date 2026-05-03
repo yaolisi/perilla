@@ -71,6 +71,21 @@ def test_root_nvmrc_major_matches_package_engines_node() -> None:
     )
 
 
+def test_frontend_nvmrc_major_matches_package_engines_node() -> None:
+    """frontend/package.json engines.node 主版本须与仓库 .nvmrc 一致（与 CI setup-node 对齐）。"""
+    root = repo_root()
+    nvm_raw = (root / ".nvmrc").read_text(encoding="utf-8").strip().lstrip("v")
+    nvm_major = int(nvm_raw.split(".")[0])
+    pkg = json.loads((root / "frontend" / "package.json").read_text(encoding="utf-8"))
+    node_eng = str((pkg.get("engines") or {}).get("node", ""))
+    m = re.search(r"\d+", node_eng)
+    assert m, f"frontend package.json engines.node missing or unparsable: {node_eng!r}"
+    eng_major = int(m.group(0))
+    assert eng_major == nvm_major, (
+        f".nvmrc major {nvm_major} != frontend engines.node major {eng_major} ({node_eng})"
+    )
+
+
 def test_makefile_quick_check_invokes_same_entry_as_npm() -> None:
     """make quick-check 与 npm run quick-check 须共用 scripts/quick-check.sh。"""
     makefile = (repo_root() / "Makefile").read_text(encoding="utf-8")

@@ -201,6 +201,7 @@ def test_dependency_review_workflow_matches_supply_chain_gate() -> None:
     assert "dependency-review-action" in wf
     assert "fail-on-severity: critical" in wf
     assert "pull-requests: write" in wf
+    assert "workflow_dispatch:" in wf
 
 
 def test_dependabot_config_covers_backend_frontend_actions_and_docker() -> None:

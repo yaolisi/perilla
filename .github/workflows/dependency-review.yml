@@ -11,6 +11,7 @@ on:
       - "frontend/package-lock.json"
       - "backend/requirements/**"
       - ".github/workflows/dependency-review.yml"
+  workflow_dispatch:
 
 concurrency:
   group: dependency-review-${{ github.workflow }}-${{ github.ref }}
