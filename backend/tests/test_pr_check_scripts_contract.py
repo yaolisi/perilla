@@ -44,6 +44,25 @@ def _read_script(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+# merge-gate-contract-tests.sh：仅匹配「两空格 + backend/tests/test_*.py + 行尾反斜杠」的 pytest 参数行，忽略注释与文案。
+_MERGE_GATE_PYTEST_ARG_LINE = re.compile(r"^\s+(backend/tests/test_\w+\.py)\s*\\\s*$")
+
+
+def _merge_gate_pytest_relative_paths(script: str) -> list[str]:
+    """解析合并门禁脚本中的 pytest 路径列表（顺序与脚本一致）。"""
+    out: list[str] = []
+    for line in script.splitlines():
+        m = _MERGE_GATE_PYTEST_ARG_LINE.match(line)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def _merge_gate_pytest_modules_from_script(script: str) -> list[str]:
+    """同上，返回各模块文件名（test_*.py）。"""
+    return [Path(p).name for p in _merge_gate_pytest_relative_paths(script)]
+
+
 _JOB_HEAD = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 _JOB_BODY_LINE = re.compile(r"^    \S")
 
@@ -212,7 +231,7 @@ def test_tenant_isolation_marker_collects_regression_suite() -> None:
 def test_merge_gate_contract_tests_script_paths_exist_and_unique() -> None:
     """merge-gate 脚本中的 pytest 路径须在仓库内存在且不重复（防拼写错误）。"""
     script = _read_script(repo_root() / "scripts" / "merge-gate-contract-tests.sh")
-    paths = re.findall(r"backend/tests/test_\w+\.py", script)
+    paths = _merge_gate_pytest_relative_paths(script)
     assert paths, "expected backend/tests/test_*.py entries in merge-gate-contract-tests.sh"
     assert len(paths) == len(MERGE_GATE_CONTRACT_TEST_MODULES), (
         f"merge-gate lists {len(paths)} modules, MERGE_GATE_CONTRACT_TEST_MODULES has "
@@ -403,7 +422,7 @@ def test_merge_gate_contract_tests_script_is_single_manifest() -> None:
 def test_merge_gate_contract_tests_script_pytest_list_matches_manifest_tuple() -> None:
     """脚本内 pytest 路径须与 MERGE_GATE_CONTRACT_TEST_MODULES 完全一致（含顺序），防止只改一端。"""
     script = _read_script(repo_root() / "scripts" / "merge-gate-contract-tests.sh")
-    found = re.findall(r"backend/tests/(test_\w+\.py)", script)
+    found = _merge_gate_pytest_modules_from_script(script)
     assert found == list(MERGE_GATE_CONTRACT_TEST_MODULES), (
         "merge-gate-contract-tests.sh pytest modules drift vs MERGE_GATE_CONTRACT_TEST_MODULES:\n"
         f"  script: {found!r}\n"
