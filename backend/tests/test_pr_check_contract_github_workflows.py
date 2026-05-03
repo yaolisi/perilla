@@ -468,3 +468,17 @@ def test_backend_static_analysis_pip_install_uses_lint_tools_requirements() -> N
     cache_block = wf[anchor : anchor + 280]
     assert "backend/requirements/base.txt" in cache_block
     assert "backend/requirements/lint-tools.txt" in cache_block
+
+
+def test_workflows_invoking_lint_backend_pin_lint_tools() -> None:
+    """凡在 CI 中执行 lint-backend.sh 的 workflow 须出现 lint-tools.txt（防复制 job 时漏装工具）。"""
+    wf_dir = repo_root() / ".github" / "workflows"
+    run_needle = "bash scripts/lint-backend.sh"
+    for path in sorted(wf_dir.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        if run_needle not in text:
+            continue
+        assert "lint-tools.txt" in text, (
+            f"{path.name}: runs lint-backend.sh but missing lint-tools.txt "
+            "(pip install or cache-dependency-path)"
+        )
