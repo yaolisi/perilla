@@ -379,6 +379,7 @@ def test_merge_gate_contract_tests_script_is_single_manifest() -> None:
         "test_deploy_k8s_example_alignment_contract.py",
         "test_deploy_k8s_grace_budget_contract.py",
         "test_deploy_secret_env_rate_limit_trust_contract.py",
+        "test_audit_log_events_path_coverage.py",
         "test_deploy_ingress_streaming_hints_contract.py",
         "test_runtime_health_paths_contract.py",
         "test_docker_compose_production_hints_contract.py",
@@ -388,6 +389,7 @@ def test_merge_gate_contract_tests_script_is_single_manifest() -> None:
         "test_helm_chart_yaml_contract.py",
         "test_pr_check_scripts_contract.py",
         "test_root_package_scripts_contract.py",
+        "test_npm_scripts_roadmap_hint_contract.py",
     ):
         assert name in script, f"missing manifest entry: {name}"
     workflow = _read_script(root / ".github/workflows" / "backend-static-analysis.yml")

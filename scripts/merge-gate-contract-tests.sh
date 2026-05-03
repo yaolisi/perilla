@@ -27,4 +27,5 @@ exec pytest \
   backend/tests/test_helm_chart_yaml_contract.py \
   backend/tests/test_pr_check_scripts_contract.py \
   backend/tests/test_root_package_scripts_contract.py \
+  backend/tests/test_npm_scripts_roadmap_hint_contract.py \
   "$@"
