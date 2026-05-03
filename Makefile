@@ -201,7 +201,7 @@ help:
 	@echo "  npm run quick-check"
 	@echo "                   - Same without make"
 	@echo "  make production-preflight"
-	@echo "                   - Backend deploy slice: quick-check + … + dockerfile-hadolint + security-guardrails-ci（对齐 CI backend-static-analysis 全 10 步；无前端）"
+	@echo "                   - Backend deploy slice: dependency-policy + quick-check + … + security-guardrails-ci（对齐 CI backend-static-analysis 全 11 步；无前端）"
 	@echo "  bash scripts/production-preflight.sh"
 	@echo "                   - Same from any cwd"
 	@echo "  npm run production-preflight"
@@ -213,7 +213,7 @@ help:
 	@echo "  npm run release-preflight"
 	@echo "                   - Same without make"
 	@echo "  make pr-check"
-	@echo "                   - check-nvmrc-align, then lint + no-fallback + helm-deploy-contract-check + backend-static-analysis-extras + vitest + build + roadmap-acceptance-unit"
+	@echo "                   - check-nvmrc-align, dependency-policy, lint + no-fallback + helm-deploy-contract-check + backend-static-analysis-extras + vitest + build + roadmap-acceptance-unit"
 	@echo "  make ci"
 	@echo "                   - Alias for make pr-check"
 	@echo "  SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 make pr-check"
@@ -613,7 +613,7 @@ test-frontend-unit-coverage: check-nvmrc-align
 build-frontend: check-nvmrc-align
 	@cd frontend && npm run build
 
-pr-check: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-tenant-isolation helm-deploy-contract-check backend-static-analysis-extras test-frontend-unit build-frontend
+pr-check: check-nvmrc-align i18n-hardcoded-scan dependency-policy lint-backend test-no-fallback test-tenant-isolation helm-deploy-contract-check backend-static-analysis-extras test-frontend-unit build-frontend
 	@if [ "$(SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
 		echo "pr-check: skip roadmap-acceptance-unit (SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1)"; \
 	else \
@@ -621,7 +621,7 @@ pr-check: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback te
 	fi
 	@echo "pr-check: OK"
 
-pr-check-fast: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-tenant-isolation helm-deploy-contract-check backend-static-analysis-extras test-frontend-unit
+pr-check-fast: check-nvmrc-align i18n-hardcoded-scan dependency-policy lint-backend test-no-fallback test-tenant-isolation helm-deploy-contract-check backend-static-analysis-extras test-frontend-unit
 	@if [ "$(SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
 		echo "pr-check-fast: skip roadmap-acceptance-unit (SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1)"; \
 	else \

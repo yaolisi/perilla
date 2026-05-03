@@ -82,9 +82,12 @@ def test_makefile_pr_check_includes_helm_deploy_contract_check() -> None:
     for line in makefile.splitlines():
         stripped = line.strip()
         if stripped.startswith("pr-check:"):
+            assert "dependency-policy" in stripped
             assert "helm-deploy-contract-check" in stripped
             assert "backend-static-analysis-extras" in stripped
             assert "test-tenant-isolation" in stripped
+            assert stripped.index("i18n-hardcoded-scan") < stripped.index("dependency-policy")
+            assert stripped.index("dependency-policy") < stripped.index("lint-backend")
             assert stripped.index("test-no-fallback") < stripped.index("test-tenant-isolation")
             assert stripped.index("test-tenant-isolation") < stripped.index("helm-deploy-contract-check")
             assert stripped.index("helm-deploy-contract-check") < stripped.index(
@@ -92,9 +95,12 @@ def test_makefile_pr_check_includes_helm_deploy_contract_check() -> None:
             )
             assert stripped.index("backend-static-analysis-extras") < stripped.index("test-frontend-unit")
         if stripped.startswith("pr-check-fast:"):
+            assert "dependency-policy" in stripped
             assert "helm-deploy-contract-check" in stripped
             assert "backend-static-analysis-extras" in stripped
             assert "test-tenant-isolation" in stripped
+            assert stripped.index("i18n-hardcoded-scan") < stripped.index("dependency-policy")
+            assert stripped.index("dependency-policy") < stripped.index("lint-backend")
             assert stripped.index("test-no-fallback") < stripped.index("test-tenant-isolation")
             assert stripped.index("test-tenant-isolation") < stripped.index("helm-deploy-contract-check")
             assert stripped.index("helm-deploy-contract-check") < stripped.index(
@@ -150,6 +156,13 @@ def test_backend_static_analysis_triggers_on_deploy_k8s() -> None:
     assert "scripts/healthcheck.sh" in wf
     assert "docker/**" in wf
     assert "scripts/doctor.sh" in wf
+
+
+def test_backend_static_analysis_includes_dependency_version_policy() -> None:
+    """与 dependency-security-scan 同源策略检查须出现在主后端 CI，防 requirements 漂移。"""
+    wf = _read_script(repo_root() / ".github/workflows/backend-static-analysis.yml")
+    assert "scripts/check-dependency-version-policy.sh" in wf
+    assert "Dependency version policy" in wf
 
 
 def test_backend_static_analysis_includes_security_guardrails_step() -> None:
