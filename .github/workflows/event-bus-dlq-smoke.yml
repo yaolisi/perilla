@@ -195,7 +195,7 @@ jobs:
 
       - name: Upload smoke log artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: event-bus-dlq-smoke-log
           path: |
@@ -613,7 +613,7 @@ jobs:
 
       - name: Upload smoke summary artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: event-bus-dlq-smoke-summary
           path: ${{ env.EVENT_BUS_SMOKE_SUMMARY_JSON_FILE }}

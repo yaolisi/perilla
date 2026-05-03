@@ -161,7 +161,7 @@ jobs:
 
       - name: Upload security regression summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: security-regression-summary-${{ github.run_number }}
           path: test-reports/security-regression-summary.md

@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload smoke report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: knowledge-smoke-report
           path: backend/test-reports/knowledge-smoke-report.json
@@ -199,7 +199,7 @@ jobs:
 
       - name: Upload issue draft
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: knowledge-smoke-issue-draft
           path: backend/test-reports/knowledge-smoke-issue.md
