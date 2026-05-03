@@ -535,3 +535,23 @@ def test_healthcheck_script_strict_bash_and_cwd_repo_root() -> None:
     assert "set -euo pipefail" in text
     assert 'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
     assert 'cd "${ROOT_DIR}"' in text
+
+
+def test_doctor_script_strict_bash_and_cwd_repo_root() -> None:
+    """doctor 在仓库根检查 compose / 端口 / .env，与 healthcheck 同型 ROOT_DIR。"""
+    rel = "scripts/doctor.sh"
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+    assert 'cd "${ROOT_DIR}"' in text
+
+
+def test_check_frontend_i18n_hardcoded_script_strict_bash_and_cwd_repo_root() -> None:
+    """前端 i18n 基线扫描在仓库根解析 frontend/src，须 cd 仓库根。"""
+    rel = "scripts/check-frontend-i18n-hardcoded.sh"
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+    assert 'cd "$ROOT"' in text
