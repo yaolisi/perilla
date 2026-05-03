@@ -450,6 +450,7 @@ def test_merge_gate_contract_tests_script_invokes_pytest_with_arg_forwarding() -
         "scripts/test-no-fallback.sh",
         "scripts/check-nvmrc-align.sh",
         "scripts/compose-config-check.sh",
+        "scripts/npm-scripts.sh",
     ),
 )
 def test_gate_shell_scripts_strict_bash_and_cwd_repo_root(rel: str) -> None:
@@ -555,3 +556,13 @@ def test_check_frontend_i18n_hardcoded_script_strict_bash_and_cwd_repo_root() ->
     assert "set -euo pipefail" in text
     assert 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
     assert 'cd "$ROOT"' in text
+
+
+def test_scan_dependencies_script_strict_bash_and_cwd_repo_root() -> None:
+    """dependency-scan（pip-audit）须在仓库根创建临时 venv 并读 requirements。"""
+    rel = "scripts/scan-dependencies.sh"
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+    assert 'cd "$ROOT_DIR"' in text
