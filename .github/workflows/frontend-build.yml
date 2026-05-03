@@ -64,7 +64,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/check-nvmrc-align.sh
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
           cache: npm
