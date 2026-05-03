@@ -132,6 +132,9 @@ echo ""
 echo "Hint (production merge gate): make helm-deploy-contract-check — or pytest-only: make merge-gate-contract-tests / npm run merge-gate-contract-tests"
 
 echo ""
+echo "Hint (Docker images): make docker-build-all — CI parity: GitHub Actions workflow docker-image-build"
+
+echo ""
 if [[ "${critical_count}" -gt 0 ]]; then
   echo "Doctor check failed with ${critical_count} critical issue(s) and ${warn_count} warning(s)."
   echo "Fix critical issues before install/up."

@@ -231,11 +231,12 @@ def test_makefile_defines_docker_build_smoke_targets() -> None:
 
 
 def test_preflight_scripts_mention_docker_build_smoke() -> None:
-    """发布前脚本结束时须提示可选镜像冒烟，与 Makefile docker-build-* 一致。"""
+    """发布前脚本结束时须提示可选镜像冒烟，与 Makefile docker-build-* 及 CI workflow 名一致。"""
     root = repo_root()
     for rel in ("scripts/production-preflight.sh", "scripts/release-preflight.sh"):
         text = (root / rel).read_text(encoding="utf-8")
         assert "docker-build-all" in text, f"{rel} should mention make docker-build-all"
+        assert "docker-image-build" in text, f"{rel} should mention workflow docker-image-build"
 
 
 def test_makefile_healthcheck_and_security_guardrails_invoke_repo_scripts() -> None:

@@ -100,6 +100,8 @@ def test_quick_check_and_doctor_scripts_mention_merge_gate_hints() -> None:
     doctor = _read_script(root / "scripts" / "doctor.sh")
     assert "make helm-deploy-contract-check" in doctor
     assert "merge-gate-contract-tests" in doctor
+    assert "docker-build-all" in doctor
+    assert "docker-image-build" in doctor
 
 
 def test_makefile_has_merge_gate_contract_tests_target() -> None:
