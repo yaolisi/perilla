@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 后端上线前「代码 + Helm + 契约」一键校验（无需运行中的 API）。
-# 顺序对齐 CI backend-static-analysis 单 job：quick-check → test-no-fallback → tenant-isolation → helm-chart-check → merge-gate-contract-tests → compose-config-check → monitoring-config-check → k8s-manifest-check → dockerfile-hadolint-check。
+# 顺序对齐 CI backend-static-analysis 单 job 前 9 步：quick-check → … → dockerfile-hadolint-check。
+# CI 在同 workflow 末尾另有第 10 步 scripts/check-security-guardrails.sh（注入合成 env）；本地仍应用真实 .env 跑 make security-guardrails。
 # 不包含：前端 Vitest/build、roadmap（见 make pr-check / pr-check-fast）。
-# 环境变量就绪后另跑：make security-guardrails（见 scripts/check-security-guardrails.sh）。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -38,5 +38,5 @@ bash scripts/k8s-manifest-check.sh
 echo "[production-preflight] 9/9 Dockerfiles (hadolint)"
 bash scripts/dockerfile-hadolint-check.sh
 
-echo "[production-preflight] OK — backend-static-analysis parity (backend steps only)."
+echo "[production-preflight] OK — CI steps 1–9 (backend); step 10 security-guardrails runs only in GitHub Actions with synthetic env."
 echo "[production-preflight] Next: fill production .env (see root .env.example), then: make security-guardrails"

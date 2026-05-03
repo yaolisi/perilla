@@ -141,6 +141,15 @@ def test_backend_static_analysis_triggers_on_deploy_k8s() -> None:
     assert "scripts/doctor.sh" in wf
 
 
+def test_backend_static_analysis_includes_security_guardrails_step() -> None:
+    """CI 须跑 production guardrails（与 scripts/check-security-guardrails.sh 一致），避免校验逻辑漂移。"""
+    wf = _read_script(repo_root() / ".github/workflows/backend-static-analysis.yml")
+    assert "scripts/check-security-guardrails.sh" in wf
+    assert "check-security-guardrails.sh" in wf
+    assert "DATABASE_URL:" in wf
+    assert "RBAC_ADMIN_API_KEYS:" in wf
+
+
 def test_merge_gate_contract_tests_script_is_single_manifest() -> None:
     """Makefile 与 CI 共用 scripts/merge-gate-contract-tests.sh，避免 pytest 列表漂移。"""
     root = repo_root()
