@@ -97,6 +97,8 @@ def test_quick_check_and_doctor_scripts_mention_merge_gate_hints() -> None:
     assert "quick-check: OK" in quick
     assert "make merge-gate-contract-tests" in quick
     assert "make helm-deploy-contract-check" in quick
+    assert "docker-build-all" in quick
+    assert "docker-image-build" in quick
     doctor = _read_script(root / "scripts" / "doctor.sh")
     assert "make helm-deploy-contract-check" in doctor
     assert "merge-gate-contract-tests" in doctor
