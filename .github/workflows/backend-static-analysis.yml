@@ -1,4 +1,4 @@
-# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`** → `scripts/test-no-fallback.sh`（no_fallback 用例 + **`test_production_readiness_baseline`**) → **`make test-tenant-isolation`** → **`scripts/helm-chart-check.sh`** → **`scripts/merge-gate-contract-tests.sh`** → **`scripts/compose-config-check.sh`**（`docker-compose.yml` + **`docker-compose.prod.yml`** + **`deploy/monitoring/docker-compose.monitoring.yml`** 叠加）→ **`scripts/monitoring-config-check.sh`**（Prometheus / Alertmanager）→ **`scripts/k8s-manifest-check.sh`**（`deploy/k8s` kubeconform）。本地等价一键：**`bash scripts/production-preflight.sh`** / **`make production-preflight`**；全栈含前端见 **`bash scripts/release-preflight.sh`**。其后 **`make pr-check`** / **`pr-check-fast`** 另有 Vitest、**`roadmap-acceptance-unit`**（可 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`**）、**`build-frontend`**（仅 `pr-check`；见 `frontend-build`）。
+# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`** → `scripts/test-no-fallback.sh`（no_fallback 用例 + **`test_production_readiness_baseline`**) → **`make test-tenant-isolation`** → **`scripts/helm-chart-check.sh`** → **`scripts/merge-gate-contract-tests.sh`** → **`scripts/compose-config-check.sh`**（`docker-compose.yml` + **`docker-compose.prod.yml`** + **`deploy/monitoring/docker-compose.monitoring.yml`** 叠加）→ **`scripts/monitoring-config-check.sh`**（Prometheus / Alertmanager）→ **`scripts/k8s-manifest-check.sh`**（`deploy/k8s` kubeconform）→ **`scripts/dockerfile-hadolint-check.sh`**（`docker/*.Dockerfile` hadolint）。本地等价一键：**`bash scripts/production-preflight.sh`** / **`make production-preflight`**；全栈含前端见 **`bash scripts/release-preflight.sh`**。其后 **`make pr-check`** / **`pr-check-fast`** 另有 Vitest、**`roadmap-acceptance-unit`**（可 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`**）、**`build-frontend`**（仅 `pr-check`；见 `frontend-build`）。
 name: backend-static-analysis
 
 on:
@@ -32,6 +32,7 @@ on:
       - "scripts/compose-config-check.sh"
       - "scripts/monitoring-config-check.sh"
       - "scripts/k8s-manifest-check.sh"
+      - "scripts/dockerfile-hadolint-check.sh"
       - "docker/**"
       - "scripts/healthcheck.sh"
       - "scripts/helm-chart-check.sh"
@@ -69,6 +70,7 @@ on:
       - "scripts/compose-config-check.sh"
       - "scripts/monitoring-config-check.sh"
       - "scripts/k8s-manifest-check.sh"
+      - "scripts/dockerfile-hadolint-check.sh"
       - "docker/**"
       - "scripts/healthcheck.sh"
       - "scripts/helm-chart-check.sh"
@@ -138,3 +140,7 @@ jobs:
       - name: K8s example manifests (kubeconform)
         working-directory: ${{ github.workspace }}
         run: bash scripts/k8s-manifest-check.sh
+
+      - name: Dockerfiles (hadolint)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/dockerfile-hadolint-check.sh

@@ -17,6 +17,7 @@
     "compose-config-check": "bash scripts/compose-config-check.sh",
     "monitoring-config-check": "bash scripts/monitoring-config-check.sh",
     "k8s-manifest-check": "bash scripts/k8s-manifest-check.sh",
+    "dockerfile-hadolint-check": "bash scripts/dockerfile-hadolint-check.sh",
     "helm-chart-check": "make helm-chart-check",
     "helm-deploy-contract-check": "make helm-deploy-contract-check",
     "merge-gate-contract-tests": "bash scripts/merge-gate-contract-tests.sh",
