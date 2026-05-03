@@ -214,9 +214,9 @@ def test_merge_gate_contract_tests_script_paths_exist_and_unique() -> None:
     script = _read_script(repo_root() / "scripts" / "merge-gate-contract-tests.sh")
     paths = re.findall(r"backend/tests/test_\w+\.py", script)
     assert paths, "expected backend/tests/test_*.py entries in merge-gate-contract-tests.sh"
-    assert len(paths) >= 15, (
-        f"merge-gate-contract-tests.sh appears truncated (only {len(paths)} modules); "
-        "if intentional, lower the floor in test_pr_check_scripts_contract.py"
+    assert len(paths) == len(MERGE_GATE_CONTRACT_TEST_MODULES), (
+        f"merge-gate lists {len(paths)} modules, MERGE_GATE_CONTRACT_TEST_MODULES has "
+        f"{len(MERGE_GATE_CONTRACT_TEST_MODULES)}; sync script and tuple"
     )
     dup = [p for p, n in Counter(paths).items() if n > 1]
     assert not dup, f"duplicate pytest paths in merge gate script: {dup}"
