@@ -459,3 +459,23 @@ def test_gate_shell_scripts_strict_bash_and_cwd_repo_root(rel: str) -> None:
     assert "set -euo pipefail" in text
     assert 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
     assert 'cd "$ROOT"' in text
+
+
+def test_lint_backend_script_strict_bash_and_cwd_backend_tree() -> None:
+    """lint 须在 backend/ 目录执行 ruff/mypy，但仍须由脚本解析仓库根。"""
+    rel = "scripts/lint-backend.sh"
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+    assert 'cd "${ROOT}/backend"' in text
+
+
+def test_check_dependency_version_policy_script_strict_bash_and_cwd_repo_root() -> None:
+    """依赖策略脚本使用 ROOT_DIR 命名，仍 cd 到仓库根再读 requirements。"""
+    rel = "scripts/check-dependency-version-policy.sh"
+    text = _read_script(repo_root() / rel)
+    assert text.startswith("#!/usr/bin/env bash\n"), rel
+    assert "set -euo pipefail" in text
+    assert 'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in text
+    assert 'cd "$ROOT_DIR"' in text
