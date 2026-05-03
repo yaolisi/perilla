@@ -70,6 +70,7 @@ def test_makefile_has_merge_gate_contract_tests_target() -> None:
     assert "make merge-gate-contract-tests" in help_out
     assert "npm run healthcheck" in help_out
     assert "npm run security-guardrails" in help_out
+    assert "npm run security-guardrails-ci" in help_out
 
 
 def test_makefile_pr_check_includes_helm_deploy_contract_check() -> None:
@@ -82,14 +83,24 @@ def test_makefile_pr_check_includes_helm_deploy_contract_check() -> None:
         stripped = line.strip()
         if stripped.startswith("pr-check:"):
             assert "helm-deploy-contract-check" in stripped
+            assert "backend-static-analysis-extras" in stripped
             assert "test-tenant-isolation" in stripped
             assert stripped.index("test-no-fallback") < stripped.index("test-tenant-isolation")
             assert stripped.index("test-tenant-isolation") < stripped.index("helm-deploy-contract-check")
+            assert stripped.index("helm-deploy-contract-check") < stripped.index(
+                "backend-static-analysis-extras"
+            )
+            assert stripped.index("backend-static-analysis-extras") < stripped.index("test-frontend-unit")
         if stripped.startswith("pr-check-fast:"):
             assert "helm-deploy-contract-check" in stripped
+            assert "backend-static-analysis-extras" in stripped
             assert "test-tenant-isolation" in stripped
             assert stripped.index("test-no-fallback") < stripped.index("test-tenant-isolation")
             assert stripped.index("test-tenant-isolation") < stripped.index("helm-deploy-contract-check")
+            assert stripped.index("helm-deploy-contract-check") < stripped.index(
+                "backend-static-analysis-extras"
+            )
+            assert stripped.index("backend-static-analysis-extras") < stripped.index("test-frontend-unit")
 
 
 def test_tenant_isolation_marker_collects_regression_suite() -> None:
@@ -142,12 +153,13 @@ def test_backend_static_analysis_triggers_on_deploy_k8s() -> None:
 
 
 def test_backend_static_analysis_includes_security_guardrails_step() -> None:
-    """CI 须跑 production guardrails（与 scripts/check-security-guardrails.sh 一致），避免校验逻辑漂移。"""
-    wf = _read_script(repo_root() / ".github/workflows/backend-static-analysis.yml")
-    assert "scripts/check-security-guardrails.sh" in wf
-    assert "check-security-guardrails.sh" in wf
-    assert "DATABASE_URL:" in wf
-    assert "RBAC_ADMIN_API_KEYS:" in wf
+    """CI 须跑 production guardrails；合成 env 与 scripts/check-security-guardrails-ci.sh 同源。"""
+    root = repo_root()
+    wf = _read_script(root / ".github/workflows/backend-static-analysis.yml")
+    assert "scripts/check-security-guardrails-ci.sh" in wf
+    ci = _read_script(root / "scripts" / "check-security-guardrails-ci.sh")
+    assert "DATABASE_URL" in ci
+    assert "RBAC_ADMIN_API_KEYS" in ci
 
 
 def test_merge_gate_contract_tests_script_is_single_manifest() -> None:

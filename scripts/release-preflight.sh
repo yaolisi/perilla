@@ -3,7 +3,7 @@
 # - 后端：与 backend-static-analysis + merge-gate 对齐（见 scripts/production-preflight.sh）
 # - 前端：与 frontend-build workflow 对齐（i18n 硬编码扫描 + Vitest + vue-tsc/vite prod build）
 # - Compose：已由 **production-preflight** 内含 **compose-config-check**（与 CI 一致）
-# 不含：roadmap-acceptance-unit（可选单独 make roadmap-acceptance-unit）、security-guardrails（需生产 .env）
+# 不含：roadmap-acceptance-unit（可选单独 make roadmap-acceptance-unit）；真实生产 .env 另跑 make security-guardrails（production-preflight 已含 synthetic CI guardrails）
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

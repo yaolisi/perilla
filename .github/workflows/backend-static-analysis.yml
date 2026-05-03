@@ -1,4 +1,4 @@
-# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`** → `scripts/test-no-fallback.sh`（no_fallback 用例 + **`test_production_readiness_baseline`**) → **`make test-tenant-isolation`** → **`scripts/helm-chart-check.sh`** → **`scripts/merge-gate-contract-tests.sh`** → **`scripts/compose-config-check.sh`**（`docker-compose.yml` + **`docker-compose.prod.yml`** + **`deploy/monitoring/docker-compose.monitoring.yml`** 叠加）→ **`scripts/monitoring-config-check.sh`**（Prometheus / Alertmanager）→ **`scripts/k8s-manifest-check.sh`**（`deploy/k8s` kubeconform）→ **`scripts/dockerfile-hadolint-check.sh`**（`docker/*.Dockerfile` hadolint）→ **`scripts/check-security-guardrails.sh`**（`Settings(debug=False)` + **`validate_production_security_guardrails`**；步骤内注入 CI 合成 env，见 workflow `env`）。本地等价一键：**`bash scripts/production-preflight.sh`** / **`make production-preflight`**；全栈含前端见 **`bash scripts/release-preflight.sh`**。其后 **`make pr-check`** / **`pr-check-fast`** 另有 Vitest、**`roadmap-acceptance-unit`**（可 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`**）、**`build-frontend`**（仅 `pr-check`；见 `frontend-build`）。
+# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`** → `scripts/test-no-fallback.sh`（no_fallback 用例 + **`test_production_readiness_baseline`**) → **`make test-tenant-isolation`** → **`scripts/helm-chart-check.sh`** → **`scripts/merge-gate-contract-tests.sh`** → **`scripts/compose-config-check.sh`**（`docker-compose.yml` + **`docker-compose.prod.yml`** + **`deploy/monitoring/docker-compose.monitoring.yml`** 叠加）→ **`scripts/monitoring-config-check.sh`**（Prometheus / Alertmanager）→ **`scripts/k8s-manifest-check.sh`**（`deploy/k8s` kubeconform）→ **`scripts/dockerfile-hadolint-check.sh`**（`docker/*.Dockerfile` hadolint）→ **`scripts/check-security-guardrails-ci.sh`**（封装合成 env + **`scripts/check-security-guardrails.sh`**）。本地等价：**`bash scripts/production-preflight.sh`** / **`make production-preflight`**；全栈含前端见 **`bash scripts/release-preflight.sh`**。**`make pr-check`** / **`pr-check-fast`** 含 **`backend-static-analysis-extras`**，另有 Vitest、**`roadmap-acceptance-unit`**（可 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`**）、**`build-frontend`**（仅 `pr-check`）。
 name: backend-static-analysis
 
 on:
@@ -34,6 +34,7 @@ on:
       - "scripts/k8s-manifest-check.sh"
       - "scripts/dockerfile-hadolint-check.sh"
       - "scripts/check-security-guardrails.sh"
+      - "scripts/check-security-guardrails-ci.sh"
       - "docker/**"
       - "scripts/healthcheck.sh"
       - "scripts/helm-chart-check.sh"
@@ -73,6 +74,7 @@ on:
       - "scripts/k8s-manifest-check.sh"
       - "scripts/dockerfile-hadolint-check.sh"
       - "scripts/check-security-guardrails.sh"
+      - "scripts/check-security-guardrails-ci.sh"
       - "docker/**"
       - "scripts/healthcheck.sh"
       - "scripts/helm-chart-check.sh"
@@ -147,15 +149,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/dockerfile-hadolint-check.sh
 
-      # 合成占位（不进密钥仓库）；load_dotenv(..., override=False) 不会覆盖此处已 export 的变量。
+      # 合成占位见 scripts/check-security-guardrails-ci.sh；load_dotenv(..., override=False) 不覆盖已 export 变量。
       - name: Production security guardrails (Settings + validate_production_security_guardrails)
         working-directory: ${{ github.workspace }}
-        env:
-          CORS_ALLOWED_ORIGINS: https://ci.invalid
-          TRUSTED_HOSTS: api.ci.invalid
-          DATABASE_URL: postgresql+psycopg2://ci:Xk9mPq2vLw8nRZ42CiDb@127.0.0.1:5432/ci_guard
-          LOG_FORMAT: json
-          FILE_READ_ALLOWED_ROOTS: /tmp,/var/lib/perilla/data
-          RBAC_DEFAULT_ROLE: viewer
-          RBAC_ADMIN_API_KEYS: ci-rbac-admin-key-segment-01
-        run: bash scripts/check-security-guardrails.sh
+        run: bash scripts/check-security-guardrails-ci.sh

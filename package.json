@@ -14,6 +14,7 @@
     "doctor": "bash scripts/doctor.sh",
     "healthcheck": "make healthcheck",
     "security-guardrails": "make security-guardrails",
+    "security-guardrails-ci": "make security-guardrails-ci",
     "compose-config-check": "bash scripts/compose-config-check.sh",
     "monitoring-config-check": "bash scripts/monitoring-config-check.sh",
     "k8s-manifest-check": "bash scripts/k8s-manifest-check.sh",

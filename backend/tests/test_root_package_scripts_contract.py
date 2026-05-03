@@ -44,6 +44,7 @@ def test_root_package_json_includes_roadmap_acceptance_scripts() -> None:
     assert scripts.get("doctor") == "bash scripts/doctor.sh"
     assert scripts.get("healthcheck") == "make healthcheck"
     assert scripts.get("security-guardrails") == "make security-guardrails"
+    assert scripts.get("security-guardrails-ci") == "make security-guardrails-ci"
     assert scripts.get("help") == "make help"
     assert scripts.get("npm-scripts") == "bash scripts/npm-scripts.sh"
     assert scripts.get("npm-scripts-json") == "bash scripts/npm-scripts.sh --json"
@@ -194,6 +195,7 @@ def test_makefile_healthcheck_and_security_guardrails_invoke_repo_scripts() -> N
     root = repo_root()
     assert (root / "scripts" / "healthcheck.sh").is_file()
     assert (root / "scripts" / "check-security-guardrails.sh").is_file()
+    assert (root / "scripts" / "check-security-guardrails-ci.sh").is_file()
 
     makefile = (root / "Makefile").read_text(encoding="utf-8")
     m = "\nhealthcheck:\n"
@@ -207,3 +209,9 @@ def test_makefile_healthcheck_and_security_guardrails_invoke_repo_scripts() -> N
     assert idx2 != -1
     block2 = makefile[idx2 + len(m2) :].split("\n\n", 1)[0]
     assert "scripts/check-security-guardrails.sh" in block2
+
+    m3 = "\nsecurity-guardrails-ci:\n"
+    idx3 = makefile.find(m3)
+    assert idx3 != -1
+    block3 = makefile[idx3 + len(m3) :].split("\n\n", 1)[0]
+    assert "scripts/check-security-guardrails-ci.sh" in block3

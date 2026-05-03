@@ -1,4 +1,4 @@
-.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend helm-chart-check helm-deploy-contract-check compose-config-check monitoring-config-check k8s-manifest-check dockerfile-hadolint-check merge-gate-contract-tests check-nvmrc-align test-frontend-unit test-frontend-unit-coverage build-frontend pr-check pr-check-fast ci ci-fast quick-check production-preflight release-preflight dependency-policy dependency-scan test-no-fallback test-workflow-control-flow test-tenant-isolation roadmap-acceptance-unit roadmap-acceptance-smoke roadmap-acceptance-all roadmap-acceptance-validate-schema-version roadmap-acceptance-validate-output roadmap-acceptance-run-validated roadmap-release-gate smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
+.PHONY: help npm-scripts npm-scripts-json bootstrap bootstrap-prod env-init local-all local-backend local-frontend install install-gpu install-prod install-prod-soft up up-gpu up-prod up-monitoring down down-gpu down-prod down-monitoring status status-monitoring logs healthcheck monitoring-smoke monitoring-e2e monitoring-e2e-clean monitoring-all ops-drill-guide doctor security-guardrails lint lint-backend helm-chart-check helm-deploy-contract-check compose-config-check monitoring-config-check k8s-manifest-check dockerfile-hadolint-check security-guardrails-ci backend-static-analysis-extras merge-gate-contract-tests check-nvmrc-align test-frontend-unit test-frontend-unit-coverage build-frontend pr-check pr-check-fast ci ci-fast quick-check production-preflight release-preflight dependency-policy dependency-scan test-no-fallback test-workflow-control-flow test-tenant-isolation roadmap-acceptance-unit roadmap-acceptance-smoke roadmap-acceptance-all roadmap-acceptance-validate-schema-version roadmap-acceptance-validate-output roadmap-acceptance-run-validated roadmap-release-gate smart-routing-smoke smart-routing-all-checks smart-routing-load-test smart-routing-experiment smart-routing-param-scan cb-doctor cb-benchmark cb-grid cb-recommend cb-snapshot cb-rollback cb-tier cb-gate cb-triage cb-tests cb-fast cb-latest-report cb-pipeline cb-all cb-release-check event-bus-smoke event-bus-smoke-pytest event-bus-smoke-unit event-bus-smoke-contract-guard event-bus-smoke-contract event-bus-smoke-summary-contract event-bus-smoke-gh-strict event-bus-smoke-gh-compatible event-bus-smoke-gh-watch-latest event-bus-smoke-gh-strict-watch event-bus-smoke-gh-compatible-watch event-bus-smoke-print-gh-inputs event-bus-smoke-print-gh-inputs-json event-bus-smoke-write-gh-inputs-json-file event-bus-smoke-validate-gh-inputs-snapshot event-bus-smoke-validate-gh-trigger-inputs-audit event-bus-smoke-validate-schema-version event-bus-smoke-validate-result-file event-bus-smoke-validate-contract-input event-bus-smoke-validate-json-output event-bus-smoke-validate-file-suffix event-bus-smoke-preflight event-bus-smoke-fast event-bus-smoke-run-validated event-bus-smoke-all drill-alerting reset
 
 CB_BASE_URL ?= http://127.0.0.1:8000
 CB_MODEL ?= ollama:deepseek-r1:32b
@@ -142,6 +142,8 @@ help:
 	@echo "                   - Enforce production security config gate (needs conda/backend deps or PERILLA_PYTHON)"
 	@echo "  npm run security-guardrails"
 	@echo "                   - Same as make security-guardrails"
+	@echo "  npm run security-guardrails-ci"
+	@echo "                   - Same as make security-guardrails-ci"
 	@echo "  make lint-backend"
 	@echo "                   - Ruff (E9) + Mypy sample (CI backend-static-analysis; step 1 of pr-check)"
 	@echo "  make lint"
@@ -156,6 +158,10 @@ help:
 	@echo "                   - kubeconform 校验 deploy/k8s 示例清单（无 Docker 且无 kubeconform 则跳过）"
 	@echo "  make dockerfile-hadolint-check"
 	@echo "                   - hadolint 校验 docker/*.Dockerfile（无 Docker 且无 hadolint 则跳过）"
+	@echo "  make security-guardrails-ci"
+	@echo "                   - 合成 env 跑 validate_production_security_guardrails（scripts/check-security-guardrails-ci.sh）"
+	@echo "  make backend-static-analysis-extras"
+	@echo "                   - compose + monitoring + k8s + hadolint + security-guardrails-ci（对齐 CI merge gate 之后）"
 	@echo "  make helm-deploy-contract-check"
 	@echo "                   - helm-chart-check + scripts/merge-gate-contract-tests.sh（pr-check / CI backend-static-analysis）"
 	@echo "  make merge-gate-contract-tests"
@@ -195,7 +201,7 @@ help:
 	@echo "  npm run quick-check"
 	@echo "                   - Same without make"
 	@echo "  make production-preflight"
-	@echo "                   - Backend deploy slice: quick-check + no-fallback + tenant + helm + merge-gate + compose + monitoring + k8s-manifest-check + dockerfile-hadolint-check（对齐 CI backend-static-analysis；无前端）"
+	@echo "                   - Backend deploy slice: quick-check + … + dockerfile-hadolint + security-guardrails-ci（对齐 CI backend-static-analysis 全 10 步；无前端）"
 	@echo "  bash scripts/production-preflight.sh"
 	@echo "                   - Same from any cwd"
 	@echo "  npm run production-preflight"
@@ -207,13 +213,13 @@ help:
 	@echo "  npm run release-preflight"
 	@echo "                   - Same without make"
 	@echo "  make pr-check"
-	@echo "                   - check-nvmrc-align, then lint + no-fallback + helm-deploy-contract-check + vitest + build + roadmap-acceptance-unit"
+	@echo "                   - check-nvmrc-align, then lint + no-fallback + helm-deploy-contract-check + backend-static-analysis-extras + vitest + build + roadmap-acceptance-unit"
 	@echo "  make ci"
 	@echo "                   - Alias for make pr-check"
 	@echo "  SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 make pr-check"
 	@echo "                   - Same as pr-check but skip roadmap-acceptance-unit (optional)"
 	@echo "  make pr-check-fast"
-	@echo "                   - Same as pr-check but skips build-frontend (faster local loop; includes helm-deploy-contract-check + roadmap-acceptance-unit)"
+	@echo "                   - Same as pr-check but skips build-frontend (includes helm-deploy-contract-check + backend-static-analysis-extras + roadmap-acceptance-unit)"
 	@echo "  make ci-fast"
 	@echo "                   - Alias for make pr-check-fast"
 	@echo "  SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1 make pr-check-fast"
@@ -559,6 +565,12 @@ doctor:
 security-guardrails:
 	@bash scripts/check-security-guardrails.sh
 
+security-guardrails-ci:
+	@bash scripts/check-security-guardrails-ci.sh
+
+# CI backend-static-analysis.yml：merge gate 之后的 Compose / 监控 / K8s / Dockerfile / 合成 security guardrails
+backend-static-analysis-extras: compose-config-check monitoring-config-check k8s-manifest-check dockerfile-hadolint-check security-guardrails-ci
+
 lint-backend:
 	@bash scripts/lint-backend.sh
 
@@ -601,7 +613,7 @@ test-frontend-unit-coverage: check-nvmrc-align
 build-frontend: check-nvmrc-align
 	@cd frontend && npm run build
 
-pr-check: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-tenant-isolation helm-deploy-contract-check test-frontend-unit build-frontend
+pr-check: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-tenant-isolation helm-deploy-contract-check backend-static-analysis-extras test-frontend-unit build-frontend
 	@if [ "$(SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
 		echo "pr-check: skip roadmap-acceptance-unit (SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1)"; \
 	else \
@@ -609,7 +621,7 @@ pr-check: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback te
 	fi
 	@echo "pr-check: OK"
 
-pr-check-fast: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-tenant-isolation helm-deploy-contract-check test-frontend-unit
+pr-check-fast: check-nvmrc-align i18n-hardcoded-scan lint-backend test-no-fallback test-tenant-isolation helm-deploy-contract-check backend-static-analysis-extras test-frontend-unit
 	@if [ "$(SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK)" = "1" ]; then \
 		echo "pr-check-fast: skip roadmap-acceptance-unit (SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1)"; \
 	else \
