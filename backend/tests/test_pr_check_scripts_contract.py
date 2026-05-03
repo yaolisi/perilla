@@ -302,6 +302,15 @@ def test_frontend_build_workflow_includes_i18n_and_npm_audit_critical() -> None:
     assert "npm audit --audit-level=critical" in wf
 
 
+def test_core_ci_workflows_support_manual_dispatch() -> None:
+    """主 CI 须支持 workflow_dispatch，便于在 default 分支上应急重跑全量门禁。"""
+    root = repo_root()
+    for fname in ("backend-static-analysis.yml", "frontend-build.yml"):
+        path = root / ".github" / "workflows" / fname
+        text = _read_script(path)
+        assert "workflow_dispatch:" in text, f"{fname} should declare workflow_dispatch for manual runs"
+
+
 def test_backend_static_analysis_triggers_on_deploy_k8s() -> None:
     """deploy、Compose、healthcheck、Dockerfile、监控目录变更须触发静态分析与合并门禁。"""
     wf = _read_script(repo_root() / ".github/workflows/backend-static-analysis.yml")
