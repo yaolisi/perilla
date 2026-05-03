@@ -147,6 +147,17 @@ def test_merge_gate_contract_tests_script_paths_exist_and_unique() -> None:
         assert (root / rel).is_file(), f"merge gate lists missing file: {rel}"
 
 
+def test_dependabot_config_covers_backend_frontend_and_github_actions() -> None:
+    """Dependabot 须覆盖后端 pip、前端 npm、GitHub Actions（供应链更新入口）。"""
+    raw = _read_script(repo_root() / ".github/dependabot.yml")
+    assert 'package-ecosystem: "pip"' in raw
+    assert 'directory: "/backend"' in raw
+    assert 'package-ecosystem: "npm"' in raw
+    assert 'directory: "/frontend"' in raw
+    assert 'package-ecosystem: "github-actions"' in raw
+    assert 'directory: "/"' in raw
+
+
 def test_frontend_build_workflow_includes_i18n_and_npm_audit_critical() -> None:
     """纯前端 PR 须跑 i18n 基线与 critical 级 npm audit（与 make pr-check / release-preflight 对齐）。"""
     wf = _read_script(repo_root() / ".github/workflows/frontend-build.yml")

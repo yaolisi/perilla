@@ -34,3 +34,24 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "sqlalchemy"
         update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 8
+    target-branch: "main"
+    commit-message:
+      prefix: "deps"
+    allow:
+      - dependency-type: "direct"
+      - dependency-type: "indirect"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 15
+    target-branch: "main"
+    commit-message:
+      prefix: "deps"
