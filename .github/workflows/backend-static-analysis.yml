@@ -1,4 +1,4 @@
-# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`** → `scripts/test-no-fallback.sh`（no_fallback 用例 + **`test_production_readiness_baseline`**) → **`make test-tenant-isolation`** → **`scripts/helm-chart-check.sh`** → **`scripts/merge-gate-contract-tests.sh`** → **`scripts/compose-config-check.sh`**（`docker-compose.yml` + **`docker-compose.prod.yml`** + **`deploy/monitoring/docker-compose.monitoring.yml`** 叠加）。本地等价一键：**`bash scripts/production-preflight.sh`** / **`make production-preflight`**；全栈含前端见 **`bash scripts/release-preflight.sh`**。其后 **`make pr-check`** / **`pr-check-fast`** 另有 Vitest、**`roadmap-acceptance-unit`**（可 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`**）、**`build-frontend`**（仅 `pr-check`；见 `frontend-build`）。
+# 单 job：`check-nvmrc-align` → **`scripts/lint-backend.sh`** → `scripts/test-no-fallback.sh`（no_fallback 用例 + **`test_production_readiness_baseline`**) → **`make test-tenant-isolation`** → **`scripts/helm-chart-check.sh`** → **`scripts/merge-gate-contract-tests.sh`** → **`scripts/compose-config-check.sh`**（`docker-compose.yml` + **`docker-compose.prod.yml`** + **`deploy/monitoring/docker-compose.monitoring.yml`** 叠加）→ **`scripts/monitoring-config-check.sh`**（Prometheus / Alertmanager）。本地等价一键：**`bash scripts/production-preflight.sh`** / **`make production-preflight`**；全栈含前端见 **`bash scripts/release-preflight.sh`**。其后 **`make pr-check`** / **`pr-check-fast`** 另有 Vitest、**`roadmap-acceptance-unit`**（可 **`SKIP_ROADMAP_ACCEPTANCE_IN_PR_CHECK=1`**）、**`build-frontend`**（仅 `pr-check`；见 `frontend-build`）。
 name: backend-static-analysis
 
 on:
@@ -30,6 +30,7 @@ on:
       - "docker-compose.yml"
       - "docker-compose.prod.yml"
       - "scripts/compose-config-check.sh"
+      - "scripts/monitoring-config-check.sh"
       - "docker/**"
       - "scripts/healthcheck.sh"
       - "scripts/helm-chart-check.sh"
@@ -65,6 +66,7 @@ on:
       - "docker-compose.yml"
       - "docker-compose.prod.yml"
       - "scripts/compose-config-check.sh"
+      - "scripts/monitoring-config-check.sh"
       - "docker/**"
       - "scripts/healthcheck.sh"
       - "scripts/helm-chart-check.sh"
@@ -126,3 +128,7 @@ jobs:
       - name: Docker Compose merge (base + prod + monitoring overlays)
         working-directory: ${{ github.workspace }}
         run: bash scripts/compose-config-check.sh
+
+      - name: Prometheus / Alertmanager config (promtool / amtool)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/monitoring-config-check.sh
