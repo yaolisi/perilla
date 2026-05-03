@@ -202,27 +202,29 @@ def test_backend_static_analysis_triggers_on_deploy_k8s() -> None:
     assert "scripts/doctor.sh" in wf
 
 
-def test_backend_static_analysis_pr_and_push_path_filters_match() -> None:
-    """PR 与 main/master push 的路径过滤须一致，避免只在一侧触发 CI。"""
-    wf = read_script(repo_root() / ".github/workflows/backend-static-analysis.yml")
-    pr_paths = _collect_github_workflow_on_paths(wf, "pull_request")
-    push_paths = _collect_github_workflow_on_paths(wf, "push")
-    assert pr_paths == push_paths, (
-        "pull_request.paths vs push.paths mismatch:\n"
-        f"  only in PR:   {sorted(set(pr_paths) - set(push_paths))!r}\n"
-        f"  only in push: {sorted(set(push_paths) - set(pr_paths))!r}"
-    )
-
-
-def test_dependency_security_scan_pr_and_push_path_filters_match() -> None:
-    """dependency-security-scan：PR 与 main 推送的路径过滤须一致。"""
-    wf = read_script(repo_root() / ".github/workflows/dependency-security-scan.yml")
-    pr_paths = _collect_github_workflow_on_paths(wf, "pull_request")
-    push_paths = _collect_github_workflow_on_paths(wf, "push")
-    assert pr_paths == push_paths, (
-        "dependency-security-scan pull_request.paths vs push.paths mismatch:\n"
-        f"  only in PR:   {sorted(set(pr_paths) - set(push_paths))!r}\n"
-        f"  only in push: {sorted(set(push_paths) - set(pr_paths))!r}"
+def test_github_workflows_pr_and_push_path_filters_match_when_both_defined() -> None:
+    """凡同时定义 pull_request.paths 与 push.paths 的 workflow，两侧 glob 须一致（生产级防单侧漂移）。"""
+    wf_dir = repo_root() / ".github" / "workflows"
+    failures: list[str] = []
+    for path in sorted(wf_dir.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        if "pull_request:" not in text or "push:" not in text:
+            continue
+        try:
+            pr_paths = _collect_github_workflow_on_paths(text, "pull_request")
+            push_paths = _collect_github_workflow_on_paths(text, "push")
+        except AssertionError:
+            continue
+        if not pr_paths or not push_paths:
+            continue
+        if pr_paths != push_paths:
+            failures.append(
+                f"{path.name}: PR vs push paths differ — "
+                f"only_in_pr={sorted(set(pr_paths) - set(push_paths))!r} "
+                f"only_in_push={sorted(set(push_paths) - set(pr_paths))!r}"
+            )
+    assert not failures, (
+        "workflow pull_request.paths vs push.paths drift:\n" + "\n".join(failures)
     )
 
 
