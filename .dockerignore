@@ -1,0 +1,18 @@
+# `docker build -f docker/backend.Dockerfile .` / frontend：减小上下文、加快传输、降低误 COPY 本地密钥概率。
+.git
+.github
+
+# 镜像内通过 npm ci 安装
+frontend/node_modules
+
+# Python 缓存与字节码
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+
+# 本地密钥（勿打入 build context）
+.env
+.env.*
+
+# 临时目录
+.tmp
