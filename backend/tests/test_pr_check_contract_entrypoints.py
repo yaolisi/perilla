@@ -317,6 +317,29 @@ def test_production_preflight_script_aligns_documented_backend_gate_chain() -> N
     assert "install-lint-tools" in text
 
 
+def test_production_preflight_script_step_echo_markers_monotonic() -> None:
+    """11 步 echo 须齐全且顺序递增，与 backend-static-analysis 单 job 对拍说明一致。"""
+    rel = "scripts/production-preflight.sh"
+    text = read_script(repo_root() / rel)
+    markers = (
+        "[production-preflight] 1/11",
+        "[production-preflight] 2/11",
+        "[production-preflight] 3/11",
+        "[production-preflight] 4/11",
+        "[production-preflight] 5/11",
+        "[production-preflight] 6/11",
+        "[production-preflight] 7–11/11",
+        "[production-preflight] OK — full backend-static-analysis parity (11 steps).",
+    )
+    positions = [text.find(m) for m in markers]
+    assert all(p != -1 for p in positions), (
+        f"missing or renamed marker near {markers[positions.index(-1)]!r}"
+    )
+    assert positions == sorted(positions), (
+        "production-preflight step echoes out of order vs backend-static-analysis parity"
+    )
+
+
 def test_release_preflight_script_chains_production_preflight_and_frontend_gates() -> (
     None
 ):

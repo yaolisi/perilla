@@ -482,3 +482,20 @@ def test_workflows_invoking_lint_backend_pin_lint_tools() -> None:
             f"{path.name}: runs lint-backend.sh but missing lint-tools.txt "
             "(pip install or cache-dependency-path)"
         )
+
+
+def test_github_workflows_forbid_loose_pip_install_ruff_or_mypy() -> None:
+    """供应链：workflow 禁止散装 pip install ruff/mypy（须 -r …requirements / lint-tools）。"""
+    wf_dir = repo_root() / ".github" / "workflows"
+    loose = re.compile(
+        r"(?:python(?:\d(?:\.\d+)?)?\s+-m\s+)?pip3?\s+install\s+(?!-r\b)[^\n#]*\b(?:ruff|mypy)\b",
+        re.IGNORECASE,
+    )
+    bad: list[str] = []
+    for path in sorted(wf_dir.glob("*.yml")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if loose.search(line):
+                bad.append(f"{path.name}:{lineno}: {line.strip()}")
+    assert not bad, "loose pip install ruff/mypy in workflows:\n" + "\n".join(bad)
