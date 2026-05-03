@@ -428,3 +428,11 @@ def test_merge_gate_contract_tests_script_pytest_list_matches_manifest_tuple() -
         f"  script: {found!r}\n"
         f"  tuple:  {list(MERGE_GATE_CONTRACT_TEST_MODULES)!r}"
     )
+
+
+def test_merge_gate_contract_tests_script_invokes_pytest_with_arg_forwarding() -> None:
+    """须 export PYTHONPATH、exec pytest 续行、末尾保留 \"$@\" 以透传 -q 等 pytest 参数。"""
+    script = _read_script(repo_root() / "scripts" / "merge-gate-contract-tests.sh")
+    assert "export PYTHONPATH=backend" in script
+    assert re.search(r"(?m)^exec pytest \\\s*$", script)
+    assert re.search(r'(?m)^\s+"\$@"\s*$', script)
