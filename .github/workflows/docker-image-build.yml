@@ -85,3 +85,24 @@ jobs:
           docker tag perilla-frontend:ci "${GHCR_BASE}/perilla-frontend:${GITHUB_SHA}"
           docker push "${GHCR_BASE}/perilla-frontend:main"
           docker push "${GHCR_BASE}/perilla-frontend:${GITHUB_SHA}"
+
+      - name: Job summary (GitHub Actions summary pane)
+        if: success()
+        run: |
+          {
+            echo "### Docker image build"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ github.event_name }}" == "push" ]] && [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/master" ]]; then
+            {
+              echo "**GHCR** (this push):"
+              echo "- \`${GHCR_BASE}/perilla-backend:main\`, \`${GHCR_BASE}/perilla-backend:${GITHUB_SHA}\`"
+              echo "- \`${GHCR_BASE}/perilla-frontend:main\`, \`${GHCR_BASE}/perilla-frontend:${GITHUB_SHA}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "Built tags only (no GHCR push on this event): \`perilla-backend:ci\`, \`perilla-frontend:ci\`."
+              echo ""
+              echo "Local parity: \`make docker-build-all\` or \`npm run docker-build-all\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
