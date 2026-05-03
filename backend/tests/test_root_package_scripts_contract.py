@@ -226,8 +226,8 @@ def test_makefile_defines_docker_build_smoke_targets() -> None:
     assert re.search(r"^docker-build-backend:\s*$", makefile, re.MULTILINE)
     assert re.search(r"^docker-build-frontend:\s*$", makefile, re.MULTILINE)
     assert re.search(r"^docker-build-all:\s*", makefile, re.MULTILINE)
-    assert "docker build -f docker/backend.Dockerfile" in makefile
-    assert "docker build -f docker/frontend.Dockerfile" in makefile
+    assert "DOCKER_BUILDKIT=1 docker build -f docker/backend.Dockerfile" in makefile
+    assert "DOCKER_BUILDKIT=1 docker build -f docker/frontend.Dockerfile" in makefile
 
 
 def test_preflight_scripts_mention_docker_build_smoke() -> None:

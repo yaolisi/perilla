@@ -25,4 +25,4 @@ make build-frontend
 
 echo "[release-preflight] OK — backend-static-analysis + frontend-build parity (no roadmap)."
 echo "[release-preflight] Optional: make roadmap-acceptance-unit && make security-guardrails (real .env)"
-echo "[release-preflight] 发布前可执行 make docker-build-all（需 Docker；建议在上方 prod build 之后验证镜像）"
+echo "[release-preflight] 发布前可执行 make docker-build-all（需 Docker；建议在 prod build 之后；CI 对拍：Actions → docker-image-build）"

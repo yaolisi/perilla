@@ -33,6 +33,8 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      DOCKER_BUILDKIT: "1"
     steps:
       - uses: actions/checkout@v4
 

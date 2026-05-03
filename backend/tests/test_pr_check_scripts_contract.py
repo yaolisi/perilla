@@ -315,6 +315,7 @@ def test_docker_image_build_workflow_aligns_makefile_smoke() -> None:
     assert "ghcr.io" in wf
     assert "aquasec/trivy:" in wf
     assert "docker/login-action" in wf
+    assert "DOCKER_BUILDKIT" in wf
 
 
 def test_core_ci_workflows_support_manual_dispatch() -> None:

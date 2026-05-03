@@ -597,10 +597,10 @@ dockerfile-hadolint-check:
 
 # 发布前本地镜像冒烟（需 Docker daemon；不进 pr-check / CI）
 docker-build-backend:
-	@docker build -f docker/backend.Dockerfile -t perilla-backend:local .
+	@DOCKER_BUILDKIT=1 docker build -f docker/backend.Dockerfile -t perilla-backend:local .
 
 docker-build-frontend:
-	@docker build -f docker/frontend.Dockerfile -t perilla-frontend:local .
+	@DOCKER_BUILDKIT=1 docker build -f docker/frontend.Dockerfile -t perilla-frontend:local .
 
 docker-build-all: docker-build-backend docker-build-frontend
 
