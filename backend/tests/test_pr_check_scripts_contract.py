@@ -577,10 +577,17 @@ def test_scan_dependencies_script_strict_bash_and_cwd_repo_root() -> None:
         "scripts/down.sh",
         "scripts/status.sh",
         "scripts/logs.sh",
+        "scripts/up-gpu.sh",
+        "scripts/up-prod.sh",
+        "scripts/down-gpu.sh",
+        "scripts/down-prod.sh",
+        "scripts/install-gpu.sh",
+        "scripts/install-prod.sh",
+        "scripts/reset.sh",
     ),
 )
 def test_local_ops_compose_scripts_strict_bash_and_root_dir_cd(rel: str) -> None:
-    """仓库根 docker-compose 运维脚本（env/up/install/down/status/logs）须 ROOT_DIR + cd \"${ROOT_DIR}\"。"""
+    """仓库根 docker-compose 运维脚本（含 gpu/prod、reset）须 ROOT_DIR + cd \"${ROOT_DIR}\"。"""
     text = _read_script(repo_root() / rel)
     assert text.startswith("#!/usr/bin/env bash\n"), rel
     assert "set -euo pipefail" in text
