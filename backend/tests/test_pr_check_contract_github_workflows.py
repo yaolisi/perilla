@@ -46,6 +46,46 @@ def _collect_github_workflow_on_paths(wf: str, event: str) -> list[str]:
     return out
 
 
+def _collect_github_workflow_on_paths_ignore(wf: str, event: str) -> list[str]:
+    """解析 `on.<event>.paths-ignore`；若无该键则返回 []。"""
+    lines = wf.splitlines()
+    head = f"  {event}:"
+    start = next((i for i, ln in enumerate(lines) if ln == head), None)
+    assert start is not None, f"missing {head} in workflow"
+    i = start + 1
+    while i < len(lines):
+        line = lines[i]
+        if (
+            line.startswith("  ")
+            and not line.startswith("    ")
+            and line.rstrip().endswith(":")
+        ):
+            return []
+        if lines[i].strip() == "paths-ignore:":
+            i += 1
+            break
+        i += 1
+    else:
+        return []
+
+    out: list[str] = []
+    while i < len(lines):
+        line = lines[i]
+        if line and line[0] not in " \t#" and line.strip().endswith(":"):
+            break
+        if (
+            line.startswith("  ")
+            and not line.startswith("    ")
+            and line.rstrip().endswith(":")
+        ):
+            break
+        m = re.match(r'^\s+-\s+"([^"]+)"\s*$', line)
+        if m:
+            out.append(m.group(1))
+        i += 1
+    return out
+
+
 def test_dependency_review_workflow_matches_supply_chain_gate() -> None:
     """PR 依赖审查须存在且与 critical 阈值一致（与 frontend npm audit / pip graph 对齐）。"""
     wf = read_script(repo_root() / ".github/workflows/dependency-review.yml")
@@ -225,6 +265,34 @@ def test_github_workflows_pr_and_push_path_filters_match_when_both_defined() -> 
             )
     assert not failures, (
         "workflow pull_request.paths vs push.paths drift:\n" + "\n".join(failures)
+    )
+
+
+def test_github_workflows_pr_and_push_paths_ignore_match_when_used() -> None:
+    """凡在 PR 或 push 侧使用 paths-ignore 的 workflow，两侧 paths-ignore 须一致（仅 PR 忽略 docs 会 silent drift）。"""
+    wf_dir = repo_root() / ".github" / "workflows"
+    failures: list[str] = []
+    for path in sorted(wf_dir.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        if "pull_request:" not in text or "push:" not in text:
+            continue
+        pr_ign = _collect_github_workflow_on_paths_ignore(text, "pull_request")
+        pu_ign = _collect_github_workflow_on_paths_ignore(text, "push")
+        if bool(pr_ign) != bool(pu_ign):
+            failures.append(
+                f"{path.name}: paths-ignore only on one side "
+                f"(pr={bool(pr_ign)} push={bool(pu_ign)})"
+            )
+            continue
+        if pr_ign and pu_ign and pr_ign != pu_ign:
+            failures.append(
+                f"{path.name}: PR vs push paths-ignore differ — "
+                f"only_in_pr={sorted(set(pr_ign) - set(pu_ign))!r} "
+                f"only_in_push={sorted(set(pu_ign) - set(pr_ign))!r}"
+            )
+    assert not failures, (
+        "workflow pull_request.paths-ignore vs push.paths-ignore drift:\n"
+        + "\n".join(failures)
     )
 
 
