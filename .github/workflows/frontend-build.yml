@@ -58,7 +58,7 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Assert .nvmrc matches frontend/.nvmrc
         working-directory: ${{ github.workspace }}
