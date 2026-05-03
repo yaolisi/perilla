@@ -436,3 +436,11 @@ def test_merge_gate_contract_tests_script_invokes_pytest_with_arg_forwarding() -
     assert "export PYTHONPATH=backend" in script
     assert re.search(r"(?m)^exec pytest \\\s*$", script)
     assert re.search(r'(?m)^\s+"\$@"\s*$', script)
+
+
+def test_merge_gate_contract_tests_script_strict_bash_and_cwd_repo_root() -> None:
+    """须 set -euo、由脚本路径解析仓库根并 cd，避免在错误 cwd 下收集/运行测试。"""
+    script = _read_script(repo_root() / "scripts" / "merge-gate-contract-tests.sh")
+    assert "set -euo pipefail" in script
+    assert 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in script
+    assert 'cd "$ROOT"' in script
