@@ -123,6 +123,12 @@ PYTHONPATH=backend pytest -q \
   backend/tests/test_mcp_http_client_lifecycle.py
 ```
 
+### 5.5 Lint pins, merge gate, and preflight (CI-aligned)
+
+- Install the same Ruff / Mypy versions as CI: `make install-lint-tools` (uses `backend/requirements/lint-tools.txt`).
+- Run only the merge-gate pytest list: `make merge-gate-contract-tests`.
+- Backend preflight without a live API (mirrors the main backend CI job order): `bash scripts/production-preflight.sh`.
+
 ## 6. Troubleshooting FAQ
 
 ### 6.1 401/403

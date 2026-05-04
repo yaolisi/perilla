@@ -42,6 +42,12 @@
 
 ---
 
+## CI 与本地门禁（摘要）
+
+Ruff/Mypy 版本 pin（`backend/requirements/lint-tools.txt`）、合并门禁 pytest、与 GitHub `backend-static-analysis` 对拍的 `production-preflight` 等，见仓库根目录 **[README.md](../README.md)**「研发路径 → **本地门禁与 CI 对齐（摘要）**」；命令细节见 **[docs/GETTING_STARTED_ZH.md §5](../docs/GETTING_STARTED_ZH.md#5-常用验证命令)**（含 **§5.5**）。
+
+---
+
 ## 专题与评审材料
 
 | 文档 | 用途 |

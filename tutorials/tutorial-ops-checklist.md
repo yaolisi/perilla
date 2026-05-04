@@ -44,8 +44,11 @@ JUNIT_XML_PATH=test-reports/tenant-security-regression.xml backend/scripts/test_
 
 ## C. 30 秒 CI 检查（必须通过）
 
+- [ ] **`backend-static-analysis`** 绿色（主后端：依赖策略、lint、no-fallback、tenant、Helm、合并门禁、Compose/监控/K8s/安全护栏等；与本地 `make pr-check` / `bash scripts/production-preflight.sh` 对拍）
+- [ ] 变更涉及依赖或 `scripts/scan-dependencies.sh` 时：**`dependency-security-scan`** 绿色
+- [ ] 变更涉及前端时：**`frontend-build`** 绿色
 - [ ] `tenant-security-regression` workflow 绿色
-- [ ] 本次 PR 对应 artifact 已上传（junit report）
+- [ ] 本次 PR 对应 artifact 已上传（junit report，如适用）
 - [ ] 无并发取消导致的“最后一次任务未执行”误判
 
 ---

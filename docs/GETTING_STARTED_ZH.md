@@ -123,6 +123,12 @@ PYTHONPATH=backend pytest -q \
   backend/tests/test_mcp_http_client_lifecycle.py
 ```
 
+### 5.5 Lint 工具、合并门禁与预检（与 CI 同源）
+
+- 安装与 CI 一致的 Ruff / Mypy pin：`make install-lint-tools`（依赖 `backend/requirements/lint-tools.txt`）。
+- 仅跑合并门禁 pytest 列表：`make merge-gate-contract-tests`。
+- 后端发布前与主后端 CI 对拍的一键脚本（无运行中 API）：`bash scripts/production-preflight.sh`。
+
 ## 6. 故障排查 FAQ
 
 ### 6.1 401/403

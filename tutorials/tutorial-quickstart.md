@@ -2,7 +2,7 @@
 
 目标：第一次接触仓库的人，在约 10 分钟内完成 **启动 → 健康检查 → CSRF 验证 → 安全回归脚本**。
 
-完整内容与排障见 **[README.md](README.md)**、**[tutorial.md](tutorial.md)**。
+完整内容与排障见 **[README.md](README.md)**、**[tutorial.md](tutorial.md)**。若你负责合入 `main`，合并前建议了解根目录 README「**本地门禁与 CI 对齐**」与 `make pr-check-fast` / `make pr-check`（详见 [GETTING_STARTED_ZH.md](../docs/GETTING_STARTED_ZH.md#5-常用验证命令)）。
 
 ---
 

@@ -136,6 +136,18 @@ bash scripts/acceptance/run_security_regression.sh
 curl.exe -I -s http://127.0.0.1:8000/api/health | Select-String "X-Trace-Id|X-Request-Id"
 ```
 
+### 5.4 合并门禁与 Lint（研发）
+
+与 CI `backend-static-analysis` 对齐的摘要见根目录 [README.md](../README.md)「本地门禁与 CI 对齐」。常用命令：
+
+```bash
+make install-lint-tools
+make merge-gate-contract-tests
+bash scripts/production-preflight.sh
+```
+
+`make pr-check` / `make pr-check-fast` 已涵盖其中大部分步骤；细颗粒度说明见 [docs/GETTING_STARTED_ZH.md §5](../docs/GETTING_STARTED_ZH.md#5-常用验证命令)（**§5.5**）。
+
 ---
 
 ## 6. 安全回归与 Kernel 脚本入口

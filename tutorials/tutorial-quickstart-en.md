@@ -3,7 +3,8 @@
 **Goal**: from zero to *running services + health checks + CSRF write path + optional security regressions* in about ten minutes.
 
 For the full narrative and troubleshooting, see **[tutorial.md](tutorial.md)** and **[tutorial-index.md](tutorial-index.md)**.  
-For beginner onboarding and debugging playbooks, also see **[tutorial-beginner-playbook.md](tutorial-beginner-playbook.md)** and **[tutorial-debug-playbook.md](tutorial-debug-playbook.md)**.
+For beginner onboarding and debugging playbooks, also see **[tutorial-beginner-playbook.md](tutorial-beginner-playbook.md)** and **[tutorial-debug-playbook.md](tutorial-debug-playbook.md)**.  
+If you merge to `main`, read the root **[README.md](../README.md)** “Local gates & CI alignment” and [GETTING_STARTED_EN.md §5](../docs/GETTING_STARTED_EN.md#5-validation-commands) (includes **§5.5**).
 
 ---
 

@@ -75,6 +75,14 @@ curl -s http://127.0.0.1:8000/api/health/ready | jq .
 - 中文详细：[`docs/GETTING_STARTED_ZH.md#4-mcp-集成与配置`](docs/GETTING_STARTED_ZH.md#4-mcp-%E9%9B%86%E6%88%90%E4%B8%8E%E9%85%8D%E7%BD%AE)
 - 英文详细：[`docs/GETTING_STARTED_EN.md#4-mcp-integration-and-configuration`](docs/GETTING_STARTED_EN.md#4-mcp-integration-and-configuration)
 
+### 本地门禁与 CI 对齐（摘要）
+
+- **Ruff / Mypy 版本**：由 `backend/requirements/lint-tools.txt` 固定，与 GitHub Actions `backend-static-analysis` 一致；本地可先 `make install-lint-tools`（或 `npm run install-lint-tools`）。
+- **合并门禁**（Helm / Compose / 部署契约等 pytest 列表）：`make merge-gate-contract-tests`（或 `bash scripts/merge-gate-contract-tests.sh`）。
+- **后端上线前一键校验**（无需运行中的 API，步骤与主后端 CI job 对拍）：`bash scripts/production-preflight.sh`（说明见脚本头注释）。
+
+更细的验证命令见 [`docs/GETTING_STARTED_ZH.md#5-常用验证命令`](docs/GETTING_STARTED_ZH.md#5-常用验证命令)。
+
 ---
 
 ## 4) 运维路径（安全-发布-故障）

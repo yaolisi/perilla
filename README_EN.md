@@ -75,6 +75,14 @@ Suggested first UI path:
 - Chinese detailed MCP section: [`docs/GETTING_STARTED_ZH.md#4-mcp-集成与配置`](docs/GETTING_STARTED_ZH.md#4-mcp-%E9%9B%86%E6%88%90%E4%B8%8E%E9%85%8D%E7%BD%AE)
 - English detailed MCP section: [`docs/GETTING_STARTED_EN.md#4-mcp-integration-and-configuration`](docs/GETTING_STARTED_EN.md#4-mcp-integration-and-configuration)
 
+### Local gates & CI alignment (summary)
+
+- **Ruff / Mypy versions**: pinned in `backend/requirements/lint-tools.txt`, matching the `backend-static-analysis` GitHub Actions workflow; run `make install-lint-tools` (or `npm run install-lint-tools`) locally.
+- **Merge gate** (Helm / Compose / deploy contract pytest list): `make merge-gate-contract-tests` (or `bash scripts/merge-gate-contract-tests.sh`).
+- **Backend preflight** (no running API required; mirrors the main backend CI job order): `bash scripts/production-preflight.sh` (see script header).
+
+More commands: [`docs/GETTING_STARTED_EN.md#5-validation-commands`](docs/GETTING_STARTED_EN.md#5-validation-commands).
+
 ---
 
 ## 4) Ops path (security-release-incident)
