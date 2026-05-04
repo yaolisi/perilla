@@ -7,7 +7,7 @@
 
 # Windows 下 base.txt 中的 torch 使用了平台判断，不会自动安装。
 # 如需 VLM / ASR / Diffusers / YOLO 等能力，这里显式补回 torch。
-torch>=2.0.0
+torch>=2.11.0
 
 # 说明：
 # - sqlite-vec 已在 base.txt 中通过平台判断跳过
