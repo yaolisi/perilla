@@ -106,8 +106,10 @@ ehthumbs.db
 *.sqlite3
 backend/data/
 
-# Logs
+# Logs（仓库内任意名为 logs 的运行目录；源码目录见下方例外）
 logs/
+!frontend/src/components/logs/
+!frontend/src/components/logs/**
 *.log
 
 # Runtime Data

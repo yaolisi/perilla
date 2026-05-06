@@ -1,5 +1,5 @@
-# Logs
-logs
+# Logs（仅忽略前端根目录下的 logs 目录，避免匹配 src/components/logs 源码）
+/logs/
 *.log
 npm-debug.log*
 yarn-debug.log*

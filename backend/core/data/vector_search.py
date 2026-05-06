@@ -11,6 +11,20 @@ from pathlib import Path
 from log import logger
 
 
+def _sqlite_supports_load_extension() -> bool:
+    """部分 Python/sqlite 构建关闭扩展加载时无 enable_load_extension，sqlite-vec 不可用。"""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(":memory:")
+        try:
+            return hasattr(conn, "enable_load_extension")
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
 class VectorSearchProvider(ABC):
     """
     向量检索提供者抽象接口。
@@ -81,7 +95,15 @@ class SQLiteVecProvider(VectorSearchProvider):
         logger.debug("[SQLiteVecProvider] _check_availability called")
         try:
             import sqlite_vec  # type: ignore
+
             logger.debug("[SQLiteVecProvider] sqlite_vec imported successfully")
+            if not _sqlite_supports_load_extension():
+                self._vec_available = False
+                logger.warning(
+                    "[SQLiteVecProvider] sqlite3.Connection has no enable_load_extension "
+                    "(Python/sqlite built without extension loading); sqlite-vec disabled."
+                )
+                return
             self._vec_available = True
         except ImportError as e:
             self._vec_available = False
@@ -98,6 +120,10 @@ class SQLiteVecProvider(VectorSearchProvider):
         try:
             import sqlite_vec  # type: ignore
             logger.debug(f"[SQLiteVecProvider.{self.instance_id}] Loading sqlite-vec extension for db: {self.db_path}")
+            if not hasattr(conn, "enable_load_extension"):
+                raise RuntimeError(
+                    "sqlite3.Connection has no enable_load_extension; cannot load sqlite-vec"
+                )
             conn.enable_load_extension(True)
             try:
                 sqlite_vec.load(conn)  # type: ignore

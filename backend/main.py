@@ -1176,7 +1176,13 @@ if getattr(settings, "security_headers_enabled", False):
     app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins or ["http://localhost", "http://127.0.0.1"],
+    allow_origins=_cors_origins
+    or [
+        "http://localhost",
+        "http://127.0.0.1",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],

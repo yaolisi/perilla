@@ -98,13 +98,17 @@ onMounted(() => {
               <span class="truncate w-full text-left">{{ s.title }}</span>
               <span class="text-[10px] text-muted-foreground/70">{{ formatRelativeTime(s.updated_at) }}</span>
             </div>
-            <button
-              class="shrink-0 p-1 rounded hover:bg-muted/60"
+            <span
+              role="button"
+              tabindex="0"
+              class="shrink-0 p-1 rounded hover:bg-muted/60 inline-flex cursor-pointer"
               :title="t('chat.delete_conversation')"
               @click.stop="handleDeleteSession(s.id)"
+              @keydown.enter.prevent.stop="handleDeleteSession(s.id)"
+              @keydown.space.prevent.stop="handleDeleteSession(s.id)"
             >
               <Trash2 class="w-4 h-4 text-muted-foreground hover:text-foreground" />
-            </button>
+            </span>
           </button>
         </div>
       </ScrollArea>
