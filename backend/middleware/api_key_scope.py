@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from config.settings import settings
+from core.security.deps import should_enforce_api_key_scopes
 from core.system.settings_store import get_system_settings_store
 
 REVOKED_API_KEYS_STORE_KEY = "security.api_keys.revoked"
@@ -181,6 +182,10 @@ class ApiKeyScopeMiddleware(BaseHTTPMiddleware):
         return resource_id in normalized
 
     async def dispatch(self, request: Request, call_next):
+        # 未配置 api_keys_json / api_key_scopes_json 时不拦截（本地默认零配置）
+        if not should_enforce_api_key_scopes():
+            return await call_next(request)
+
         required = self._required_scope(request.method, request.url.path)
         if not required:
             return await call_next(request)

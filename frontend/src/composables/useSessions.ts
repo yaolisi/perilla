@@ -11,6 +11,7 @@ import {
   type SessionMessage,
   type ChatRoutingMetadata,
 } from '@/services/api'
+import { getFriendlyErrorMessage } from '@/utils/errorHints'
 
 export interface ChatMessageForUI {
   id: string
@@ -123,7 +124,7 @@ export function useSessions() {
       const res = await listSessions(limit)
       sessions.value = res.data || []
     } catch (e) {
-      sessionsError.value = e instanceof Error ? e.message : String(e)
+      sessionsError.value = getFriendlyErrorMessage(e instanceof Error ? e.message : String(e))
     } finally {
       sessionsLoading.value = false
     }

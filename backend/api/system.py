@@ -21,6 +21,8 @@ from config.settings import settings
 from core.system.settings_store import get_system_settings_store
 from core.system.feature_flags import get_feature_flags, set_feature_flags
 from core.system.queue_summary import build_unified_queue_summary
+from core.system.native_folder_picker import pick_file as pick_native_file
+from core.system.native_folder_picker import pick_folder as pick_native_folder
 from core.system.storage_strategy import storage_readiness
 from core.system.smart_routing_validation import validate_smart_routing_policies_json
 from core.inference.gateway import get_inference_gateway
@@ -963,6 +965,10 @@ class BrowseDirectoryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: Optional[str] = None
+    message: Optional[str] = Field(
+        default=None,
+        description="未选路径时的简短说明（例如 AppleScript 报错摘要），便于前端提示。",
+    )
 
 
 class InferenceCacheChallengeMetricsBlock(BaseModel):
@@ -1947,38 +1953,36 @@ async def clear_inference_cache(
 
 @router.get("/browse-directory")
 async def browse_directory() -> BrowseDirectoryResponse:
-    """打开本地目录选择器 (目前仅支持 MacOS)"""
-    import platform
-    import subprocess
-    
-    system = platform.system()
+    """打开本地目录选择器（macOS / Windows / Linux 见 native_folder_picker）。"""
     try:
-        if system == "Darwin":
-            # MacOS osascript to pick a folder and return POSIX path
-            cmd = 'osascript -e "POSIX path of (choose folder with prompt \\"Select Local Model Directory:\\")"'
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, _ = await proc.communicate()
-            if proc.returncode == 0:
-                return BrowseDirectoryResponse(path=stdout.decode().strip())
-        elif system == "Windows":
-            # Windows powershell snippet for folder picker
-            cmd = 'powershell.exe -NoProfile -Command "& { $app = New-Object -ComObject Shell.Application; $folder = $app.BrowseForFolder(0, \'Select Local Model Directory\', 0); if ($folder) { $folder.Self.Path } }"'
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, _ = await proc.communicate()
-            if proc.returncode == 0:
-                return BrowseDirectoryResponse(path=stdout.decode().strip())
+        path, hint = await pick_native_folder("Select Local Model Directory:")
+        return BrowseDirectoryResponse(path=path, message=hint)
     except Exception as e:
         logger.error(f"[System] Browse directory failed: {e}")
-        
-    return BrowseDirectoryResponse(path=None)
+        return BrowseDirectoryResponse(path=None, message=str(e)[:500])
+
+
+@router.get("/browse-file")
+async def browse_file(
+    file_filter: Optional[str] = Query(
+        None,
+        alias="filter",
+        description="可选：gguf / onnx，在支持的桌面环境下筛选扩展名；不传则为任意文件",
+    ),
+) -> BrowseDirectoryResponse:
+    """打开本地文件选择器（与 browse-directory 相同响应结构：path + message）。"""
+    try:
+        fk = (file_filter or "").strip().lower()
+        if fk == "gguf":
+            path, hint = await pick_native_file("Select GGUF model file:", filter_kind="gguf")
+        elif fk == "onnx":
+            path, hint = await pick_native_file("Select ONNX model file:", filter_kind="onnx")
+        else:
+            path, hint = await pick_native_file("Select file:", filter_kind="any")
+        return BrowseDirectoryResponse(path=path, message=hint)
+    except Exception as e:
+        logger.error(f"[System] Browse file failed: {e}")
+        return BrowseDirectoryResponse(path=None, message=str(e)[:500])
 
 # 获取启动时间
 BOOT_TIME = time.time()

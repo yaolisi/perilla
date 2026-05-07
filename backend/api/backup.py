@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.errors import APIException, raise_api_error
 from config.settings import settings
@@ -160,6 +160,10 @@ class BackupBrowseDirectoryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: Optional[str] = None
+    message: Optional[str] = Field(
+        default=None,
+        description="未选路径时的简短说明（例如 AppleScript 报错摘要）。",
+    )
 
 
 @router.get("/status")
@@ -370,34 +374,12 @@ async def delete_backup(backup_id: str) -> BackupDeleteResponse:
 
 @router.post("/browse-directory")
 async def browse_directory() -> BackupBrowseDirectoryResponse:
-    """浏览备份目录（复用系统 API 的逻辑）"""
-    import platform
-    import subprocess
-    import asyncio
+    """浏览备份目录（与系统设置共用 native_folder_picker）。"""
+    from core.system.native_folder_picker import pick_folder as pick_native_folder
 
-    system = platform.system()
     try:
-        if system == "Darwin":
-            cmd = 'osascript -e "POSIX path of (choose folder with prompt \\"Select Backup Directory:\\")"'
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode == 0:
-                return BackupBrowseDirectoryResponse(path=stdout.decode().strip())
-        elif system == "Windows":
-            cmd = 'powershell.exe -NoProfile -Command "& { $app = New-Object -ComObject Shell.Application; $folder = $app.BrowseForFolder(0, \'Select Backup Directory\', 0); if ($folder) { $folder.Self.Path } }"'
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode == 0:
-                return BackupBrowseDirectoryResponse(path=stdout.decode().strip())
+        path, hint = await pick_native_folder("Select Backup Directory:")
+        return BackupBrowseDirectoryResponse(path=path, message=hint)
     except Exception as e:
         logger.error(f"[BackupAPI] Browse directory failed: {e}")
-
-    return BackupBrowseDirectoryResponse(path=None)
+        return BackupBrowseDirectoryResponse(path=None, message=str(e)[:500])

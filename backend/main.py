@@ -3,7 +3,7 @@
 """
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 import atexit
 import signal
 from datetime import datetime, timedelta, timezone
@@ -22,11 +22,11 @@ except ImportError:
 
 import time
 import uvicorn
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from middleware.trusted_host import SelectiveTrustedHostMiddleware, trusted_host_exempt_path_predicate
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 import asyncio
 import os
@@ -1672,6 +1672,20 @@ class CreateModelRequest(BaseModel):
     description: Optional[str] = None
 
 
+class QuickRegisterLocalRequest(BaseModel):
+    """向导生成的本地磁盘模型（LLM GGUF / Embedding ONNX / VLM 双 GGUF）。"""
+
+    template: Literal["llm_gguf", "embedding_onnx", "vlm_gguf"] = "llm_gguf"
+    source_path: str
+    model_id: Optional[str] = None
+    name: Optional[str] = None
+    copy_mode: Literal["symlink", "copy"] = "symlink"
+    embedding_dim: Optional[int] = Field(default=None, ge=1, le=65536)
+    tokenizer_path: Optional[str] = None
+    mmproj_path: Optional[str] = None
+    vlm_family: Optional[str] = None
+
+
 SENSITIVE_METADATA_KEYS = {"api_key", "token", "secret", "password"}
 
 
@@ -1784,6 +1798,57 @@ async def register_model(req: CreateModelRequest, _role: AdminRole = None):
     
     reg.upsert_model(descriptor)
     return {"success": True, "id": descriptor.id}
+
+
+@app.post("/api/models/quick-register-local")
+async def quick_register_local(req: QuickRegisterLocalRequest, _role: AdminRole = None):
+    """在数据目录下生成 model.json 并链接/复制权重，然后执行本地扫描。"""
+    from pathlib import Path
+
+    from core.models.quick_register_local import (
+        run_quick_register_embedding_onnx,
+        run_quick_register_llm_gguf,
+        run_quick_register_vlm_gguf,
+    )
+
+    src = Path(req.source_path).expanduser()
+    tok = Path(req.tokenizer_path).expanduser() if req.tokenizer_path else None
+    mmproj = Path(req.mmproj_path).expanduser() if req.mmproj_path else None
+    try:
+        if req.template == "llm_gguf":
+            info = await run_quick_register_llm_gguf(
+                src,
+                model_id=req.model_id,
+                name=req.name,
+                copy_mode=req.copy_mode,
+            )
+        elif req.template == "embedding_onnx":
+            dim = req.embedding_dim if req.embedding_dim is not None else 1024
+            info = await run_quick_register_embedding_onnx(
+                src,
+                model_id=req.model_id,
+                name=req.name,
+                copy_mode=req.copy_mode,
+                embedding_dim=dim,
+                tokenizer_path=tok,
+            )
+        elif req.template == "vlm_gguf":
+            if not mmproj:
+                raise HTTPException(status_code=400, detail="VLM 需要提供 mmproj_path（第二个 GGUF）")
+            info = await run_quick_register_vlm_gguf(
+                src,
+                mmproj,
+                model_id=req.model_id,
+                name=req.name,
+                copy_mode=req.copy_mode,
+                vlm_family=req.vlm_family,
+            )
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported template")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, **info}
+
 
 @app.get("/api/models")
 async def list_models(model_type: Optional[str] = None):

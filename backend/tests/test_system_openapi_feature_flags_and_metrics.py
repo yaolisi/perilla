@@ -93,6 +93,9 @@ def test_openapi_engine_browse_and_inference_cache_named_schemas() -> None:
     br = paths["/api/system/browse-directory"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
     assert br == "#/components/schemas/BrowseDirectoryResponse"
 
+    br_f = paths["/api/system/browse-file"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    assert br_f == "#/components/schemas/BrowseDirectoryResponse"
+
     stats_ref = paths["/api/system/inference/cache/stats"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
     assert stats_ref == "#/components/schemas/InferenceCacheStatsResponse"
 

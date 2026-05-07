@@ -223,14 +223,19 @@ const reloadEngine = async () => {
 }
 
 const handleBrowse = async () => {
+  saveError.value = ''
   try {
     const res = await browseDirectory()
     if (res.path) {
       dataDirectory.value = res.path
       isEditing.value = true
+    } else {
+      const extra = res.message?.trim()
+      saveError.value = extra || t('settings.storage.browse_no_selection')
     }
   } catch (error) {
     console.error('Failed to browse directory:', error)
+    saveError.value = error instanceof Error ? error.message : String(error)
   }
 }
 

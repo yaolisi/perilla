@@ -26,6 +26,10 @@
 | 配置本地化大模型（磁盘 `model.json`、扫描、本机 Ollama/LM 等） | 第 **8.1** 节 | **「本地化大模型（可选）」** |
 | 账号与安全上下文（`X-Api-Key`、`X-Tenant-Id`、语言与主题等） | 第 **8.2** 节 | **「账号与设置（可选）」** |
 | 配置云端大模型（添加云端模型、管理员 Key、侧栏调参） | 第 **8.3** 节 | **「云端大模型（可选）」** |
+| Skill（技能库、Agent、工作流 Skill 节点） | 第 **8.4** 节 | **「Skill 与 MCP（可选）」** 中 Skill 段 |
+| MCP（Settings→MCP、Probe、导入为 Skill、与 Skill 的关系） | 第 **8.5** 节 | **「Skill 与 MCP（可选）」** 全文 |
+
+实操最短路径（与上表互补）：[tutorial-beginner-playbook.md §4.2](tutorial-beginner-playbook.md)「新增 MCP Server 并验证可用」——文内已链至 **§8.4～§8.5**。
 
 ---
 
@@ -237,7 +241,8 @@ PYTHONPATH=backend python3 backend/scripts/test_execution_kernel_regression.py
 - 租户强制路径集合：`backend/middleware/tenant_paths.py`（聊天、会话、记忆、知识库、agent 会话、VLM、workflow、audit、system 等前缀）；须 **`X-Tenant-Id`** + API Key–租户绑定  
 - 数据面 tenant-aware：Workflow、会话、知识库、记忆、治理审计等；MCP/Skills 等控制面按中间件租户解析（见 `resolve_api_tenant_id`）  
 - API Key 与租户绑定  
-- `api/system` 关键写接口管理员权限  
+- **`/api/system` 控制面**：生产或 `DEBUG=false` 时多依赖管理员 **API Key**；**`DEBUG=true`** 且未配置 **`RBAC_ADMIN_API_KEYS`** 时，对本地开发有鉴权放宽（`core/security/deps.py`）。若配置 **`API_KEYS_JSON` / `API_KEY_SCOPES_JSON`**，**`middleware/api_key_scope.py`** 会对相应路径要求 Key 与 **scope**  
+- 开发前端：未设置 **`VITE_API_URL`** 时走 Vite **代理**至本机网关（见 **tutorial.md §6.3**）  
 - 追踪头净化与限流响应去敏  
 - 生产护栏（自动收敛、高危阻断、`SECURITY_GUARDRAILS_STRICT`）  
 - tenant / security 双回归 + CI  

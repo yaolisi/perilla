@@ -393,7 +393,7 @@ export function useChat(options: UseChatOptions = {}) {
               updateMessageLoading(assistantMsg.id, false)
             },
             (err) => {
-              error.value = err.message
+              error.value = getFriendlyErrorMessage(err instanceof Error ? err.message : String(err))
               updateMessageLoading(assistantMsg.id, false)
             }
           )

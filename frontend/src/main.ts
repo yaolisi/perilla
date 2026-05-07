@@ -7,7 +7,7 @@ import App from './App.vue'
 import router from './router'
 import { i18n } from './i18n'
 import VueVirtualScroller from 'vue-virtual-scroller'
-import { initializeApiSecurityContext } from './services/api'
+import { API_BASE_URL, initializeApiSecurityContext } from './services/api'
 
 // Register cleanup handlers for page unload
 window.addEventListener('beforeunload', () => {
@@ -29,3 +29,11 @@ app.mount('#app')
 
 // Best-effort security bootstrap: prime csrf cookie and ensure default tenant.
 void initializeApiSecurityContext()
+
+if (import.meta.env.DEV) {
+  const hint =
+    API_BASE_URL.trim() === ''
+      ? '同源相对路径（/api、/v1 → Vite 代理 → http://127.0.0.1:8000）'
+      : API_BASE_URL
+  console.info('[Perilla] API_BASE_URL =', hint)
+}

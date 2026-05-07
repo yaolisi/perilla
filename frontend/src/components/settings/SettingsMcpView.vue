@@ -31,6 +31,7 @@ import {
   mcpProbe,
   getSystemConfig,
   updateSystemConfig,
+  API_BASE_URL,
   type McpServerRecord,
 } from '@/services/api'
 import { useDebouncedOnSystemConfigChange } from '@/composables/useDebouncedOnSystemConfigChange'
@@ -82,8 +83,9 @@ const mcpEmitSourceLabel = computed(() =>
 
 /** 应用事件总线 DLQ：按 MCP 服务端推送事件类型筛选（管理员 API） */
 const mcpDlqInspectUrl = computed(() => {
-  const raw = import.meta.env.VITE_API_URL as string | undefined
-  const base = (raw || 'http://localhost:8000').replace(/\/$/, '')
+  const base = (
+    API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '')
+  ).replace(/\/$/, '')
   return `${base}/api/system/event-bus/dlq?event_type=${encodeURIComponent('mcp.streamable.server_rpc')}`
 })
 

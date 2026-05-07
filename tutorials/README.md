@@ -22,8 +22,10 @@
 
 | 现象或任务 | 打开 |
 |------------|------|
+| **Failed to fetch** / **401**（侧边栏、系统配置、知识库） | [tutorial-debug-playbook.md](tutorial-debug-playbook.md) **§2.0** → [tutorial.md](tutorial.md) **§6.3、§17.9～§17.11** |
 | 刚上手 | [tutorial-quickstart.md](tutorial-quickstart.md) → [tutorial-beginner-playbook.md](tutorial-beginner-playbook.md) |
 | 配置**本地 / 云端**模型、**账号** API Key 与租户 | [tutorial-index.md](tutorial-index.md) **§1.1** → [tutorial.md](tutorial.md) 第 **8.1～8.3** 节；极简摘要见 [tutorial-quickstart.md](tutorial-quickstart.md) |
+| **Skill / MCP**（技能库、Agent、工作流 Skill 节点、`/settings/mcp` 导入） | [tutorial-index.md](tutorial-index.md) **§1.1** → [tutorial.md](tutorial.md) 第 **8.4～8.5** 节；极简见 [tutorial-quickstart.md](tutorial-quickstart.md) **「Skill 与 MCP（可选）」** |
 | 写接口 **403**（含 CSRF） | [tutorial.md](tutorial.md) → **常见错误** → 403 / CSRF 小节 |
 | **404**（资源刚创建却查不到） | [tutorial.md](tutorial.md) → **多租户**；核对 `X-Tenant-Id` |
 | **429** | 限流与 Agent 上传并发；见主教程对应小节 |

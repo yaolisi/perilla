@@ -57,7 +57,7 @@ cd ../frontend && npm install && cd ..
 ./run-frontend.sh
 ```
 
-Defaults: backend `http://127.0.0.1:8000`, frontend `http://localhost:5173`.
+Defaults: backend **`http://127.0.0.1:8000`**, frontend **`http://127.0.0.1:5173`** (see `frontend/vite.config.dev.ts`). Run **both** services; the UI alone will show **Failed to fetch**. With no `VITE_API_URL`, dev mode uses same-origin relative URLs and the Vite **proxy** to `127.0.0.1:8000`. See **tutorial.md §6.3** and **§17.9**.
 
 ---
 
@@ -128,6 +128,9 @@ Input: `slow_threshold_seconds` (positive integer).
 
 | Symptom | Action |
 |---------|--------|
+| **Failed to fetch** / cannot reach API | Start the gateway first (open `/docs` on port 8000), then the UI; check `VITE_API_URL` and prefer **`127.0.0.1`** on macOS — **tutorial.md §6.3**, **§17.9** |
+| **401** on `/api/system/config`, `/api/knowledge-bases`, … | Dev defaults (`DEBUG=true`): check **`RBAC_ADMIN_API_KEYS`**, **`API_KEYS_JSON`**, **`API_KEY_SCOPES_JSON`**, or set **Settings → Backend → Admin API Key** — **tutorial.md §8.2**, **§17.10** |
+| Chat assistant blank (Ollama **R1** / reasoning) | Stream may use **`thinking`** then **`content`**; update backend **OllamaRuntime** — **tutorial.md §17.11** |
 | `403 CSRF token validation failed` | `GET /api/health` first; resend with cookie + `X-CSRF-Token` |
 | **400** `tenant id required for protected path` | Path under tenant enforcement prefixes (**`backend/middleware/tenant_paths.py`**); send `-H "X-Tenant-Id: ..."` — see **tutorial.md §10.4** |
 | Workflow **403/404** | Check `X-Tenant-Id`, namespace, key–tenant binding |

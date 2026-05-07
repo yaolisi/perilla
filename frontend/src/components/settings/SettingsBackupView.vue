@@ -205,6 +205,8 @@ const handleBrowseLocation = async () => {
     if (result.path) {
       backupLocation.value = result.path
       isEditing.value = true
+    } else if (result.message?.trim()) {
+      alert(result.message.trim())
     }
   } catch (error) {
     console.error('Failed to browse directory:', error)

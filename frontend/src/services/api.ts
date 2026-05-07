@@ -10,7 +10,20 @@ import {
 } from '@/utils/streamDeltas'
 import { notifySystemConfigChanged } from '@/constants/platformEvents'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+function resolveApiBaseUrl(): string {
+  const raw = import.meta.env.VITE_API_URL
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    return raw.trim().replace(/\/$/, '')
+  }
+  // 开发构建：默认走 Vite 同源 + proxy（见 vite.config.dev.ts），避免本机 localhost/IPv6 与网关端口不一致
+  if (import.meta.env.DEV) {
+    return ''
+  }
+  return 'http://127.0.0.1:8000'
+}
+
+/** 后端网关根 URL；开发环境未配置 VITE_API_URL 时为 `''`（相对当前页面 origin，经 Vite 代理转发） */
+export const API_BASE_URL = resolveApiBaseUrl()
 const CSRF_COOKIE_NAME = 'csrf_token'
 const CSRF_HEADER_NAME = 'X-CSRF-Token'
 const CSRF_PRIME_PATH = '/api/health'
@@ -2686,9 +2699,59 @@ export async function reloadEngine(): Promise<{ success: boolean }> {
   return response.json()
 }
 
-export async function browseDirectory(): Promise<{ path: string | null }> {
+export async function browseDirectory(): Promise<{ path: string | null; message?: string | null }> {
   const response = await apiFetch(`${API_BASE_URL}/api/system/browse-directory`, { method: 'GET' })
   if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  return response.json()
+}
+
+export async function browseFile(filter?: 'gguf' | 'onnx'): Promise<{ path: string | null; message?: string | null }> {
+  const q = filter ? `?filter=${encodeURIComponent(filter)}` : ''
+  const response = await apiFetch(`${API_BASE_URL}/api/system/browse-file${q}`, { method: 'GET' })
+  if (!response.ok) throw new Error(`API error: ${response.statusText}`)
+  return response.json()
+}
+
+export async function quickRegisterLocalModel(body: {
+  template?: 'llm_gguf' | 'embedding_onnx' | 'vlm_gguf'
+  source_path: string
+  model_id?: string
+  name?: string
+  copy_mode?: 'symlink' | 'copy'
+  embedding_dim?: number
+  tokenizer_path?: string
+  mmproj_path?: string
+  vlm_family?: string
+}): Promise<{
+  success: boolean
+  model_id: string
+  registry_id: string
+  manifest_path: string
+  dest_dir: string
+}> {
+  const response = await apiFetch(`${API_BASE_URL}/api/models/quick-register-local`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      template: 'llm_gguf' as const,
+      copy_mode: 'symlink' as const,
+      ...body,
+    }),
+  })
+  if (!response.ok) {
+    let message = response.statusText
+    try {
+      const err = (await response.json()) as { detail?: string | unknown }
+      if (typeof err.detail === 'string') {
+        message = err.detail
+      } else if (Array.isArray(err.detail)) {
+        message = err.detail.map((x: { msg?: string }) => x.msg || String(x)).join(', ')
+      }
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message)
+  }
   return response.json()
 }
 
@@ -2897,7 +2960,7 @@ export async function deleteBackup(backupId: string): Promise<{ success: boolean
   return response.json()
 }
 
-export async function browseBackupDirectory(): Promise<{ path: string | null }> {
+export async function browseBackupDirectory(): Promise<{ path: string | null; message?: string | null }> {
   const response = await apiFetch(`${API_BASE_URL}/api/backup/browse-directory`, { method: 'POST' })
   if (!response.ok) throw new Error(`API error: ${response.statusText}`)
   return response.json()

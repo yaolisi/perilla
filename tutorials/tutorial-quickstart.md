@@ -57,7 +57,7 @@ cd ../frontend && npm install && cd ..
 ./run-frontend.sh   # 终端 B
 ```
 
-默认：后端 `http://127.0.0.1:8000`，前端 `http://localhost:5173`。
+默认：后端 **`http://127.0.0.1:8000`**，前端 **`http://127.0.0.1:5173`**（与 `vite.config.dev.ts` 一致）。须**同时**跑通两端；仅前端会出现 **Failed to fetch**。开发环境下未设置 `VITE_API_URL` 时，请求经 Vite 代理到本机 8000；详见 **[tutorial.md](tutorial.md) §6.3**、**§17.9**。
 
 ---
 
@@ -173,6 +173,24 @@ Key 与租户仅存浏览器本机，清除站点数据后需重填。其它 Set
 
 ---
 
+## Skill 与 MCP（可选 · 与 tutorial.md §8.4～§8.5 同步摘要）
+
+技能（Skill）经网关统一执行；**MCP 不在首页单独入口**，而在 **Settings → MCP** 配置 Server，并把工具 **导入为 Skill** 后使用。完整步骤见 **[tutorial.md](tutorial.md)** 第 **8.4、8.5** 节。
+
+**Skill（你要做的事）**
+
+- 主导航 **`/skills`**：浏览；**`/skills/create`** 自定义技能；**`/skills/:id`** 看详情（MCP 导入的技能会显示连接信息）。  
+- **Agent**：创建/编辑时勾选技能（含带 **MCP** 标记的项）→ 保存 → 在执行界面验证。  
+- **Workflow**：节点库 **Tool → Skill**（画布上不叫 MCP）→ 右侧选 **`tool_name`**，展开 **Schema·Inputs** 填参数 → 保存版本并执行。
+
+**MCP（你要做的事）**
+
+- 前置：**§8.2** 使用 **管理员 `X-Api-Key`**（`/api/mcp/*` 要求 admin）。  
+- **`/settings/mcp`**：**Probe** 验证 stdio 命令或 HTTP Base URL → **添加 MCP Server** → 在列表中 **列出 Tools / 导入为技能**。  
+- 导入后到 **`/skills`** 确认；再通过 **Agent** 或工作流 **Skill** 节点调用（**无单独「MCP 节点」**）。
+
+---
+
 ## CI 手动触发（可选）
 
 GitHub Actions：`tenant-security-regression`、`security-regression`。  
@@ -184,6 +202,9 @@ GitHub Actions：`tenant-security-regression`、`security-regression`。
 
 | 现象 | 处理 |
 |------|------|
+| **Failed to fetch** / 无法连接后端 | 先启动后端（`8000` 可打开 `/docs`），再开前端；核对 **§6.3**、`VITE_API_URL` 与 **127.0.0.1**；见 **tutorial.md §17.9** |
+| **401** 于 `/api/system/config`、`/api/knowledge-bases` 等 | 开发默认下多为鉴权/scope；核对 **`DEBUG`**、**`RBAC_ADMIN_API_KEYS`**、**`API_KEYS_JSON`/`API_KEY_SCOPES_JSON`**，或到 **Settings → Backend** 填管理员 Key；见 **tutorial.md §8.2**、**§17.10** |
+| 聊天无助手字（Ollama **R1** 等） | 推理流可能先 **`thinking`** 后 **`content`**；更新后端并重启网关；见 **tutorial.md §17.11** |
 | `403 CSRF token validation failed` | 先 `GET /api/health` 拿 cookie 与 header，再发写请求 |
 | **400** `tenant id required for protected path` | 路径是否命中租户强制前缀（**`backend/middleware/tenant_paths.py`**）；curl/脚本须显式 `X-Tenant-Id`，见 **tutorial.md §10.4** |
 | Workflow **403/404** | 核对 `X-Tenant-Id`、namespace、Key 与租户绑定 |
@@ -198,5 +219,5 @@ GitHub Actions：`tenant-security-regression`、`security-regression`。
 - [tutorial-beginner-playbook.md](tutorial-beginner-playbook.md) — 新手实操版（上手与使用）  
 - [tutorial.md](tutorial.md) — 全量教程  
 - [tutorial-debug-playbook.md](tutorial-debug-playbook.md) — 调试手册（定位与回滚）  
-- [tutorial-index.md](tutorial-index.md) — 索引与命令汇总；**§1.1** 与主教程第 **8.1～8.3** 节（本地 / 账号 / 云端模型）对照  
+- [tutorial-index.md](tutorial-index.md) — 索引与命令汇总；**§1.1** 与主教程第 **8.1～8.5** 节（本地 / 账号 / 云端模型 / Skill / MCP）对照  
 - [tutorial-ops-checklist.md](tutorial-ops-checklist.md) — 发版清单  

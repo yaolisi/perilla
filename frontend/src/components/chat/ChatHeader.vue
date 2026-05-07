@@ -62,6 +62,14 @@ const activeModels = ref<Set<string>>(new Set())
 const modelSearchQuery = ref('')
 const isModelSelectOpen = ref(false)
 
+/** 展开下拉时重新拉取列表，避免模型页注册/扫描后需手动点「刷新」 */
+const onModelDropdownOpenChange = (open: boolean) => {
+  isModelSelectOpen.value = open
+  if (open) {
+    void fetchModels()
+  }
+}
+
 // 获取模型列表
 const fetchModels = async () => {
   loadingModels.value = true
@@ -98,11 +106,9 @@ const fetchModels = async () => {
     })
   } catch (error) {
     console.error('Failed to fetch models:', error)
-    // 如果API失败，使用默认模型列表（包含 Mock Model）
+    // 仅保留 Mock 占位；勿注入假的 ollama/gpt-4 id（会导致聊天请求指向不存在的模型 ID）
     models.value = [
       { id: 'mock', name: 'Mock Model', display_name: 'Mock Model (Debug)', backend: 'mock', supports_stream: true },
-      { id: 'ollama', name: 'Ollama', display_name: 'Ollama (Local)', backend: 'ollama', supports_stream: true },
-      { id: 'gpt-4', name: 'GPT-4 Turbo', display_name: 'GPT-4 Turbo (Cloud)', backend: 'openai', supports_stream: true },
     ]
     activeModels.value = new Set()
   } finally {
@@ -242,7 +248,12 @@ const orderedModelGroups = computed(() => {
       <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
       
       <!-- Model Selector -->
-      <Select :model-value="modelValue" @update:model-value="onModelChange" :disabled="loadingModels" @open-change="isModelSelectOpen = $event">
+      <Select
+        :model-value="modelValue"
+        @update:model-value="onModelChange"
+        :disabled="loadingModels"
+        @open-change="onModelDropdownOpenChange"
+      >
         <SelectTrigger class="w-[300px] h-9 bg-muted/20 border border-border/50 font-medium rounded-xl hover:bg-muted/30 transition-all">
           <div class="flex items-center gap-2 w-full">
             <component :is="modelDisplay.icon" class="w-4 h-4 text-muted-foreground shrink-0" />

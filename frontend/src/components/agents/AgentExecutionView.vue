@@ -74,6 +74,7 @@ import {
   type ModelInfo,
   type CorrelationSummaryResponse,
   type SkillRecord,
+  API_BASE_URL,
 } from '@/services/api'
 import {
   isMcpSkillRecord,
@@ -87,7 +88,6 @@ import {
   readRagMultiHopEnabledFromModelParams,
 } from '@/utils/agentRagModelParams'
 import { formatAgentMutationErrorMessage } from '@/utils/agentMutationMessages'
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 function messageContentToString(content: Message['content'] | undefined | null): string {
   if (content == null) return ''

@@ -9,6 +9,20 @@ from core.models.descriptor import ModelDescriptor
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
 
+def _ollama_assistant_message_text(message: dict) -> str:
+    """
+    Ollama /api/chat 返回的 assistant message：
+    - 普通模型：文本在 content
+    - DeepSeek-R1 等推理模型：推理阶段可能只在 thinking（或部分版本的 reasoning），与 core/agents/ollama_agent.py 对齐
+    """
+    content = message.get("content") or ""
+    if not content and message.get("thinking"):
+        content = message.get("thinking") or ""
+    if not content and message.get("reasoning"):
+        content = message.get("reasoning") or ""
+    return str(content)
+
+
 class OllamaRuntime(ModelRuntime):
     """
     Ollama 运行时实现
@@ -36,7 +50,8 @@ class OllamaRuntime(ModelRuntime):
                 raise ValueError(f"Ollama error: {error_msg}. Please ensure model is pulled.")
             resp.raise_for_status()
             data = resp.json()
-            content = data.get("message", {}).get("content", "")
+            msg = data.get("message") or {}
+            content = _ollama_assistant_message_text(msg) if isinstance(msg, dict) else ""
             return cast(str, content)
 
     async def stream_chat(self, descriptor: ModelDescriptor, req: ChatCompletionRequest) -> AsyncIterator[str]:
@@ -68,12 +83,18 @@ class OllamaRuntime(ModelRuntime):
                         continue
                     try:
                         data = json.loads(line)
-                        if "message" in data and "content" in data["message"]:
-                            yield data["message"]["content"]
-                        if data.get("done"):
-                            break
                     except json.JSONDecodeError:
                         continue
+                    err = data.get("error")
+                    if err:
+                        raise RuntimeError(str(err))
+                    msg = data.get("message")
+                    if isinstance(msg, dict):
+                        chunk_text = _ollama_assistant_message_text(msg)
+                        if chunk_text:
+                            yield chunk_text
+                    if data.get("done"):
+                        break
 
     async def is_loaded(self, descriptor: ModelDescriptor) -> bool:
         """检查 Ollama 模型是否已加载"""

@@ -60,6 +60,8 @@ curl -s http://127.0.0.1:8000/api/health/ready | jq .
 
 - `/models` -> `/chat` -> `/images` -> `/agents` -> `/workflow`
 
+技能与 MCP（导入后在 Agent / 工作流 Skill 节点中使用）：见 **`tutorials/tutorial.md`** 第 **8.4～8.5** 节与 **`tutorials/tutorial-index.md §1.1`**。
+
 ---
 
 ## 3) 研发路径（开发-测试-发布）

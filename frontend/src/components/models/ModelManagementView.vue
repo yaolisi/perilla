@@ -22,17 +22,27 @@ import {
   Mic,
   ScanSearch,
   Layers,
-  Image as ImageIcon
+  Image as ImageIcon,
+  FolderOpen,
 } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import ModelConfigSidebar from './ModelConfigSidebar.vue'
 import { 
   listModels, 
   scanModels, 
   registerModel,
+  browseFile,
+  quickRegisterLocalModel,
 } from '@/services/api'
 import { useNavigation } from '@/composables/useNavigation'
 import { useDebouncedOnSystemConfigChange } from '@/composables/useDebouncedOnSystemConfigChange'
@@ -322,6 +332,128 @@ watch(() => cloudModelForm.value.provider, (newProvider) => {
   }
 })
 
+const showQuickRegisterDialog = ref(false)
+const registeringQuick = ref(false)
+const quickRegisterError = ref('')
+const defaultQuickRegisterForm = () => ({
+  template: 'llm_gguf' as 'llm_gguf' | 'embedding_onnx' | 'vlm_gguf',
+  source_path: '',
+  model_id: '',
+  name: '',
+  copy_mode: 'symlink' as 'symlink' | 'copy',
+  embedding_dim: 1024,
+  tokenizer_path: '',
+  mmproj_path: '',
+  vlm_family: '',
+})
+const quickRegisterForm = ref(defaultQuickRegisterForm())
+
+const quickRegisterSourcePlaceholder = computed(() =>
+  quickRegisterForm.value.template === 'embedding_onnx'
+    ? t('models.quick_register.placeholder_onnx')
+    : t('models.quick_register.placeholder_gguf'),
+)
+
+const handleBrowseMmproj = async () => {
+  quickRegisterError.value = ''
+  try {
+    const res = await browseFile('gguf')
+    if (res.path) {
+      quickRegisterForm.value.mmproj_path = res.path
+    } else {
+      const extra = res.message?.trim()
+      quickRegisterError.value = extra || t('models.quick_register.browse_failed')
+    }
+  } catch (error) {
+    quickRegisterError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+const handleBrowseSource = async () => {
+  quickRegisterError.value = ''
+  try {
+    const filter = quickRegisterForm.value.template === 'embedding_onnx' ? 'onnx' : 'gguf'
+    const res = await browseFile(filter)
+    if (res.path) {
+      quickRegisterForm.value.source_path = res.path
+    } else {
+      const extra = res.message?.trim()
+      quickRegisterError.value = extra || t('models.quick_register.browse_failed')
+    }
+  } catch (error) {
+    quickRegisterError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+const handleBrowseTokenizer = async () => {
+  quickRegisterError.value = ''
+  try {
+    const res = await browseFile()
+    if (res.path) {
+      quickRegisterForm.value.tokenizer_path = res.path
+    } else {
+      const extra = res.message?.trim()
+      quickRegisterError.value = extra || t('models.quick_register.browse_failed')
+    }
+  } catch (error) {
+    quickRegisterError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+const handleQuickRegister = async () => {
+  if (!quickRegisterForm.value.source_path.trim()) {
+    quickRegisterError.value = t('models.quick_register.missing_source')
+    return
+  }
+  if (quickRegisterForm.value.template === 'embedding_onnx') {
+    const dim = Number(quickRegisterForm.value.embedding_dim)
+    if (!Number.isFinite(dim) || dim < 1) {
+      quickRegisterError.value = t('models.quick_register.embedding_dim_invalid')
+      return
+    }
+  }
+  if (quickRegisterForm.value.template === 'vlm_gguf' && !quickRegisterForm.value.mmproj_path.trim()) {
+    quickRegisterError.value = t('models.quick_register.mmproj_required')
+    return
+  }
+  registeringQuick.value = true
+  quickRegisterError.value = ''
+  try {
+    const base = {
+      template: quickRegisterForm.value.template,
+      source_path: quickRegisterForm.value.source_path.trim(),
+      model_id: quickRegisterForm.value.model_id.trim() || undefined,
+      name: quickRegisterForm.value.name.trim() || undefined,
+      copy_mode: quickRegisterForm.value.copy_mode,
+    }
+    if (quickRegisterForm.value.template === 'embedding_onnx') {
+      const dim = Math.floor(Number(quickRegisterForm.value.embedding_dim))
+      const tok = quickRegisterForm.value.tokenizer_path.trim()
+      await quickRegisterLocalModel({
+        ...base,
+        embedding_dim: dim,
+        tokenizer_path: tok || undefined,
+      })
+    } else if (quickRegisterForm.value.template === 'vlm_gguf') {
+      const vf = quickRegisterForm.value.vlm_family.trim()
+      await quickRegisterLocalModel({
+        ...base,
+        mmproj_path: quickRegisterForm.value.mmproj_path.trim(),
+        vlm_family: vf || undefined,
+      })
+    } else {
+      await quickRegisterLocalModel(base)
+    }
+    showQuickRegisterDialog.value = false
+    quickRegisterForm.value = defaultQuickRegisterForm()
+    await fetchModels()
+  } catch (error) {
+    quickRegisterError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    registeringQuick.value = false
+  }
+}
+
 const handleAddCloudModel = async () => {
   addingCloudModel.value = true
   try {
@@ -384,6 +516,14 @@ const handleAddCloudModel = async () => {
               class="w-[260px] pl-10 h-10 bg-muted/20 border-border/50 focus:bg-muted/30 transition-all rounded-xl text-sm"
             />
           </div>
+          <Button 
+            variant="outline"
+            class="h-10 px-4 rounded-xl border-border/50 bg-muted/10 hover:bg-muted/20 flex items-center gap-2"
+            @click="showQuickRegisterDialog = true"
+          >
+            <FolderOpen class="w-4 h-4" />
+            {{ t('models.quick_register.registry_button') }}
+          </Button>
           <Button 
             class="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2"
             @click="showAddCloudDialog = true"
@@ -758,6 +898,148 @@ const handleAddCloudModel = async () => {
         @update="fetchModels"
       />
     </transition>
+
+    <!-- Quick local model wizard -->
+    <Teleport to="body">
+      <div
+        v-if="showQuickRegisterDialog"
+        class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      >
+        <div class="bg-background border border-border rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden flex flex-col max-h-[90vh]">
+          <div class="flex-shrink-0 p-5 border-b border-border/50 flex items-center justify-between bg-muted/5">
+            <div class="flex items-center gap-3">
+              <div class="p-2.5 bg-emerald-500/10 rounded-xl text-emerald-600">
+                <FolderOpen class="w-6 h-6" />
+              </div>
+              <div>
+                <h3 class="text-lg font-bold tracking-tight">{{ t('models.quick_register.title') }}</h3>
+                <p class="text-xs text-muted-foreground">{{ t('models.quick_register.subtitle') }}</p>
+              </div>
+            </div>
+            <Button variant="ghost" size="icon" class="rounded-full hover:bg-muted" @click="showQuickRegisterDialog = false">
+              <X class="w-5 h-5" />
+            </Button>
+          </div>
+          <div class="p-6 space-y-5 overflow-y-auto">
+            <div v-if="quickRegisterError" class="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+              {{ quickRegisterError }}
+            </div>
+            <div class="space-y-2">
+              <label class="text-xs font-semibold text-foreground">{{ t('models.quick_register.template') }}</label>
+              <Select v-model="quickRegisterForm.template">
+                <SelectTrigger class="h-11 rounded-xl bg-muted/20 border-border/40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="llm_gguf">{{ t('models.quick_register.template_llm_gguf') }}</SelectItem>
+                  <SelectItem value="embedding_onnx">{{ t('models.quick_register.template_embedding_onnx') }}</SelectItem>
+                  <SelectItem value="vlm_gguf">{{ t('models.quick_register.template_vlm_gguf') }}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="space-y-2">
+              <label class="text-xs font-semibold text-foreground">{{ t('models.quick_register.source_path') }}</label>
+              <div class="flex gap-2">
+                <Input
+                  v-model="quickRegisterForm.source_path"
+                  class="h-11 flex-1 font-mono text-xs rounded-xl bg-muted/20 border-border/40"
+                  :placeholder="quickRegisterSourcePlaceholder"
+                />
+                <Button type="button" variant="outline" class="h-11 shrink-0 rounded-xl" @click="handleBrowseSource">
+                  {{ t('models.quick_register.browse_file') }}
+                </Button>
+              </div>
+            </div>
+            <template v-if="quickRegisterForm.template === 'vlm_gguf'">
+              <div class="space-y-2">
+                <label class="text-xs font-semibold text-foreground">{{ t('models.quick_register.mmproj_path') }}</label>
+                <div class="flex gap-2">
+                  <Input
+                    v-model="quickRegisterForm.mmproj_path"
+                    class="h-11 flex-1 font-mono text-xs rounded-xl bg-muted/20 border-border/40"
+                    :placeholder="t('models.quick_register.placeholder_gguf')"
+                  />
+                  <Button type="button" variant="outline" class="h-11 shrink-0 rounded-xl" @click="handleBrowseMmproj">
+                    {{ t('models.quick_register.browse_file') }}
+                  </Button>
+                </div>
+              </div>
+              <div class="space-y-2">
+                <label class="text-xs font-semibold text-foreground">{{ t('models.quick_register.vlm_family_optional') }}</label>
+                <Input
+                  v-model="quickRegisterForm.vlm_family"
+                  class="h-11 rounded-xl bg-muted/20 border-border/40"
+                  placeholder="llava-1.5"
+                />
+                <p class="text-[11px] text-muted-foreground">{{ t('models.quick_register.vlm_family_hint') }}</p>
+              </div>
+            </template>
+            <template v-if="quickRegisterForm.template === 'embedding_onnx'">
+              <div class="space-y-2">
+                <label class="text-xs font-semibold text-foreground">{{ t('models.quick_register.embedding_dim') }}</label>
+                <Input
+                  v-model.number="quickRegisterForm.embedding_dim"
+                  type="number"
+                  min="1"
+                  class="h-11 rounded-xl bg-muted/20 border-border/40"
+                />
+                <p class="text-[11px] text-muted-foreground">{{ t('models.quick_register.embedding_dim_hint') }}</p>
+              </div>
+              <div class="space-y-2">
+                <label class="text-xs font-semibold text-foreground">{{ t('models.quick_register.tokenizer_optional') }}</label>
+                <div class="flex gap-2">
+                  <Input
+                    v-model="quickRegisterForm.tokenizer_path"
+                    class="h-11 flex-1 font-mono text-xs rounded-xl bg-muted/20 border-border/40"
+                    placeholder="tokenizer.json"
+                  />
+                  <Button type="button" variant="outline" class="h-11 shrink-0 rounded-xl" @click="handleBrowseTokenizer">
+                    {{ t('models.quick_register.tokenizer_browse') }}
+                  </Button>
+                </div>
+              </div>
+            </template>
+            <div class="space-y-2">
+              <label class="text-xs font-semibold text-foreground">{{ t('models.quick_register.model_id_optional') }}</label>
+              <Input
+                v-model="quickRegisterForm.model_id"
+                class="h-11 rounded-xl bg-muted/20 border-border/40"
+                :placeholder="t('models.quick_register.model_id_hint')"
+              />
+            </div>
+            <div class="space-y-2">
+              <label class="text-xs font-semibold text-foreground">{{ t('models.quick_register.name_optional') }}</label>
+              <Input v-model="quickRegisterForm.name" class="h-11 rounded-xl bg-muted/20 border-border/40" />
+            </div>
+            <div class="space-y-2">
+              <label class="text-xs font-semibold text-foreground">{{ t('models.quick_register.copy_mode') }}</label>
+              <Select v-model="quickRegisterForm.copy_mode">
+                <SelectTrigger class="h-11 rounded-xl bg-muted/20 border-border/40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="symlink">{{ t('models.quick_register.symlink') }}</SelectItem>
+                  <SelectItem value="copy">{{ t('models.quick_register.copy') }}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div class="flex-shrink-0 p-5 border-t border-border/50 bg-muted/5 flex justify-end gap-3">
+            <Button variant="ghost" class="rounded-xl" @click="showQuickRegisterDialog = false">
+              {{ t('models.quick_register.cancel') }}
+            </Button>
+            <Button
+              class="rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white"
+              :disabled="registeringQuick"
+              @click="handleQuickRegister"
+            >
+              <Loader2 v-if="registeringQuick" class="w-4 h-4 mr-2 animate-spin" />
+              {{ t('models.quick_register.submit') }}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Add Cloud Model Dialog -->
     <Teleport to="body">

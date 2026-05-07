@@ -123,16 +123,18 @@ class OllamaAgent(ModelAgent):
                         continue
                     try:
                         data = json.loads(line)
-                        if "message" in data:
-                            msg = data["message"]
-                            # 优先使用 content,如果为空则尝试 thinking (某些模型如 glm-4.6:cloud)
-                            content = msg.get("content", "")
-                            if not content and "thinking" in msg:
-                                content = msg.get("thinking", "")
-                            if content:
-                                yield content
                     except json.JSONDecodeError:
                         continue
+                    err = data.get("error")
+                    if err:
+                        raise RuntimeError(str(err))
+                    if "message" in data:
+                        msg = data["message"]
+                        content = msg.get("content", "")
+                        if not content and "thinking" in msg:
+                            content = msg.get("thinking", "")
+                        if content:
+                            yield content
     
     async def list_local_models(self) -> list[dict]:
         """

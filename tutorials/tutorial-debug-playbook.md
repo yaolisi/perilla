@@ -16,6 +16,24 @@
 
 ## 2. 高频问题速查
 
+## 2.0 前端 Failed to fetch / 控制台 401（本地开发）
+
+**Failed to fetch**（或界面提示无法连接后端）：
+
+- 须**同时**运行 FastAPI 与 Vite；浏览器能打开 **`http://127.0.0.1:8000/docs`** 再测前端。
+- 开发环境未设 **`VITE_API_URL`** 时，接口走**同源相对路径**并由 Vite **代理**到 `127.0.0.1:8000`；改 `frontend/.env*` 后重启 **`npm run dev`**。
+- 手工设置 **`VITE_API_URL`** 时，**macOS 建议 `http://127.0.0.1:8000`**，减少 `localhost` 与 IPv6 栈不一致问题。
+
+**401** 于 **`/api/system/config`**、**`/api/knowledge-bases`** 等：
+
+- 开发默认（**`DEBUG=true`**）下，未配置 **`RBAC_ADMIN_API_KEYS`** 时，网关对控制面/scope 有本地放宽（见 **`backend/core/security/deps.py`**、**`middleware/api_key_scope.py`**），浏览器**未必**需先填 **Settings → Backend** 的 Admin API Key。
+- 若 **`DEBUG=false`** 或配置了 **`RBAC_ADMIN_API_KEYS`**，须在 **Security Context** 填写与后端一致的**管理员** Key。
+- 配置了 **`API_KEYS_JSON` / `API_KEY_SCOPES_JSON`** 时，会启用细粒度 **scope**；缺 Key 或 scope 会 **401/403**。
+
+详述与步骤见 **[tutorial.md](tutorial.md) §6.3、§17.9～§17.11**。
+
+---
+
 ## 2.1 `401/403`（鉴权或权限）
 
 优先检查：
