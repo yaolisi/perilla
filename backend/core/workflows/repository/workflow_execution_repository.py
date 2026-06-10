@@ -24,6 +24,12 @@ from config.settings import settings
 from log import logger
 
 
+def _utc_aware(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 class WorkflowExecutionRepository:
     """工作流执行仓库"""
 
@@ -261,11 +267,14 @@ class WorkflowExecutionRepository:
                 error_details=error_details,
             )
 
-            # duration_ms 计算
+            # duration_ms 计算（兼容 SQLite 读出的 naive datetime）
             if row.started_at and row.finished_at:
                 self._set_row_fields(
                     row,
-                    duration_ms=int((row.finished_at - row.started_at).total_seconds() * 1000),
+                    duration_ms=int(
+                        (_utc_aware(row.finished_at) - _utc_aware(row.started_at)).total_seconds()
+                        * 1000
+                    ),
                 )
 
             self.db.commit()

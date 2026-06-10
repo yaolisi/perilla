@@ -290,15 +290,8 @@ class WorkflowVersionRepository:
         return self._deserialize_version_from_orm(row)
     
     def validate_dag_checksum(self, version_id: str) -> bool:
-        """验证 DAG 校验和"""
-        row = (
-            self.db.query(WorkflowVersionORM)
-            .filter(WorkflowVersionORM.version_id == version_id)
-            .first()
-        )
-        if not row:
+        """验证 DAG 校验和（与 WorkflowDAG.compute_checksum 一致）。"""
+        version = self.get_version_by_id(version_id)
+        if version is None:
             return False
-        import hashlib
-        row_any = cast(Any, row)
-        computed = hashlib.sha256(cast(str, row_any.dag_json).encode()).hexdigest()
-        return cast(bool, computed == cast(str, row_any.checksum))
+        return version.dag.compute_checksum() == version.checksum

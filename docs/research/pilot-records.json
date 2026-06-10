@@ -1,0 +1,48 @@
+[
+  {
+    "case_id": "G01",
+    "approved": true,
+    "rejected": false,
+    "execute_success_before_approve": false,
+    "final_completed": true,
+    "deliverable_keys_ok": true,
+    "checkpoint_passed": true,
+    "has_timeline": true,
+    "has_approval_decision": true,
+    "approval_latency_min": null,
+    "notes": "冒烟：批准后 completed；execute 节点含非空 text/summary，checkpoint_verify 通过",
+    "workflow_id": "9352e2e0-5be6-438a-9f86-1ccc704f5c65",
+    "version_id": "301ca030-3526-4622-aad7-ccfa0fed360a",
+    "execution_id": "0ebc0ce8-27b4-4547-a5fb-91896b6cc509"
+  },
+  {
+    "case_id": "G10",
+    "approved": false,
+    "rejected": true,
+    "execute_success_before_approve": false,
+    "final_completed": false,
+    "deliverable_keys_ok": false,
+    "has_timeline": true,
+    "has_approval_decision": true,
+    "approval_latency_min": null,
+    "notes": "冒烟：审批拒绝后流程终态 failed，下游未放行",
+    "workflow_id": "9352e2e0-5be6-438a-9f86-1ccc704f5c65",
+    "version_id": "301ca030-3526-4622-aad7-ccfa0fed360a",
+    "execution_id": "dbd3bdfa-e036-4434-9195-8a91af11efd1"
+  },
+  {
+    "case_id": "G12",
+    "approved": true,
+    "rejected": false,
+    "execute_success_before_approve": false,
+    "final_completed": true,
+    "deliverable_keys_ok": true,
+    "checkpoint_passed": true,
+    "has_timeline": true,
+    "has_approval_decision": true,
+    "workflow_id": "9352e2e0-5be6-438a-9f86-1ccc704f5c65",
+    "version_id": "301ca030-3526-4622-aad7-ccfa0fed360a",
+    "execution_id": "c66cfada-66d7-43ec-8770-d74f4c7aa928",
+    "notes": "可复现性：同版本工作流重复 G01 brief，批准后 completed"
+  }
+]

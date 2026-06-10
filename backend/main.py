@@ -464,6 +464,14 @@ def _initialize_database_tables() -> None:
 
         engine = get_engine()
         Base.metadata.create_all(engine)
+        try:
+            import execution_kernel.events.event_store  # noqa: F401
+            from execution_kernel.models.graph_instance import Base as KernelBase
+
+            KernelBase.metadata.create_all(engine)
+            logger.info("Execution kernel tables initialized")
+        except Exception as ek_exc:
+            logger.warning("Execution kernel table init skipped/failed: %s", ek_exc)
         from sqlalchemy import inspect as sa_inspect
 
         with engine.connect() as conn:

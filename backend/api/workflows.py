@@ -3920,12 +3920,21 @@ def _hydrate_nodes_from_kernel(raw_nodes: Any) -> List[WorkflowExecutionNode]:
     return hydrated
 
 
+def _utc_aware_dt(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
 def _update_execution_timing_from_nodes(execution: WorkflowExecution) -> None:
     if execution.finished_at is None:
         finished_candidates = [n.finished_at for n in (execution.node_states or []) if n.finished_at]
         execution.finished_at = max(finished_candidates) if finished_candidates else datetime.now(UTC)
     if execution.started_at and execution.finished_at:
-        execution.duration_ms = int((execution.finished_at - execution.started_at).total_seconds() * 1000)
+        execution.duration_ms = int(
+            (_utc_aware_dt(execution.finished_at) - _utc_aware_dt(execution.started_at)).total_seconds()
+            * 1000
+        )
 
 
 def _apply_kernel_state_to_execution(execution: WorkflowExecution, result: Dict[str, Any]) -> None:

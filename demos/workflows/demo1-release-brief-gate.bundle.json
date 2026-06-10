@@ -87,9 +87,10 @@
         "type": "llm",
         "name": "发布撰写（LLM 角色）",
         "config": {
-          "model_tier": "thorough",
-          "temperature": 0.3,
-          "prompt": "【角色：发布写手】按计划撰写发布简报。仅输出 JSON，含非空 text 与 summary。计划上下文：\n\n{{prev.text}}"
+          "model_tier": "standard",
+          "temperature": 0.2,
+          "max_tokens": 2048,
+          "prompt": "【角色：发布写手】根据计划撰写检测报告说明草稿。必须只输出一行 JSON，不要 Markdown 代码块，格式严格为：{\"text\":\"完整说明正文\",\"summary\":\"50字以内摘要\"}。text 与 summary 均不得为空。计划：\n\n{{prev.text}}"
         },
         "position": { "x": 1040, "y": 200 }
       },

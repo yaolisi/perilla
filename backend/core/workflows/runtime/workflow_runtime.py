@@ -858,7 +858,27 @@ class WorkflowRuntime:
             metadata={"source": "workflow_runtime", "node_id": node_def.id},
         )
         self._ensure_execution_not_cancelled(context)
-        return cast(Dict[str, Any], resp.to_dict())
+        out = cast(Dict[str, Any], resp.to_dict())
+        merged = self._merge_json_from_llm_text(out.get("text"))
+        if merged:
+            out.update(merged)
+        return out
+
+    @staticmethod
+    def _merge_json_from_llm_text(text: Any) -> Optional[Dict[str, Any]]:
+        """若模型按约定输出 JSON，将 text/summary 等字段提升到节点输出顶层供 Checkpoint 使用。"""
+        if not isinstance(text, str) or not text.strip():
+            return None
+        raw = text.strip()
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if len(lines) >= 2 and lines[0].startswith("```"):
+                raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
     async def _condition_handler(
         self, node_def: NodeDefinition, input_data: Dict[str, Any], context: GraphContext
