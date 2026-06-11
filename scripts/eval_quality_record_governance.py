@@ -24,6 +24,7 @@ import argparse
 import http.cookiejar
 import json
 import os
+import subprocess
 import sys
 import time
 import uuid
@@ -54,6 +55,9 @@ SAMPLE_BRIEFS: dict[str, str] = {
 }
 
 REQUIRED_KEYS = ["text", "summary", "task_ref"]
+
+PILOT_CASE_ORDER = [f"G{i:02d}" for i in range(1, 13)]
+APPROVE_CASES = {f"G{i:02d}" for i in range(1, 10)} | {"G12"}
 
 RECORD_TEMPLATE: list[dict[str, Any]] = [
     {
@@ -283,18 +287,30 @@ class HttpClient:
             hdrs["X-CSRF-Token"] = self._csrf_token
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method.upper())
         opener = self._opener or urllib.request
-        try:
-            with opener.open(req, timeout=timeout) as resp:
-                token = (resp.headers.get("X-CSRF-Token") or "").strip()
-                if token:
-                    self._csrf_token = token
-                raw = resp.read().decode("utf-8")
-                code = int(resp.status)
-                try:
-                    return code, json.loads(raw) if raw.strip() else {}
-                except json.JSONDecodeError:
-                    return code, raw
-        except urllib.error.HTTPError as exc:
+        last_err: Exception | None = None
+        for attempt in range(4):
+            try:
+                with opener.open(req, timeout=timeout) as resp:
+                    token = (resp.headers.get("X-CSRF-Token") or "").strip()
+                    if token:
+                        self._csrf_token = token
+                    raw = resp.read().decode("utf-8")
+                    code = int(resp.status)
+                    try:
+                        return code, json.loads(raw) if raw.strip() else {}
+                    except json.JSONDecodeError:
+                        return code, raw
+            except (TimeoutError, urllib.error.URLError) as exc:
+                last_err = exc
+                if attempt < 3:
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+                raise
+            except urllib.error.HTTPError as exc:
+                last_err = exc
+                break
+        if isinstance(last_err, urllib.error.HTTPError):
+            exc = last_err
             token = (exc.headers.get("X-CSRF-Token") or "").strip()
             if token:
                 self._csrf_token = token
@@ -303,6 +319,9 @@ class HttpClient:
                 return int(exc.code), json.loads(detail)
             except json.JSONDecodeError:
                 return int(exc.code), detail
+        if last_err:
+            raise last_err
+        raise RuntimeError("request failed without response")
 
 
 def _health_ok(base_url: str) -> bool:
@@ -311,6 +330,33 @@ def _health_ok(base_url: str) -> bool:
             return resp.status == 200
     except Exception:
         return False
+
+
+def _wait_backend(base_url: str, *, timeout: float = 45.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _health_ok(base_url):
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def _restart_backend(base_url: str) -> None:
+    subprocess.run(
+        "lsof -ti :8000 | xargs kill -9 2>/dev/null || true",
+        shell=True,
+        check=False,
+    )
+    time.sleep(2.0)
+    subprocess.Popen(
+        ["bash", str(ROOT / "run-backend.sh")],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    if not _wait_backend(base_url, timeout=60.0):
+        raise RuntimeError("重启后端后健康检查失败")
+    print("[pilot] 后端已重启", file=sys.stderr)
 
 
 @contextmanager
@@ -593,6 +639,105 @@ def _deliverable_from_detail(detail: dict) -> tuple[bool, bool]:
     return deliverable_ok, checkpoint_ok
 
 
+def _fetch_version_dag(client: HttpClient, workflow_id: str, version_id: str) -> dict[str, Any]:
+    code, body = client.request(
+        "GET", f"/api/v1/workflows/{workflow_id}/versions/{version_id}"
+    )
+    if code != 200 or not isinstance(body, dict):
+        raise RuntimeError(f"获取版本 DAG 失败: {code} {body}")
+    dag = body.get("dag")
+    if not isinstance(dag, dict):
+        raise RuntimeError(f"版本 {version_id} 无 dag 字段")
+    return dag
+
+
+def _create_version_with_checkpoint_keys(
+    client: HttpClient,
+    workflow_id: str,
+    base_version_id: str,
+    *,
+    required_keys: list[str],
+    description: str,
+) -> str:
+    dag = json.loads(json.dumps(_fetch_version_dag(client, workflow_id, base_version_id)))
+    nodes = dag.get("nodes") or []
+    patched = False
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("id") != "checkpoint_verify":
+            continue
+        cfg = node.setdefault("config", {})
+        if isinstance(cfg, dict):
+            cfg["required_keys"] = list(required_keys)
+            patched = True
+    if not patched:
+        raise RuntimeError("DAG 中未找到 checkpoint_verify 节点")
+    code, created = client.request(
+        "POST",
+        f"/api/v1/workflows/{workflow_id}/versions",
+        body={"dag": dag, "description": description},
+    )
+    if code not in (200, 201):
+        raise RuntimeError(f"创建对照版本失败: {code} {created}")
+    version_id = str(created.get("version_id") or "")
+    if not version_id:
+        raise RuntimeError(f"创建版本无 version_id: {created}")
+    pub_code, _ = client.request(
+        "POST",
+        f"/api/v1/workflows/{workflow_id}/versions/{version_id}/publish",
+        body={},
+    )
+    if pub_code not in (200, 201, 204):
+        raise RuntimeError(f"发布对照版本失败: {pub_code}")
+    return version_id
+
+
+def _run_reject_case(
+    client: HttpClient,
+    workflow_id: str,
+    version_id: str,
+    *,
+    case_id: str,
+    brief: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    execution_id = _start_execution(client, workflow_id, brief, version_id=version_id)
+    status = _wait_until(client, workflow_id, execution_id, want_states={"paused"}, timeout=180)
+    state = str(status.get("state") or "").lower()
+    approvals = _list_approvals(client, workflow_id, execution_id)
+    reject_ok = False
+    if state == "paused" and approvals:
+        _reject(client, workflow_id, execution_id, str(approvals[0].get("id")))
+        status = _wait_until(
+            client,
+            workflow_id,
+            execution_id,
+            want_states={"failed", "cancelled", "completed"},
+            timeout=60,
+        )
+        reject_ok = str(status.get("state") or "").lower() in {"failed", "cancelled"}
+    execute_node = _node_named(status, "execute")
+    record = {
+        "case_id": case_id,
+        "approved": False,
+        "rejected": True,
+        "execute_success_before_approve": execute_node is not None
+        and str(execute_node.get("state", "")).lower() == "success",
+        "final_completed": str(status.get("state") or "").lower() == "completed",
+        "deliverable_keys_ok": False,
+        "has_timeline": bool(status.get("node_states") or status.get("node_timeline")),
+        "has_approval_decision": bool(approvals),
+        "workflow_id": workflow_id,
+        "version_id": version_id,
+        "execution_id": execution_id,
+    }
+    case_report = {
+        "execution_id": execution_id,
+        "paused": state == "paused",
+        "final_state": status.get("state"),
+        "reject_block": reject_ok,
+    }
+    return case_report, record
+
+
 def _run_approve_case(
     client: HttpClient,
     workflow_id: str,
@@ -600,6 +745,7 @@ def _run_approve_case(
     *,
     case_id: str,
     brief: str,
+    notes: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """G01/G12 批准路径：暂停 → 批准 → completed + deliverable 校验。"""
     execution_id = _start_execution(client, workflow_id, brief, version_id=version_id)
@@ -656,9 +802,232 @@ def _run_approve_case(
         ),
         "has_approval_decision": bool(approvals),
         "workflow_id": workflow_id,
+        "version_id": version_id,
         "execution_id": execution_id,
     }
+    if notes:
+        record["notes"] = notes
     return case_report, record
+
+
+def _run_g11_case(
+    client: HttpClient,
+    workflow_id: str,
+    base_version_id: str,
+    *,
+    brief: str,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    g11_version_id = _create_version_with_checkpoint_keys(
+        client,
+        workflow_id,
+        base_version_id,
+        required_keys=["nonexistent"],
+        description="G11 checkpoint 缺项对照",
+    )
+    execution_id = _start_execution(client, workflow_id, brief, version_id=g11_version_id)
+    status = _wait_until(client, workflow_id, execution_id, want_states={"paused"}, timeout=180)
+    state = str(status.get("state") or "").lower()
+    approvals = _list_approvals(client, workflow_id, execution_id)
+    execute_before = _node_named(status, "execute")
+    execute_before_ok = not (
+        execute_before and str(execute_before.get("state", "")).lower() == "success"
+    )
+    completed = False
+    checkpoint_ok = False
+    deliverable_ok = False
+    detail: dict = status
+    code = 0
+    if state == "paused" and approvals:
+        _approve(client, workflow_id, execution_id, str(approvals[0].get("id")))
+        status = _wait_until(
+            client,
+            workflow_id,
+            execution_id,
+            want_states={"completed", "failed"},
+            timeout=600,
+            require_genuine_terminal=True,
+        )
+        code, detail = client.request(
+            "GET", f"/api/v1/workflows/{workflow_id}/executions/{execution_id}"
+        )
+        if code == 200 and isinstance(detail, dict):
+            completed = str(detail.get("state") or status.get("state") or "").lower() == "completed"
+            deliverable_ok, checkpoint_ok = _deliverable_from_detail(detail)
+        else:
+            completed = str(status.get("state") or "").lower() == "completed"
+    checkpoint_node = _node_named(detail if code == 200 else status, "checkpoint_verify")
+    checkpoint_failed = (
+        checkpoint_node is not None
+        and str(checkpoint_node.get("state") or "").lower() == "failed"
+    )
+    case_report = {
+        "execution_id": execution_id,
+        "g11_version_id": g11_version_id,
+        "paused": state == "paused",
+        "pre_approve_execute_blocked": execute_before_ok,
+        "final_state": status.get("state"),
+        "completed": completed,
+        "checkpoint_failed": checkpoint_failed,
+        "checkpoint_passed": checkpoint_ok,
+    }
+    record = {
+        "case_id": "G11",
+        "approved": True,
+        "rejected": False,
+        "execute_success_before_approve": not execute_before_ok,
+        "final_completed": completed,
+        "deliverable_keys_ok": deliverable_ok,
+        "checkpoint_passed": checkpoint_ok,
+        "has_timeline": bool(
+            (detail if code == 200 else status).get("node_states")
+            or status.get("node_timeline")
+        ),
+        "has_approval_decision": bool(approvals),
+        "workflow_id": workflow_id,
+        "version_id": g11_version_id,
+        "execution_id": execution_id,
+        "notes": "Checkpoint 缺项对照：required_keys=[nonexistent]，验收失败并阻断完成",
+    }
+    return case_report, record, g11_version_id
+
+
+def _persist_records(path: Path, new_records: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing: list[dict[str, Any]] = []
+    if path.is_file():
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    payload = _merge_records(existing if isinstance(existing, list) else [], new_records)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def run_full(
+    *,
+    base_url: str | None = None,
+    prefer_live: bool = True,
+    workflow_id: str | None = None,
+    version_id: str | None = None,
+    records_path: Path | None = None,
+    write_records: Path | None = None,
+    skip_existing: bool = True,
+    cases: list[str] | None = None,
+) -> dict[str, Any]:
+    """12 组全量试点：复用已发布工作流，可跳过已有记录。"""
+    report: dict[str, Any] = {"mode": None, "cases": {}, "records": [], "ok": False}
+    base = (base_url or os.environ.get("PERILLA_API_BASE", "http://127.0.0.1:8000")).rstrip("/")
+
+    wf_id = (workflow_id or "").strip()
+    ver_id = (version_id or "").strip() or None
+    if not wf_id and records_path:
+        wf_id, ver_id = _load_workflow_from_records(records_path)
+    if not wf_id:
+        raise RuntimeError("全量试点须提供 --workflow-id 或含 workflow_id 的 --records")
+
+    existing_ids: set[str] = set()
+    if skip_existing and records_path and records_path.is_file():
+        existing = json.loads(records_path.read_text(encoding="utf-8"))
+        if isinstance(existing, list):
+            existing_ids = {str(r.get("case_id")) for r in existing if r.get("case_id")}
+
+    target_cases = cases or PILOT_CASE_ORDER
+    to_run = [cid for cid in target_cases if cid not in existing_ids] if skip_existing else list(target_cases)
+    report["planned_cases"] = target_cases
+    report["skipped_existing"] = sorted(existing_ids & set(target_cases))
+    report["running_cases"] = to_run
+
+    if prefer_live and _health_ok(base):
+        headers = _api_headers()
+        headers.setdefault("X-User-Id", "qa-pilot-smoke")
+        headers.setdefault("X-Tenant-Id", "default")
+        client = HttpClient(base_url=base, headers=headers)
+        report["mode"] = "live"
+    else:
+        report["mode"] = "inprocess"
+
+    def _run_with(client: HttpClient) -> None:
+        nonlocal ver_id
+        if not ver_id:
+            ver_id = _resolve_published_version(client, wf_id)
+        report["workflow_id"] = wf_id
+        report["version_id"] = ver_id
+
+        for case_id in to_run:
+            print(f"[pilot] 运行 {case_id} ...", file=sys.stderr)
+            brief = SAMPLE_BRIEFS[case_id]
+            last_exc: Exception | None = None
+            for attempt in range(3):
+                try:
+                    if case_id == "G10":
+                        case_report, record = _run_reject_case(
+                            client, wf_id, ver_id, case_id=case_id, brief=brief
+                        )
+                        record["notes"] = "审批拒绝后流程终态 failed，下游未放行"
+                    elif case_id == "G11":
+                        case_report, record, _ = _run_g11_case(
+                            client, wf_id, ver_id, brief=brief
+                        )
+                    elif case_id in APPROVE_CASES:
+                        notes = ""
+                        if case_id == "G12":
+                            notes = "可复现性：同版本工作流重复 G01 brief，批准后 completed"
+                        case_report, record = _run_approve_case(
+                            client, wf_id, ver_id, case_id=case_id, brief=brief, notes=notes
+                        )
+                    else:
+                        raise RuntimeError(f"未知样本 {case_id}")
+                    last_exc = None
+                    break
+                except (TimeoutError, urllib.error.URLError, RuntimeError) as exc:
+                    last_exc = exc
+                    print(f"[pilot] {case_id} 失败({attempt + 1}/3): {exc}", file=sys.stderr)
+                    if attempt < 2:
+                        _restart_backend(base)
+                        time.sleep(3.0)
+            if last_exc is not None:
+                raise last_exc
+            report["cases"][case_id] = case_report
+            report["records"].append(record)
+            if write_records:
+                _persist_records(write_records, [record])
+            print(f"[pilot] {case_id} 完成: {case_report.get('final_state')}", file=sys.stderr)
+            time.sleep(5.0)
+
+    if to_run:
+        if report["mode"] == "live":
+            _run_with(client)
+        else:
+            with _inprocess_client() as client:
+                _run_with(client)
+    else:
+        print("[pilot] 无待运行 case，仅汇总已有记录", file=sys.stderr)
+
+    merged_for_metrics: list[dict[str, Any]] = list(report["records"])
+    if records_path and records_path.is_file():
+        existing = json.loads(records_path.read_text(encoding="utf-8"))
+        if isinstance(existing, list):
+            merged_for_metrics = _merge_records(existing, report["records"])
+
+    if merged_for_metrics:
+        metrics = compute_metrics(merged_for_metrics)
+        report["metrics"] = {
+            "pre_approve_block_rate": metrics.pre_approve_block_rate,
+            "reject_block_rate": metrics.reject_block_rate,
+            "checkpoint_completeness_rate": metrics.checkpoint_completeness_rate,
+            "audit_completeness_rate": metrics.audit_completeness_rate,
+            "reproducibility_rate": metrics.reproducibility_rate,
+        }
+        report["verdict"] = metrics.verdict()
+        report["case_count"] = len(merged_for_metrics)
+        g11_rec = next((r for r in merged_for_metrics if r.get("case_id") == "G11"), None)
+        g10_rec = next((r for r in merged_for_metrics if r.get("case_id") == "G10"), None)
+        g11_ok = g11_rec is None or not g11_rec.get("final_completed", True)
+        g10_ok = g10_rec is None or not g10_rec.get("final_completed", True)
+        report["ok"] = (
+            report["case_count"] == 12
+            and metrics.verdict() == "可受控试运行"
+            and g10_ok
+            and g11_ok
+        )
+    return report
 
 
 def run_g12(
@@ -885,6 +1254,20 @@ def main() -> None:
         action="store_true",
         help="运行 G12 可复现性对照（复用已有 workflow_id / 已发布版本）",
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="运行 12 组全量试点（默认跳过 pilot-records 中已有 case_id）",
+    )
+    parser.add_argument(
+        "--no-skip-existing",
+        action="store_true",
+        help="与 --full 联用：不跳过已有记录，全部重跑",
+    )
+    parser.add_argument(
+        "--cases",
+        help="逗号分隔的 case_id 子集，如 G02,G03,G11",
+    )
     parser.add_argument("--version-id", help="工作流版本 ID（--g12 可选，缺省取已发布版本）")
     parser.add_argument(
         "--merge-records",
@@ -924,6 +1307,24 @@ def main() -> None:
                 json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
+            print(f"已写入试点记录: {args.write_records}", file=sys.stderr)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        raise SystemExit(0 if report.get("ok") else 1)
+
+    if args.full:
+        case_list = [c.strip() for c in args.cases.split(",") if c.strip()] if args.cases else None
+        report = run_full(
+            base_url=args.base_url,
+            prefer_live=not args.inprocess_only,
+            workflow_id=args.workflow_id,
+            version_id=args.version_id,
+            records_path=args.records,
+            write_records=args.write_records,
+            skip_existing=not args.no_skip_existing,
+            cases=case_list,
+        )
+        if args.write_records and report.get("records"):
+            _persist_records(args.write_records, report["records"])
             print(f"已写入试点记录: {args.write_records}", file=sys.stderr)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         raise SystemExit(0 if report.get("ok") else 1)
