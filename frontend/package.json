@@ -23,7 +23,7 @@
     "@types/katex": "^0.16.8",
     "@types/markdown-it": "^14.1.2",
     "@vue-flow/core": "^1.48.2",
-    "@vueuse/core": "^14.1.0",
+    "@vueuse/core": "^14.3.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dompurify": "^3.4.0",
