@@ -42,7 +42,7 @@ jobs:
           ENTERPRISE_SUITE_TENANT_ID: ${{ secrets.ENTERPRISE_SUITE_TENANT_ID }}
           ENTERPRISE_SUITE_JSON_OUT: enterprise-suite-live-staging.json
         run: make enterprise-suite-live-gate
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: enterprise-suite-live-staging
